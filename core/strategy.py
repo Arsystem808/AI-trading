@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 from core.polygon_client import PolygonClient
 
-# --- вспомогательные (в UI не раскрываем) ---
+# ---------- helpers (не раскрываются в UI) ----------
 
 def _atr_like(df: pd.DataFrame, n: int = 14) -> pd.Series:
     hl = df["high"] - df["low"]
@@ -25,8 +25,8 @@ def _linreg_slope(y: np.ndarray) -> float:
 
 def _streak(closes: pd.Series) -> int:
     s = 0
-    for i in range(len(closes) - 1, 0, -1):
-        d = closes.iloc[i] - closes.iloc[i - 1]
+    for i in range(len(closes)-1, 0, -1):
+        d = closes.iloc[i] - closes.iloc[i-1]
         if d > 0:
             if s < 0: break
             s += 1
@@ -39,7 +39,7 @@ def _streak(closes: pd.Series) -> int:
 
 def _wick_profile(row):
     o, c, h, l = row["open"], row["close"], row["high"], row["low"]
-    body = abs(c - o)
+    body  = abs(c - o)
     upper = max(0.0, h - max(o, c))
     lower = max(0.0, min(o, c) - l)
     return body, upper, lower
@@ -48,165 +48,220 @@ def _clip01(x: float) -> float:
     return float(max(0.0, min(1.0, x)))
 
 def _horizon_cfg(text: str):
-    if "Кратко" in text: return dict(look=60, trend=14, atr=14)
-    if "Средне" in text: return dict(look=120, trend=28, atr=14)
-    return dict(look=240, trend=56, atr=14)
+    # period: какую "завершенную" свечу брать для пивотов
+    if "Кратко" in text:  return dict(look=60, trend=14, atr=14, pivot_period="W-FRI")
+    if "Средне" in text:  return dict(look=120, trend=28, atr=14, pivot_period="W-FRI")
+    return dict(look=240, trend=56, atr=14, pivot_period="M")
 
-def _choose(seed: int, variants):
-    rng = random.Random(seed)
-    return rng.choice(list(variants))
+# ---------- Fibonacci pivots (скрытые) ----------
 
-# --- основная логика ---
+def _last_period_hlc(df: pd.DataFrame, rule: str):
+    # Берем предыдущий завершенный период: high/low/close
+    g = df.resample(rule).agg({"high":"max","low":"min","close":"last"}).dropna()
+    if len(g) < 2:
+        return None
+    row = g.iloc[-2]  # последняя ЗАКРЫТАЯ неделя/месяц
+    return float(row["high"]), float(row["low"]), float(row["close"])
+
+def _fib_pivots(H: float, L: float, C: float):
+    P = (H + L + C) / 3.0
+    d = H - L
+    R1 = P + 0.382 * d; R2 = P + 0.618 * d; R3 = P + 1.000 * d
+    S1 = P - 0.382 * d; S2 = P - 0.618 * d; S3 = P - 1.000 * d
+    return {"P":P,"R1":R1,"R2":R2,"R3":R3,"S1":S1,"S2":S2,"S3":S3}
+
+# ---------- основная логика ----------
 
 def analyze_asset(ticker: str, horizon: str):
     cli = PolygonClient()
     cfg = _horizon_cfg(horizon)
 
-    days = max(90, cfg["look"] * 2)
+    # Данные
+    days = max(90, cfg["look"]*2)
     df = cli.daily_ohlc(ticker, days=days)
     price = cli.last_trade_price(ticker)
 
     tail = df.tail(cfg["look"])
-    low = float(tail["low"].min()); high = float(tail["high"].max())
+    low  = float(tail["low"].min())
+    high = float(tail["high"].max())
     width = max(1e-9, high - low)
-    pos = (price - low) / width  # 0..1
+    pos   = (price - low) / width  # положение в коридоре 0..1
 
     closes = df["close"]
-    slope = _linreg_slope(closes.tail(cfg["trend"]).values)
+    slope  = _linreg_slope(closes.tail(cfg["trend"]).values)
     slope_norm = slope / max(1e-9, price)
-    atr_s = float(_atr_like(df, n=cfg["atr"]).iloc[-1])
-    atr_l = float(_atr_like(df, n=cfg["atr"] * 2).iloc[-1])
+    atr_s  = float(_atr_like(df, n=cfg["atr"]).iloc[-1])
+    atr_l  = float(_atr_like(df, n=cfg["atr"]*2).iloc[-1])
     vol_ratio = atr_s / max(1e-9, atr_l)
-    streak = _streak(closes)
+    streak    = _streak(closes)
 
     last = df.iloc[-1]
     body, upper, lower = _wick_profile(last)
-    long_upper = upper > body * 1.3 and upper > lower * 1.1
-    long_lower = lower > body * 1.3 and lower > upper * 1.1
+    long_upper = upper > body*1.3 and upper > lower*1.1
+    long_lower = lower > body*1.3 and lower > upper*1.1
 
-    prev_close = float(df["close"].iloc[-2])
-    today_open = float(df["open"].iloc[-1])
-    gap = today_open - prev_close
-    gap_rel = abs(gap) / max(1e-9, prev_close)
+    # Пивоты предыдущего периода
+    piv = None
+    hlc = _last_period_hlc(df, cfg["pivot_period"])
+    if hlc:
+        H, L, C = hlc
+        piv = _fib_pivots(H, L, C)
 
-    near_top = pos >= 0.7
-    near_bottom = pos <= 0.3
-    mid_zone = 0.45 < pos < 0.55
-    strong_up = slope_norm > 0.001 and vol_ratio > 1.05
-    strong_down = slope_norm < -0.001 and vol_ratio > 1.05
-    breakout_up = near_top and strong_up and (price >= high * 0.995)
-    breakout_dn = near_bottom and strong_down and (price <= low * 1.005)
+    # --- сценарные зоны (по пивотам) ---
+    # ничего не называем в UI, но внутри используем точные уровни
+    near_mid    = False
+    near_upper  = False
+    near_lower  = False
+    upper_ext   = False
+    lower_ext   = False
+
+    if piv:
+        P,R1,R2,R3,S1,S2,S3 = piv["P"],piv["R1"],piv["R2"],piv["R3"],piv["S1"],piv["S2"],piv["S3"]
+        buf = 0.25 * atr_s  # "вблизи уровня" — четверть дневной волатильности
+
+        near_mid   = abs(price - P)  <= buf
+        near_upper = abs(price - R1) <= buf
+        near_lower = abs(price - S1) <= buf
+        upper_ext  = (price >= R1 + buf)  # выше R1 заметно
+        lower_ext  = (price <= S1 - buf)  # ниже S1 заметно
+    else:
+        P = (high+low)/2  # fallback
+
+    # --- принятие решения ---
+    # 1) Пробой из зон (сильный импульс)
+    breakout_up = piv and (upper_ext and slope_norm > 0 and vol_ratio > 1.02)
+    breakout_dn = piv and (lower_ext and slope_norm < 0 and vol_ratio > 1.02)
+
+    # 2) Разворот от верхней/нижней кромки после "перегрева" (серия свечей, тени)
+    overheat_up   = streak >= 3 or long_upper
+    overheat_down = streak <= -3 or long_lower
 
     if breakout_up:
         action, scenario = "BUY", "breakout_up"
     elif breakout_dn:
         action, scenario = "SHORT", "breakout_dn"
-    elif near_top and not strong_up:
-        action, scenario = "SHORT", "fade_top"
-    elif near_bottom and not strong_down:
-        action, scenario = "BUY", "bounce_bottom"
-    elif mid_zone:
+    elif near_upper and overheat_up:
+        # пример из твоего ядра: длительный подъём + подход к "верхней зоне" → коррекция к области между верхом и серединой
+        action, scenario = "SHORT", "revert_from_top"
+    elif near_lower and overheat_down:
+        action, scenario = "BUY", "revert_from_bottom"
+    elif near_mid:
         action, scenario = "WAIT", "mid_range"
     else:
+        # Внутри диапазона идём по наклону
         action, scenario = ("BUY" if slope_norm >= 0 else "SHORT"), "trend_follow"
 
-    edge = abs(pos - 0.5) * 2
-    trn = _clip01(abs(slope_norm) * 1800)
-    vol = _clip01((vol_ratio - 0.9) / 0.6)
-    base = 0.48 + 0.25 * edge + 0.17 * trn + 0.10 * vol
+    # Уверенность (0.55–0.90)
+    edge = abs(pos-0.5)*2
+    trn  = _clip01(abs(slope_norm)*1800)
+    vol  = _clip01((vol_ratio-0.9)/0.6)
+    base = 0.50 + 0.22*edge + 0.16*trn + 0.10*vol
     if scenario == "mid_range": base -= 0.08
     conf = float(max(0.55, min(0.90, base)))
 
+    # Шаг уровней от текущей волатильности
     step = max(1e-6, atr_s)
 
-    if action == "BUY":
-        entry = price + step * 0.10 if scenario == "breakout_up" else (price - step * 0.15 if scenario == "trend_follow" else price - step * 0.20)
-        sl = price - step * 1.0
-        tp1, tp2, tp3 = price + step * 0.8, price + step * 1.6, price + step * 2.4
-        alt = "Если уйдёт ниже зоны покупателя — пропустить вход; ждать возврата и подтверждения сверху."
-    elif action == "SHORT":
-        entry = price - step * 0.10 if scenario == "breakout_dn" else (price + step * 0.15 if scenario == "trend_follow" else price + step * 0.20)
-        sl = price + step * 1.0
-        tp1, tp2, tp3 = price - step * 0.8, price - step * 1.6, price - step * 2.4
-        alt = "Если пробьёт верх и удержится — не гнаться; ждать возврата и признаки слабости у максимумов."
-    else:
+    # --- уровни по пивот-логике ---
+    # Стоп всегда за ближайшим "краем" + запас от волатильности.
+    if action == "SHORT":
+        if piv:
+            # short от верхней зоны → цели: 1) середина между верхом и серединой, 2) середина (P), 3) нижняя зона
+            upper_ref = R1 if scenario == "revert_from_top" else max(R1, price) if price > R1 else R1
+            mid_ref   = P
+            lower_ref = S1
+            entry = min(price, upper_ref - 0.15*step)  # не гонимся; берем после микро-отката
+            sl    = upper_ref + 0.60*step
+            tp1   = (upper_ref + mid_ref) / 2.0
+            tp2   = mid_ref
+            tp3   = (mid_ref + lower_ref) / 2.0
+        else:
+            entry = price + 0.15*step; sl = price + 1.0*step
+            tp1, tp2, tp3 = price - 0.8*step, price - 1.6*step, price - 2.4*step
+        alt = "Если протолкнёт выше и удержит — без погони; ждём возврата и признаков слабости выше."
+    elif action == "BUY":
+        if piv:
+            lower_ref = S1
+            mid_ref   = P
+            upper_ref = R1
+            if scenario == "breakout_up":
+                base_ref = R1
+                entry = price + 0.10*step
+                sl    = base_ref - 1.00*step
+                tp1   = R2 if "R2" in piv else price + 0.8*step
+                tp2   = (R2 + (piv.get("R3", R2) ))/2.0 if "R2" in piv else price + 1.6*step
+                tp3   = piv.get("R3", tp2 + 0.8*step)
+            else:
+                # от нижней зоны/по тренду снизу → цели: 1) середина между низом и серединой, 2) середина, 3) верхняя зона
+                entry = max(price, lower_ref + 0.15*step)
+                sl    = lower_ref - 0.60*step
+                tp1   = (lower_ref + mid_ref) / 2.0
+                tp2   = mid_ref
+                tp3   = (mid_ref + upper_ref) / 2.0
+        else:
+            entry = price - 0.15*step; sl = price - 1.0*step
+            tp1, tp2, tp3 = price + 0.8*step, price + 1.6*step, price + 2.4*step
+        alt = "Если продавят ниже и не вернут — не лезем; ждём возврата сверху и подтверждения."
+    else:  # WAIT
         entry = price
-        sl = price - step * 0.9
-        tp1, tp2, tp3 = price + step * 0.7, price + step * 1.4, price + step * 2.1
-        alt = "При уверенном пробое диапазона работаем по направлению после ретеста и подтверждения."
+        sl    = price - 0.9*step
+        tp1, tp2, tp3 = price + 0.7*step, price + 1.4*step, price + 2.1*step
+        alt = "На уверенном выходе из коридора — входим по направлению после возврата и подтверждения."
 
-    p1 = _clip01(0.58 + 0.27 * (conf - 0.55) / 0.35)
-    p2 = _clip01(0.44 + 0.21 * (conf - 0.55) / 0.35)
-    p3 = _clip01(0.28 + 0.13 * (conf - 0.55) / 0.35)
+    # Вероятности целей ~ от уверенности
+    p1 = _clip01(0.58 + 0.27*(conf-0.55)/0.35)
+    p2 = _clip01(0.44 + 0.21*(conf-0.55)/0.35)
+    p3 = _clip01(0.28 + 0.13*(conf-0.55)/0.35)
 
-    # Чипсы-контекст
+    # -------- «живой» текст и контекст-бейджи --------
     chips = []
-    if near_top: chips.append("возле зоны продавца")
-    if near_bottom: chips.append("возле зоны покупателя")
-    if gap_rel > 0.012: chips.append("гэп " + ("вверх" if gap > 0 else "вниз"))
-    if long_upper: chips.append("длинные тени сверху")
-    if long_lower: chips.append("длинные тени снизу")
-    if streak >= 3: chips.append(f"{streak} зелёных подряд")
-    if streak <= -3: chips.append(f"{abs(streak)} красных подряд")
+    if near_upper: chips.append("верхняя кромка")
+    if near_lower: chips.append("нижняя кромка")
+    if near_mid:   chips.append("середина диапазона")
     if vol_ratio > 1.05: chips.append("волатильность растёт")
     if vol_ratio < 0.95: chips.append("волатильность сжимается")
+    if streak >= 3: chips.append(f"{streak} зелёных подряд")
+    if streak <= -3: chips.append(f"{abs(streak)} красных подряд")
+    if long_upper: chips.append("тени сверху")
+    if long_lower: chips.append("тени снизу")
 
-    # «Живые» фразы
     seed = int(hashlib.sha1(f"{ticker}{df.index[-1].date()}".encode()).hexdigest(), 16) % (2**32)
+    rng  = random.Random(seed)
+
     if action == "BUY":
-        lead = _choose(seed, [
-            "Снизу чувствуется спрос — ловим откат и реакцию.",
-            "Покупатели рядом, цена подпирается снизу.",
-            "Низ рядом, покупатель активен — вход на возврате."
+        lead = rng.choice([
+            "Снизу чувствуется спрос — беру откат и реакцию.",
+            "Покупатели рядом, цена подпирается — работаем по ходу.",
+            "Низ близко, спрос живой — входим после возврата."
         ])
     elif action == "SHORT":
-        lead = _choose(seed, [
+        lead = rng.choice([
             "Сверху тяжело — ищем слабость у кромки.",
-            "Цена под продавцом — сверху давят.",
-            "Верх близко — работаем от отказа."
+            "Под потолком есть продавец — работаю от отказа.",
+            "Верх близко, импульс выдыхается — готовлю шорт."
         ])
     else:
-        lead = _choose(seed, [
-            "Середина диапазона. Преимущества нет.",
-            "Рынок посередине — спешить некуда.",
-            "Баланс. Смотрим, куда толкнут."
+        lead = rng.choice([
+            "Середина. Преимущества нет — без входа.",
+            "Баланс сил, жду шага цены.",
+            "Внутри коридора — спешить некуда."
         ])
 
     add = []
-    if long_upper:
-        add.append(_choose(seed+5, [
-            "Длинные хвосты сверху — продавец отвечает.",
-            "Сверху были выносы — импульс выдыхается.",
-            "Под верхом оставили шипы — осторожно с погоней."
-        ]))
-    if long_lower:
-        add.append(_choose(seed+6, [
-            "Снизу хвосты — защитили.",
-            "Прокалывали вниз и откупили — живой спрос.",
-            "Дно прокалывали, закрыли выше — бычий намёк."
-        ]))
-    if gap_rel > 0.012:
-        add.append(_choose(seed+7 if gap>0 else seed+8, [
-            "Гэп держат — важно не сдуться.",
-            "Разрыв по цене — следим за удержанием.",
-            "После разрыва возвраты могут быть резкими."
-        ]))
+    if scenario == "breakout_up":
+        add.append("Импульс вверх, работаем по движению — после короткой паузы.")
+    if scenario == "breakout_dn":
+        add.append("Импульс вниз, не ловлю нож — беру после отката.")
+    if scenario in ("revert_from_top","revert_from_bottom"):
+        add.append("Игра от края: сначала реакция, потом вход.")
+    if scenario == "trend_follow":
+        add.append("Идём за текущим ходом — вход не догоняя, а на откате.")
 
-    if "breakout" in scenario:
-        add.append("Импульс сильный, работаем по движению — после короткой паузы.")
-    elif scenario == "trend_follow":
-        add.append("Идём за текущим ходом — вход на откате, не догоняя.")
-    elif scenario in ("fade_top", "bounce_bottom"):
-        add.append("Играем от края диапазона — ждём реакцию и только потом входим.")
-    elif scenario == "mid_range":
-        add.append("Здесь у самой цены ловить нечего — ждём шага рынка.")
-
-    note_text = " ".join([lead] + add[:2])  # не перегружаем
-    note_html = f"<div style='margin-top:10px; opacity:0.95;'>{note_text}</div>"
+    note_html = f"<div style='margin-top:10px; opacity:0.95;'>{' '.join([lead]+add[:2])}</div>"
 
     return {
         "last_price": float(price),
-        "recommendation": {"action": action, "confidence": float(round(conf, 4))},
+        "recommendation": {"action": action, "confidence": float(round(conf,4))},
         "levels": {"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3)},
         "probs": {"tp1": float(p1), "tp2": float(p2), "tp3": float(p3)},
         "context": chips,
