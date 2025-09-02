@@ -25,7 +25,7 @@ class PolygonClient:
 
     def daily_ohlc(self, ticker: str, days: int = 365):
         # Use aggregates
-        url = f"{API}/v2/aggs/ticker/{ticker.upper()}/range/1/day/"
+        url = f"{API}/v2/aggs/ticker/{ticker.upper()}/range/1/day/{frm_.isoformat()}/{to_.isoformat()}"
         # Backfill from today-days to today
         import datetime as dt
         to_ = dt.date.today()
