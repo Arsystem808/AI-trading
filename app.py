@@ -1,47 +1,58 @@
-import os
-import datetime as dt
-import pandas as pd
 import streamlit as st
-from dotenv import load_dotenv
+import pandas as pd
+import numpy as np
+import datetime as dt
+from core.strategy import analyze_asset
 
-from core.data import fetch_polygon_ohlc, date_range_days
-from core.strategy import analyze, HORIZONS
-from core.textgen import build_narrative
+st.set_page_config(page_title="CapinteL‑Q — трейд‑ИИ (MVP)", page_icon="📈", layout="centered")
 
-load_dotenv()
-
-st.set_page_config(page_title="CapinteL-Q — MVP", page_icon="📈", layout="centered")
-
-st.title("CapinteL‑Q — трейд‑ИИ (MVP)")
+st.markdown("# CapinteL‑Q — трейд‑ИИ (MVP)")
 st.caption("Говорит, как опытный трейдер. Без раскрытия внутренней методологии.")
 
-with st.sidebar:
-    st.header("Параметры")
-    symbol = st.text_input("Тикер (Polygon, например AAPL, TSLA, BTCUSD):", "AAPL").upper().strip()
-    horizon_key = st.radio("Горизонт анализа:", options=list(HORIZONS.keys()), format_func=lambda x: HORIZONS[x].name, index=0)
-    days_back = st.slider("Сколько дней истории загрузить:", 180, 1200, 540, step=30)
-    run_btn = st.button("Проанализировать", type="primary")
-    st.markdown("---")
-    show_dev = st.toggle("⚙️ Dev-панель (только для тестов)", value=False, help="Служебные метрики. Не показывать клиентам.")
-    st.caption("Источник данных: Polygon.io")
+# --- Inputs ---
+col1, col2 = st.columns([2,1])
+with col1:
+    ticker = st.text_input("Тикер", value="AAPL").strip().upper()
+with col2:
+    horizon = st.selectbox(
+        "Горизонт",
+        ["Краткосрок (1–5 дней)", "Среднесрок (1–4 недели)", "Долгосрок (1–6 месяцев)"],
+        index=1
+    )
 
-if run_btn:
+run = st.button("Проанализировать", type="primary")
+
+if run:
     try:
-        start, end = date_range_days(days_back)
-        with st.spinner("Загружаю данные с Polygon…"):
-            df = fetch_polygon_ohlc(symbol, start=start, end=end, timespan="day", multiplier=1)
-        st.success(f"Данные получены: {len(df)} баров (дневных).")
-        
-        res = analyze(symbol, df, horizon_key=horizon_key)
-        txt = build_narrative(symbol, HORIZONS[horizon_key].name, res)
-        st.markdown(txt)
-        
-        if show_dev:
-            with st.expander("Показать служебные метрики (DEV)"):
-                st.json(res["debug"])
-                st.dataframe(df.tail(30))
+        result = analyze_asset(ticker=ticker, horizon=horizon)
+        st.subheader(f"{ticker} — {horizon}")
+        if result.get("background"):
+            st.write("**Фон:** " + result["background"])
+        # Recommendation block (no confidence scale, no bars mentions)
+        rec = result.get("recommendation", {})
+        action = rec.get("action", "WAIT")
+        st.write(f"**Рекомендация:** {action}")
+        # Levels
+        lv = result.get("levels", {})
+        if lv:
+            st.write(
+                f"**План:** вход {lv.get('entry_str','—')}; "
+                f"цели {lv.get('tp1_str','—')}" + (f", {lv.get('tp2_str','—')}" if lv.get('tp2_str') else "") +
+                f"; стоп {lv.get('sl_str','—')}."
+            )
+
+        # Alternative scenario (no word 'Альт', no repeated labels)
+        alt = result.get("alternative")
+        if alt:
+            st.write(f"**Если пойдёт против базового сценария:** {alt}")
+
+        comment = result.get("comment")
+        if comment:
+            st.write("**Комментарий:** " + comment)
+
+        st.caption("Это не инвестиционная рекомендация. Решения вы принимаете самостоятельно.")
     except Exception as e:
-        st.error(str(e))
-        st.info("Проверьте тикер и наличие POLYGON_API_KEY в .env")
+        st.error(f"Ошибка анализа: {e}")
+        st.stop()
 else:
-    st.info("Введите тикер, выберите горизонт и нажмите «Проанализировать».")
+    st.info("Введите тикер и нажмите «Проанализировать».")
