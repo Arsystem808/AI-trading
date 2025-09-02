@@ -1,8 +1,10 @@
+
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Any
 import pandas as pd
 import numpy as np
+
 from .utils import fib_pivots, last_consecutive_run, pct_diff, clamp
 from .indicators import (
     heikin_ashi, macd_hist, rsi_wilder, atr_wilder,
@@ -13,27 +15,61 @@ from .data import prev_period_hlc_from_daily
 @dataclass
 class HorizonParams:
     name: str
-    period: str  # 'W'/'M'/'Y' for pivots
+    period: str  # 'W'/'M'/'Y'
     ha_series_min: int
     macd_streak_min: int
-    tol: float   # proximity tolerance for R2/S2 checks
+    tol: float
     atr_stop_mult: float
     atr_tp1_mult: float
     atr_tp2_mult: float
+    alt_dist_cap: float  # допустимая удалённость альтернативного входа в ATR
 
 HORIZONS: Dict[str, HorizonParams] = {
-    "ST": HorizonParams("Краткосрок (1–5 дней)", "W", 4, 4, 0.008, 0.8, 0.6, 1.1),
-    "MID": HorizonParams("Среднесрок (1–4 недели)", "M", 5, 6, 0.010, 1.0, 0.8, 1.3),
-    "LT": HorizonParams("Долгосрок (1–6 месяцев)", "Y", 6, 8, 0.012, 1.3, 1.2, 2.0),
+    "ST":  HorizonParams("Краткосрок (1–5 дней)",      "W", 4, 4, 0.008, 0.8, 0.6, 1.1, 1.2),
+    "MID": HorizonParams("Среднесрок (1–4 недели)",    "M", 5, 6, 0.010, 1.0, 0.8, 1.3, 1.8),
+    "LT":  HorizonParams("Долгосрок (1–6 месяцев)",    "Y", 6, 8, 0.012, 1.3, 1.2, 2.0, 2.5),
 }
 
 def _mid(a: float, b: float) -> float:
     return (a + b) / 2.0
 
+def _sanitize_targets(action: str, entry, tp1, tp2, atr, up_hint, dn_hint, hp) -> tuple:
+    """
+    Гарантирует корректное направление целей относительно entry.
+    up_hint/dn_hint — ориентиры «вверх»/«вниз» (например, середины диапазонов).
+    """
+    if entry is None:
+        return entry, tp1, tp2
+    if action.startswith("LONG"):
+        if tp1 is None: tp1 = entry + hp.atr_tp1_mult * atr
+        if tp2 is None: tp2 = entry + hp.atr_tp2_mult * atr
+        if tp1 <= entry: tp1 = max(entry + hp.atr_tp1_mult * atr, up_hint)
+        if tp2 <= tp1:   tp2 = max(tp1 + 0.7 * atr, up_hint + 0.5 * atr)
+    elif action.startswith("SHORT"):
+        if tp1 is None: tp1 = entry - hp.atr_tp1_mult * atr
+        if tp2 is None: tp2 = entry - hp.atr_tp2_mult * atr
+        if tp1 >= entry: tp1 = min(entry - hp.atr_tp1_mult * atr, dn_hint)
+        if tp2 >= tp1:   tp2 = min(tp1 - 0.7 * atr, dn_hint - 0.5 * atr)
+    return entry, tp1, tp2
+
+def _fix_stop_for_direction(action: str, entry, sl, atr) -> float:
+    if entry is None or sl is None:
+        return sl
+    if action.startswith("LONG") and sl >= entry:
+        return entry - 0.8 * atr
+    if action.startswith("SHORT") and sl <= entry:
+        return entry + 0.8 * atr
+    return sl
+
+def _alt_is_too_far(alt_entry: float, last_close: float, atr: float, cap_atr: float) -> bool:
+    if alt_entry is None or atr <= 0:
+        return True
+    return abs(alt_entry - last_close) > cap_atr * atr
+
 def analyze(symbol: str, df_daily: pd.DataFrame, horizon_key: str = "ST") -> Dict[str, Any]:
     hp = HORIZONS[horizon_key]
 
-    # === HA / MACD / RSI / ATR ===
+    # === Series & indicators ===
     ha = heikin_ashi(df_daily)
     ha_green = (ha['ha_close'] >= ha['ha_open'])
     ha_run = last_consecutive_run(ha_green)
@@ -51,26 +87,26 @@ def analyze(symbol: str, df_daily: pd.DataFrame, horizon_key: str = "ST") -> Dic
     slowing = is_hist_slowing(hist)
     div = recent_divergence(df_daily['close'], rsi)
 
-    # === Pivots из предыдущего периода ===
+    # === Pivots из предыдущего периода (цены в вычислениях, но в тексте не упоминаем уровни) ===
     ph, pl, pc = prev_period_hlc_from_daily(df_daily, period=hp.period)
     piv = fib_pivots(ph, pl, pc)
 
-    # Близость к ключевым зонам
+    # Близость к опорным зонам (без упоминаний в тексте)
     near_R2 = (last_close >= piv.R2) or (pct_diff(last_close, piv.R2) <= hp.tol)
     near_S2 = (last_close <= piv.S2) or (pct_diff(last_close, piv.S2) <= hp.tol)
     near_R3 = (last_close >= piv.R3) or (pct_diff(last_close, piv.R3) <= hp.tol)
     near_S3 = (last_close <= piv.S3) or (pct_diff(last_close, piv.S3) <= hp.tol)
 
-    # Ориентиры середины
-    mid_PR1 = _mid(piv.P, piv.R1)
-    mid_PS1 = _mid(piv.P, piv.S1)
+    # Ориентиры «середины» (для целей и хелперов)
+    up_hint = _mid(piv.P, piv.R1)
+    dn_hint = _mid(piv.P, piv.S1)
 
     green_series = ha_green.iloc[-1] and ha_run >= hp.ha_series_min
     red_series   = (not ha_green.iloc[-1]) and ha_run >= hp.ha_series_min
     macd_green_ok = hist.iloc[-1] >= 0 and pos_streak >= hp.macd_streak_min
     macd_red_ok   = hist.iloc[-1] <= 0 and neg_streak >= hp.macd_streak_min
 
-    # === Уверенность ===
+    # === Confidence ===
     confidence = 0.50
     if green_series or red_series: confidence += 0.10
     if macd_green_ok or macd_red_ok: confidence += 0.10
@@ -81,7 +117,7 @@ def analyze(symbol: str, df_daily: pd.DataFrame, horizon_key: str = "ST") -> Dic
     if (near_S2 or near_S3) and ha_turn_up:   confidence += 0.08
     confidence = clamp(confidence, 0.35, 0.90)
 
-    # === Выходные поля ===
+    # === Outputs ===
     action = "WAIT"
     entry = tp1 = tp2 = sl = None
     alt_action = "WAIT"
@@ -89,41 +125,47 @@ def analyze(symbol: str, df_daily: pd.DataFrame, horizon_key: str = "ST") -> Dic
     alt_note = ""
     commentary = ""
 
-    # === 1) Верхняя кромка (перегрев) ===
+    # === Верхняя зона (перегрев) ===
     if (near_R3 or near_R2) and (green_series or macd_green_ok or slowing):
         if ha_turn_down or (div == 'bearish') or (slowing and not ha_green.iloc[-1]):
-            # Основной сценарий — SHORT
             action = "SHORT"
             entry = last_close
+            # стоп за «потолком» + ATR
             if near_R3:
                 sl = piv.R3 + hp.atr_stop_mult * last_atr
                 tp1 = piv.R2
                 tp2 = piv.P
             else:
                 sl = piv.R2 + hp.atr_stop_mult * last_atr
-                tp1 = _mid(piv.P, piv.S1)
+                tp1 = dn_hint
                 tp2 = piv.S1
-            commentary = "У верхней кромки видны признаки усталости и слома — играем от коррекции вниз."
+            commentary = "Сверху видны признаки усталости — берём откат вниз."
             alt_action = "WAIT"
-            alt_note = "Если вынесут выше — лучше переждать и переоценить у следующей границы."
+            alt_note = "Если случится резкий укол вверх — лучше переждать и переоценить."
         else:
-            # Подтверждения мало — даём конкретную агрессивную альтернативу
             action = "WAIT"
-            commentary = "Импульс наверху натянут, но подтверждений разворота мало — разумнее подождать."
-            alt_action = "SHORT (агрессивно)"
+            commentary = "Наверху импульс натянут, но чётких подтверждений разворота пока мало."
+            # Альтернатива: агрессивный SHORT «от отката сверху»
+            alt_action = "SHORT (агрессивно, от отката сверху)"
+            # Альтернативный вход опираем на текущую цену, не уводим слишком далеко
             if near_R3:
-                alt_entry = piv.R3 - 0.2 * last_atr
-                alt_sl    = piv.R3 + hp.atr_stop_mult * last_atr
+                alt_entry = max(last_close, piv.R3 - 0.2 * last_atr)
+                alt_sl    = (piv.R3 + hp.atr_stop_mult * last_atr)
                 alt_tp1   = piv.R2
                 alt_tp2   = piv.P
             else:
-                alt_entry = piv.R2 - 0.2 * last_atr
-                alt_sl    = piv.R2 + hp.atr_stop_mult * last_atr
-                alt_tp1   = _mid(piv.P, piv.S1)
+                alt_entry = max(last_close, piv.R2 - 0.2 * last_atr)
+                alt_sl    = (piv.R2 + hp.atr_stop_mult * last_atr)
+                alt_tp1   = dn_hint
                 alt_tp2   = piv.S1
-            alt_note = "Размер позиции уменьшить; работаем от отказа сверху."
-
-    # === 2) Нижняя кромка (перепроданность) ===
+            # Если слишком далеко от текущей — убираем альтернативу
+            if _alt_is_too_far(alt_entry, last_close, last_atr, hp.alt_dist_cap):
+                alt_action = "WAIT"
+                alt_entry = alt_tp1 = alt_tp2 = alt_sl = None
+                alt_note = "Альтернативный вход слишком далеко от цены — лучше дождаться реакции ближе."
+            else:
+                alt_note = "Размер позиции умеренный; работаем от отката сверху, цены указаны."
+    # === Нижняя зона (перепроданность) ===
     elif (near_S3 or near_S2) and (red_series or macd_red_ok or slowing):
         if ha_turn_up or (div == 'bullish') or (slowing and ha_green.iloc[-1]):
             action = "LONG"
@@ -134,84 +176,75 @@ def analyze(symbol: str, df_daily: pd.DataFrame, horizon_key: str = "ST") -> Dic
                 tp2 = piv.P
             else:
                 sl = piv.S2 - hp.atr_stop_mult * last_atr
-                tp1 = _mid(piv.P, piv.R1)
+                tp1 = up_hint
                 tp2 = piv.R1
-            commentary = "У основания видны признаки выдохшегося снижения — берём восстановление вверх."
+            commentary = "Снизу признаки выдохшегося снижения — берём восстановление вверх."
             alt_action = "WAIT"
-            alt_note = "Если продавят ещё раз вниз, дождаться остановки и подтверждения спроса."
+            alt_note = "Если будет ещё один укол вниз — дождаться остановки."
         else:
             action = "WAIT"
-            commentary = "Внизу есть признаки усталости, но подтверждений разворота мало — не торопимся."
-            alt_action = "LONG (аккуратно)"
+            commentary = "Внизу намёки на разворот есть, но подтверждений мало."
+            alt_action = "LONG (аккуратно, от отката снизу)"
             if near_S3:
-                alt_entry = piv.S3 + 0.2 * last_atr
-                alt_sl    = piv.S3 - hp.atr_stop_mult * last_atr
+                alt_entry = min(last_close, piv.S3 + 0.2 * last_atr)
+                alt_sl    = (piv.S3 - hp.atr_stop_mult * last_atr)
                 alt_tp1   = piv.S2
                 alt_tp2   = piv.P
             else:
-                alt_entry = piv.S2 + 0.2 * last_atr
-                alt_sl    = piv.S2 - hp.atr_stop_mult * last_atr
-                alt_tp1   = _mid(piv.P, piv.R1)
+                alt_entry = min(last_close, piv.S2 + 0.2 * last_atr)
+                alt_sl    = (piv.S2 - hp.atr_stop_mult * last_atr)
+                alt_tp1   = up_hint
                 alt_tp2   = piv.R1
-            alt_note = "Лучше дождаться отказа вниз и подтверждения спроса."
-
-    # === 3) Середина диапазона — вместо «пустого» WAIT даём наклон ===
+            if _alt_is_too_far(alt_entry, last_close, last_atr, hp.alt_dist_cap):
+                alt_action = "WAIT"
+                alt_entry = alt_tp1 = alt_tp2 = alt_sl = None
+                alt_note = "Альтернативный вход слишком далеко — ждём цены ближе."
+            else:
+                alt_note = "Входим от отката снизу небольшим объёмом; цены указаны."
+    # === Середина ===
     else:
         tilt_up = (pos_streak > neg_streak and ha_green.iloc[-1])
         tilt_dn = (neg_streak > pos_streak and not ha_green.iloc[-1])
-
         if tilt_up:
             action = "LONG (консервативно)"
             entry = last_close
             sl = entry - hp.atr_stop_mult * last_atr
-            tp1 = _mid(piv.P, piv.R1)
+            tp1 = up_hint
             tp2 = piv.R1
-            commentary = "Преимущества небольшие, но спрос выглядит сильнее — берём аккуратно с близкими целями."
-            alt_action = "SHORT от отказа у R1"
-            alt_entry  = piv.R1 - 0.1 * last_atr
-            alt_sl     = piv.R1 + hp.atr_stop_mult * last_atr
-            alt_tp1    = mid_PR1
-            alt_tp2    = piv.P
-
+            commentary = "Перевес небольшой, но спрос выглядит сильнее — берём аккуратно с близкими целями."
+            alt_action = "SHORT (от отката сверху)"
+            alt_entry  = last_close + 0.3 * last_atr
+            alt_sl     = alt_entry + hp.atr_stop_mult * last_atr
+            alt_tp1    = _mid(piv.P, piv.S1)
+            alt_tp2    = piv.S1
         elif tilt_dn:
             action = "SHORT (консервативно)"
             entry = last_close
             sl = entry + hp.atr_stop_mult * last_atr
-            tp1 = _mid(piv.P, piv.S1)
+            tp1 = dn_hint
             tp2 = piv.S1
-            commentary = "Преимущества на стороне продавцов — работаем аккуратно, цели близкие."
-            alt_action = "LONG от отказа у S1"
-            alt_entry  = piv.S1 + 0.1 * last_atr
-            alt_sl     = piv.S1 - hp.atr_stop_mult * last_atr
-            alt_tp1    = mid_PS1
-            alt_tp2    = piv.P
-
+            commentary = "Небольшой перевес за продавцами — работаем аккуратно."
+            alt_action = "LONG (от отката снизу)"
+            alt_entry  = last_close - 0.3 * last_atr
+            alt_sl     = alt_entry - hp.atr_stop_mult * last_atr
+            alt_tp1    = _mid(piv.P, piv.R1)
+            alt_tp2    = piv.R1
         else:
             action = "WAIT"
-            commentary = "Цена в середине коридора — явного перевеса нет. Лучше дождаться реакции у сильных зон."
-            alt_action = "Триггерный вход при пробое"
-            alt_note = (
-                f"При выходе выше ≈ {piv.R1:.2f} — смотреть вверх к {piv.R2:.2f}; "
-                f"при провале ниже ≈ {piv.S1:.2f} — смотреть вниз к {piv.S2:.2f}. "
-                f"Стопы — за пробитым уровнем ~{hp.atr_stop_mult:.2f}×ATR."
-            )
+            commentary = "Середина коридора — явного перевеса нет. Ждём реакции рядом с ценой."
+            alt_action = "Триггерный вход при выходе из коридора"
+            alt_note = "Сценарий: при движении вверх/вниз к ближайшей границе — смотреть на откат и реакцию; входить только после подтверждения."
+            alt_entry = alt_tp1 = alt_tp2 = alt_sl = None
 
-    # sanity: корректные стопы относительно входа
-    def fix_long(entry, sl):
-        if entry is None or sl is None: return sl
-        return sl if sl < entry else entry - 0.8 * last_atr
-    def fix_short(entry, sl):
-        if entry is None or sl is None: return sl
-        return sl if sl > entry else entry + 0.8 * last_atr
-
-    if action.startswith("LONG"):
-        sl = fix_long(entry, sl)
-    if action.startswith("SHORT"):
-        sl = fix_short(entry, sl)
+    # === Direction sanity ===
+    entry, tp1, tp2 = _sanitize_targets(action, entry, tp1, tp2, last_atr, up_hint, dn_hint, hp)
+    sl = _fix_stop_for_direction(action, entry, sl, last_atr)
     if alt_action.startswith("LONG"):
-        alt_sl = fix_long(alt_entry if alt_entry else last_close, alt_sl)
+        alt_entry, alt_tp1, alt_tp2 = _sanitize_targets("LONG", alt_entry, alt_tp1, alt_tp2, last_atr, up_hint, dn_hint, hp)
+        alt_sl = _fix_stop_for_direction("LONG", alt_entry if alt_entry else last_close, alt_sl, last_atr)
     if alt_action.startswith("SHORT"):
-        alt_sl = fix_short(alt_entry if alt_entry else last_close, alt_sl)
+        alt_entry, alt_tp1, alt_tp2 = _sanitize_targets("SHORT", alt_entry, alt_tp1, alt_tp2, last_atr, up_hint, dn_hint, hp)
+        alt_sl = _fix_stop_for_direction("SHORT", alt_entry if alt_entry else last_close, alt_sl, last_atr)
 
     debug = {
         "last_close": last_close,
