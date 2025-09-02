@@ -12,26 +12,27 @@ def confidence_to_words(c: float) -> str:
     if c >= 0.4: return "ниже среднего"
     return "низкая"
 
+MOODS = [
+    "Картина простая: импульс выдохся у «потолка».",
+    "Движение замедляется — покупатели берут паузу.",
+    "Цена возле ключевой границы: обычно здесь рынок делает передышку.",
+    "Снизу близкая опора, сверху — давление. Баланс хрупкий.",
+    "Последняя волна была резкой — логично ждать коррекцию/перезагрузку."
+]
+
+ALT_LEADS = [
+    "Альтернативно:",
+    "План Б:",
+    "Если рынок дёрнет в другую сторону:",
+    "Консервативно можно так:"
+]
+
 def build_narrative(symbol: str, horizon_name: str, rec: Dict[str, Any]) -> str:
-    # rec keys: action, entry, tp1, tp2, sl, alt_action, alt_note, commentary, confidence
-    mood_openers = [
-        "Картина простая: импульс выдохся у «потолка».",
-        "Движение замедляется — покупатели берут паузу.",
-        "Цена у ключевой границы, где часто начинается перезагрузка.",
-        "Снизу поддержка близко, сверху — давление, рынок сомневается.",
-        "Последний отрезок был резким — логично ждать откат/передышку."
-    ]
-    alt_leads = [
-        "Альтернативно, если рынок ещё раз дёрнет против нас —",
-        "Если ошибаемся и импульс продолжится —",
-        "При пробое ближайшего рубежа возможен быстрый вынос —",
-        "Консервативный вариант —"
-    ]
     c_words = confidence_to_words(rec.get("confidence", 0.5))
     lines = []
     lines.append(f"**{symbol} — {horizon_name}**")
     lines.append("")
-    lines.append(random.choice(mood_openers))
+    lines.append(random.choice(MOODS))
     lines.append("")
     lines.append("**Рекомендация:** " + rec['action'])
     if rec.get("entry"):
@@ -44,7 +45,16 @@ def build_narrative(symbol: str, horizon_name: str, rec: Dict[str, Any]) -> str:
         lines.append(f"• Стоп: {fmt_price(rec['sl'])}")
     lines.append(f"• Уверенность: {c_words} ({rec.get('confidence', 0.5):.2f})")
     lines.append("")
-    lines.append("**Альтернатива:** " + rec.get("alt_action","WAIT"))
+    lines.append("**" + random.choice(ALT_LEADS) + "** " + rec.get("alt_action","WAIT"))
+    if rec.get("alt_entry") or rec.get("alt_tp1") or rec.get("alt_tp2") or rec.get("alt_sl"):
+        if rec.get("alt_entry"):
+            lines.append(f"• Альт. вход: {fmt_price(rec['alt_entry'])}")
+        if rec.get("alt_tp1"):
+            lines.append(f"• Альт. цель 1: {fmt_price(rec['alt_tp1'])}")
+        if rec.get("alt_tp2"):
+            lines.append(f"• Альт. цель 2: {fmt_price(rec['alt_tp2'])}")
+        if rec.get("alt_sl"):
+            lines.append(f"• Альт. стоп: {fmt_price(rec['alt_sl'])}")
     if rec.get("alt_note"):
         lines.append("— " + rec["alt_note"])
     lines.append("")
