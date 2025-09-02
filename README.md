@@ -6,7 +6,7 @@
 ## Быстрый старт
 1. Создайте файл `.env` в корне:
 ```
-POLYGON_API_KEY=your_api_key_here
+POLYGON_API_KEY=ooSjpJAULw4VXxsY28ck7DQST7i13kcG
 ```
 2. Установите зависимости и запустите:
 ```
