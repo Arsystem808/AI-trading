@@ -1,6 +1,5 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Optional, Dict, Any
 import numpy as np
 import pandas as pd
 
@@ -15,7 +14,6 @@ class PivotLevels:
     S3: float
 
 def fib_pivots(prev_high: float, prev_low: float, prev_close: float) -> PivotLevels:
-    # Fibonacci pivot set
     P = (prev_high + prev_low + prev_close) / 3.0
     rng = prev_high - prev_low
     R1 = P + 0.382 * rng
@@ -27,7 +25,6 @@ def fib_pivots(prev_high: float, prev_low: float, prev_close: float) -> PivotLev
     return PivotLevels(P, R1, R2, R3, S1, S2, S3)
 
 def last_consecutive_run(series_bool: pd.Series) -> int:
-    # length of the latest run of True or False, preserving the last value
     if series_bool.empty:
         return 0
     last_val = series_bool.iloc[-1]
@@ -40,9 +37,9 @@ def last_consecutive_run(series_bool: pd.Series) -> int:
     return cnt
 
 def pct_diff(a: float, b: float) -> float:
-    if b == 0: 
+    if b == 0:
         return np.inf
     return abs(a - b) / abs(b)
 
-def between(x, a, b) -> bool:
-    return min(a, b) <= x <= max(a, b)
+def clamp(x: float, lo: float, hi: float) -> float:
+    return float(max(lo, min(hi, x)))
