@@ -7,9 +7,45 @@ from dotenv import load_dotenv
 from core.strategy import analyze_asset
 
 load_dotenv()
-st.set_page_config(page_title="CapinteL-Q — трейд-ИИ (MVP)", page_icon="📈", layout="centered")
-st.markdown("<h1 style='margin-bottom:0.2rem;'>CapinteL-Q — трейд-ИИ (MVP)</h1>", unsafe_allow_html=True)
-st.caption("")
+
+# =====================
+# Arxora BRANDING (renamed + favicon + header banner)
+# =====================
+st.set_page_config(page_title="Arxora — трейд-ИИ (MVP)",
+                   page_icon="assets/arxora_favicon_512.png",
+                   layout="centered")
+
+def render_arxora_header():
+    hero_path = "assets/arxora_logo_hero.png"  # опционально: баннер (фиолетовый/чёрный)
+    if os.path.exists(hero_path):
+        st.image(hero_path, use_column_width=True)
+    else:
+        # Фоллбек без картинки, в том же стиле
+        PURPLE = "#5B5BF7"; BLACK = "#0B0D0E"
+        st.markdown(
+            f"""
+            <div style="border-radius:8px;overflow:hidden;
+                        box-shadow:0 0 0 1px rgba(0,0,0,.06),0 12px 32px rgba(0,0,0,.18);">
+              <div style="background:{PURPLE};padding:28px 16px;">
+                <div style="max-width:1120px;margin:0 auto;">
+                  <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
+                              color:#fff;font-weight:700;letter-spacing:.4px;
+                              font-size:clamp(36px,7vw,72px);line-height:1.05;">
+                    Arxora
+                  </div>
+                </div>
+              </div>
+              <div style="background:{BLACK};padding:12px 16px 16px 16px;">
+                <div style="max-width:1120px;margin:0 auto;">
+                  <div style="color:#fff;font-size:clamp(16px,2.4vw,28px);opacity:.92;">trade smarter.</div>
+                </div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+render_arxora_header()
 
 # =====================
 # ТВОИ ФРАЗЫ (просто и профессионально)
@@ -111,6 +147,23 @@ def render_stopline(levels):
     return line.format(sl=_fmt(levels["sl"]), risk_pct=compute_risk_pct(levels))
 
 # =====================
+# Crypto ticker normalizer (X:BTCUSD / BINANCE:ETHUSDT / BTCUSDT / ETHUSD -> Yahoo style)
+# =====================
+def normalize_to_yf(symbol: str) -> str:
+    """Понимает X:BTCUSD, BINANCE:ETHUSDT, BTCUSDT, ETHUSD и т.п.
+    Возвращает BTC-USD/ETH-USD. Для обычных тикеров (AAPL) — без изменений.
+    """
+    s = (symbol or "").strip().upper().replace(" ", "")
+    for pref in ("X:", "CRYPTO:", "BINANCE:", "COINBASE:", "KRAKEN:", "BYBIT:", "HUOBI:", "OKX:"):
+        if s.startswith(pref):
+            s = s[len(pref):]
+    if s.endswith("USDT"):
+        s = s[:-4] + "USD"
+    if len(s) >= 6 and s.endswith("USD"):
+        return s[:-3] + "-USD"
+    return s
+
+# =====================
 # UI helpers
 # =====================
 def card(title, value, sub=None, color=None):
@@ -133,13 +186,17 @@ def card(title, value, sub=None, color=None):
 # =====================
 col1, col2 = st.columns([2,1])
 with col1:
-    ticker = st.text_input("Тикер", value="AAPL").strip().upper()
+    ticker_input = st.text_input("Тикер", value="AAPL", placeholder="Примеры: AAPL, TSLA, X:BTCUSD, BINANCE:ETHUSDT")
+    ticker = ticker_input.strip().upper()
 with col2:
     horizon = st.selectbox(
         "Горизонт",
         ["Краткосрок (1–5 дней)", "Среднесрок (1–4 недели)", "Долгосрок (1–6 месяцев)"],
         index=1
     )
+
+# Нормализация тикера под загрузчик данных (если нужно для крипты)
+ticker_norm = normalize_to_yf(ticker)
 
 run = st.button("Проанализировать", type="primary")
 
@@ -148,7 +205,8 @@ run = st.button("Проанализировать", type="primary")
 # =====================
 if run:
     try:
-        out = analyze_asset(ticker=ticker, horizon=horizon)
+        # Подставляем нормализованный тикер (для крипты), для акций/ETF он не меняется
+        out = analyze_asset(ticker=ticker_norm, horizon=horizon)
 
         # Большая цена
         st.markdown(
