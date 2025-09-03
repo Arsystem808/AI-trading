@@ -8,24 +8,22 @@ st.set_page_config(page_title="CapinteL-Q — трейд-ИИ (MVP)", page_icon=
 st.markdown("<h1 style='margin-bottom:0.2rem;'>CapinteL-Q — трейд-ИИ (MVP)</h1>", unsafe_allow_html=True)
 st.caption("")
 
-col1, col2 = st.columns([2, 1])
+col1, col2 = st.columns([2,1])
 with col1:
     ticker = st.text_input("Тикер", value="AAPL").strip().upper()
 with col2:
     horizon = st.selectbox(
         "Горизонт",
         ["Краткосрок (1–5 дней)", "Среднесрок (1–4 недели)", "Долгосрок (1–6 месяцев)"],
-        index=1,
+        index=1
     )
 
 run = st.button("Проанализировать", type="primary")
 
 def card(title, value, sub=None, color=None):
     bg = "#141a20"
-    if color == "green":
-        bg = "#123b2a"
-    elif color == "red":
-        bg = "#3b1f20"
+    if color == "green": bg = "#123b2a"
+    elif color == "red": bg = "#3b1f20"
     st.markdown(
         f"""
         <div style="background:{bg}; padding:12px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.06); margin:6px 0;">
@@ -38,8 +36,7 @@ def card(title, value, sub=None, color=None):
     )
 
 def chips(items):
-    if not items:
-        return
+    if not items: return
     html = "<div style='display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 4px 0;'>"
     for it in items:
         html += (
@@ -50,44 +47,40 @@ def chips(items):
     html += "</div>"
     st.markdown(html, unsafe_allow_html=True)
 
+def rr_line(levels):
+    risk = abs(levels["entry"] - levels["sl"])
+    if risk <= 1e-9: return ""
+    rr1 = abs(levels["tp1"] - levels["entry"]) / risk
+    rr2 = abs(levels["tp2"] - levels["entry"]) / risk
+    rr3 = abs(levels["tp3"] - levels["entry"]) / risk
+    return f"RR ≈ 1:{rr1:.1f} (TP1) · 1:{rr2:.1f} (TP2) · 1:{rr3:.1f} (TP3)"
+
 def trader_one_liner(out):
     lv = out["levels"]
     a = out["recommendation"]["action"]
     if a == "BUY":
-        return (
-            f"Как действую: беру лонг от {lv['entry']:.2f}, стоп {lv['sl']:.2f}; "
-            f"цели {lv['tp1']:.2f}/{lv['tp2']:.2f}/{lv['tp3']:.2f}. "
-            "Без отката не гонюсь."
-        )
+        return (f"Как действую: беру лонг от {lv['entry']:.2f}, стоп {lv['sl']:.2f}; "
+                f"цели {lv['tp1']:.2f}/{lv['tp2']:.2f}/{lv['tp3']:.2f}. Без отката не гонюсь.")
     if a == "SHORT":
-        return (
-            f"Как действую: беру шорт от {lv['entry']:.2f}, стоп {lv['sl']:.2f}; "
-            f"цели {lv['tp1']:.2f}/{lv['tp2']:.2f}/{lv['tp3']:.2f}. "
-            "Если выкинет выше — не догоняю."
-        )
-    return (
-        "Как действую: без входа; работаю на пробое после ретеста. "
-        f"Ориентиры — TP {lv['tp1']:.2f}/{lv['tp2']:.2f}/{lv['tp3']:.2f}."
-    )
+        return (f"Как действую: беру шорт от {lv['entry']:.2f}, стоп {lv['sl']:.2f}; "
+                f"цели {lv['tp1']:.2f}/{lv['tp2']:.2f}/{lv['tp3']:.2f}. Если выкинет выше — не догоняю.")
+    # WAIT — без цифр
+    return "Как действую: без входа; жду пробой с ретестом или откат к опоре/центру."
 
 if run:
     try:
         out = analyze_asset(ticker=ticker, horizon=horizon)
 
-        # Крупная цена
+        # Большая цена
         st.markdown(
             f"<div style='font-size:3rem; font-weight:800; text-align:center; margin:6px 0 14px 0;'>${out['last_price']:.2f}</div>",
             unsafe_allow_html=True,
         )
 
-        # Действие + confidence (с запасной веткой)
+        # Баннер действия
         action = out["recommendation"]["action"]
         conf = out["recommendation"].get("confidence", 0)
-        try:
-            conf_pct = f"{int(round(float(conf) * 100))}%"
-        except Exception:
-            conf_pct = "—"
-
+        conf_pct = f"{int(round(float(conf)*100))}%" if isinstance(conf, (int,float)) else "—"
         action_text = "Buy LONG" if action == "BUY" else ("Sell SHORT" if action == "SHORT" else "WAIT")
         st.markdown(
             f"""
@@ -99,30 +92,29 @@ if run:
             unsafe_allow_html=True,
         )
 
-        # Уровни
+        # Для BUY/SHORT — показываем уровни; для WAIT — не показываем
         lv = out["levels"]
-        c1, c2 = st.columns(2)
-        with c1:
-            card("Entry", f"{lv['entry']:.2f}", color="green")
-        with c2:
-            card("Stop Loss", f"{lv['sl']:.2f}", color="red")
+        if action in ("BUY", "SHORT"):
+            c1, c2 = st.columns(2)
+            with c1: card("Entry", f"{lv['entry']:.2f}", color="green")
+            with c2: card("Stop Loss", f"{lv['sl']:.2f}", color="red")
 
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            card("TP 1", f"{lv['tp1']:.2f}", sub=f"Probability {int(round(out['probs']['tp1'] * 100))}%")
-        with c2:
-            card("TP 2", f"{lv['tp2']:.2f}", sub=f"Probability {int(round(out['probs']['tp2'] * 100))}%")
-        with c3:
-            card("TP 3", f"{lv['tp3']:.2f}", sub=f"Probability {int(round(out['probs']['tp3'] * 100))}%")
+            c1, c2, c3 = st.columns(3)
+            with c1: card("TP 1", f"{lv['tp1']:.2f}", sub=f"Probability {int(round(out['probs']['tp1']*100))}%")
+            with c2: card("TP 2", f"{lv['tp2']:.2f}", sub=f"Probability {int(round(out['probs']['tp2']*100))}%")
+            with c3: card("TP 3", f"{lv['tp3']:.2f}", sub=f"Probability {int(round(out['probs']['tp3']*100))}%")
+
+            rr = rr_line(lv)
+            if rr:
+                st.markdown(f"<div style='opacity:0.75; margin-top:4px'>{rr}</div>", unsafe_allow_html=True)
 
         chips(out.get("context", []))
 
-        # «Живая» фраза трейдера
+        # «Живой» план
         st.markdown(f"<div style='margin-top:8px; opacity:0.95;'>{trader_one_liner(out)}</div>", unsafe_allow_html=True)
 
-        # Комментарий и альтернативный сценарий
-        if out.get("note_html"):
-            st.markdown(out["note_html"], unsafe_allow_html=True)
+        # Комментарий и альтернатива
+        if out.get("note_html"): st.markdown(out["note_html"], unsafe_allow_html=True)
         if out.get("alt"):
             st.markdown(
                 f"<div style='margin-top:6px;'><b>Если пойдёт против базового сценария:</b> {out['alt']}</div>",
