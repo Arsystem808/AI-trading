@@ -1,24 +1,23 @@
-[README.md](https://github.com/user-attachments/files/22102641/README.md)
-# CapinteL‑Q — трейд‑ИИ (MVP) — Polygon
+[README_UPDATE.txt](https://github.com/user-attachments/files/22123685/README_UPDATE.txt)
 
-Эта версия использует **Polygon.io** как единственный источник данных.
+ARXORA — PATCH PACK (не ломает существующий код)
 
-## Быстрый старт
-1. Создайте файл `.env` в корне:
-```
-POLYGON_API_KEY=ooSjpJAULw4VXxsY28ck7DQST7i13kcG
-```
-2. Установите зависимости и запустите:
-```
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-streamlit run app.py
-```
+1) Скопируйте файлы в свой проект:
+   - assets/arxora_logo.png  -> в вашу папку ассетов (например, ./assets/)
+   - branding.py             -> в корень проекта (рядом с app.py)
+   - utils/tickers.py        -> в папку ./utils/ (создайте если нет)
 
-## Что учтено
-- Полностью убран Yahoo/yfinance.
-- Нет текста «Говорит, как опытный трейдер…».
-- UI стилизован под карточки: крупная цена, **Buy LONG / Sell SHORT / WAIT**, % confidence, Entry/SL/TP1/TP2/TP3 с вероятностями.
-- Нет упоминаний количества баров и выбора окон.
-- Альтернативный план формулируется без слова «Альт».
+2) В app.py:
+   2.1) Установите заголовок и favicon и подключите шапку Arxora:
+
+   from branding import render_header
+   st.set_page_config(page_title="Arxora", page_icon="assets/arxora_logo.png", layout="wide")
+   render_header("assets/arxora_logo.png", "trade smarter.")
+
+   2.2) В месте ввода тикера добавьте placeholder:
+   ticker = st.text_input("Тикер", value="AAPL", placeholder="Примеры: AAPL, TSLA, X:BTCUSD, BINANCE:ETHUSDT")
+
+3) В вашем загрузчике данных нормализуйте тикер:
+   from utils.tickers import normalize_to_yf
+   yf_symbol = normalize_to_yf(ticker)
+   # дальше используйте yf_symbol в yfinance (или аналог)
