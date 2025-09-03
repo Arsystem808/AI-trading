@@ -8,18 +8,7 @@ st.set_page_config(page_title="CapinteL-Q — трейд-ИИ (MVP)", page_icon=
 st.markdown("<h1 style='margin-bottom:0.2rem;'>CapinteL-Q — трейд-ИИ (MVP)</h1>", unsafe_allow_html=True)
 st.caption("")
 
-col1, col2 = st.columns([2,1])
-with col1:
-    ticker = st.text_input("Тикер", value="AAPL").strip().upper()
-with col2:
-    horizon = st.selectbox(
-        "Горизонт",
-        ["Краткосрок (1–5 дней)", "Среднесрок (1–4 недели)", "Долгосрок (1–6 месяцев)"],
-        index=1
-    )
-
-run = st.button("Проанализировать", type="primary")
-
+# ---------- UI helpers ----------
 def card(title, value, sub=None, color=None):
     bg = "#141a20"
     if color == "green": bg = "#123b2a"
@@ -34,18 +23,6 @@ def card(title, value, sub=None, color=None):
         """,
         unsafe_allow_html=True,
     )
-
-def chips(items):
-    if not items: return
-    html = "<div style='display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 4px 0;'>"
-    for it in items:
-        html += (
-            "<div style='font-size:0.8rem;padding:4px 10px;border-radius:999px;"
-            "background:#121826;border:1px solid rgba(255,255,255,0.08);opacity:0.9;'>"
-            f"{it}</div>"
-        )
-    html += "</div>"
-    st.markdown(html, unsafe_allow_html=True)
 
 def rr_line(levels):
     risk = abs(levels["entry"] - levels["sl"])
@@ -64,9 +41,22 @@ def trader_one_liner(out):
     if a == "SHORT":
         return (f"Как действую: беру шорт от {lv['entry']:.2f}, стоп {lv['sl']:.2f}; "
                 f"цели {lv['tp1']:.2f}/{lv['tp2']:.2f}/{lv['tp3']:.2f}. Если выкинет выше — не догоняю.")
-    # WAIT — без цифр
     return "Как действую: без входа; жду пробой с ретестом или откат к опоре/центру."
 
+# ---------- inputs ----------
+col1, col2 = st.columns([2,1])
+with col1:
+    ticker = st.text_input("Тикер", value="AAPL").strip().upper()
+with col2:
+    horizon = st.selectbox(
+        "Горизонт",
+        ["Краткосрок (1–5 дней)", "Среднесрок (1–4 недели)", "Долгосрок (1–6 месяцев)"],
+        index=1
+    )
+
+run = st.button("Проанализировать", type="primary")
+
+# ---------- main ----------
 if run:
     try:
         out = analyze_asset(ticker=ticker, horizon=horizon)
@@ -92,28 +82,24 @@ if run:
             unsafe_allow_html=True,
         )
 
-        # Для BUY/SHORT — показываем уровни; для WAIT — не показываем
+        # BUY/SHORT: показываем уровни; WAIT: скрываем
         lv = out["levels"]
         if action in ("BUY", "SHORT"):
             c1, c2 = st.columns(2)
             with c1: card("Entry", f"{lv['entry']:.2f}", color="green")
             with c2: card("Stop Loss", f"{lv['sl']:.2f}", color="red")
-
             c1, c2, c3 = st.columns(3)
             with c1: card("TP 1", f"{lv['tp1']:.2f}", sub=f"Probability {int(round(out['probs']['tp1']*100))}%")
             with c2: card("TP 2", f"{lv['tp2']:.2f}", sub=f"Probability {int(round(out['probs']['tp2']*100))}%")
             with c3: card("TP 3", f"{lv['tp3']:.2f}", sub=f"Probability {int(round(out['probs']['tp3']*100))}%")
-
             rr = rr_line(lv)
             if rr:
                 st.markdown(f"<div style='opacity:0.75; margin-top:4px'>{rr}</div>", unsafe_allow_html=True)
 
-        chips(out.get("context", []))
+        # (чипсы контекста убраны намеренно)
 
-        # «Живой» план
+        # «живой» план + комментарии
         st.markdown(f"<div style='margin-top:8px; opacity:0.95;'>{trader_one_liner(out)}</div>", unsafe_allow_html=True)
-
-        # Комментарий и альтернатива
         if out.get("note_html"): st.markdown(out["note_html"], unsafe_allow_html=True)
         if out.get("alt"):
             st.markdown(
