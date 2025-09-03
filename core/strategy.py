@@ -63,6 +63,12 @@ def _horizon_cfg(text: str):
     if "Средне" in text:  return dict(look=120, trend=28, atr=14, pivot_period="W-FRI", use_weekly_atr=True)
     return dict(look=240, trend=56, atr=14, pivot_period="W-FRI", use_weekly_atr=True)
 
+def _hz_tag(text: str) -> str:
+    """ST/MID/LT метка из человекочитаемого горизонта."""
+    if "Кратко" in text:  return "ST"
+    if "Средне" in text:  return "MID"
+    return "LT"
+
 # ---------- скрытые Fibonacci-pivots ----------
 def _last_period_hlc(df: pd.DataFrame, rule: str):
     g = df.resample(rule).agg({"high":"max","low":"min","close":"last"}).dropna()
@@ -112,10 +118,49 @@ def _classify_band(price: float, piv: dict, buf: float) -> int:
     if price < levels[5]-buf: return +2
     return +3
 
+# ---------- пост-фильтр целей: минимальные дистанции (фикс TP1 слишком близко) ----------
+def _apply_tp_floors(entry: float, sl: float, tp1: float, tp2: float, tp3: float,
+                     action: str, hz_tag: str, price: float, atr_val: float):
+    """
+    Мягко отодвигает TP1/TP2/TP3, если они слишком близко к entry.
+    Пороги зависят от горизонта: LT > MID > ST.
+    """
+    if action not in ("BUY", "SHORT"):
+        return tp1, tp2, tp3
+
+    risk = abs(entry - sl)
+    if risk <= 1e-9:
+        return tp1, tp2, tp3
+
+    side = 1 if action == "BUY" else -1
+
+    min_rr  = {"ST": 0.80, "MID": 1.00, "LT": 1.25}
+    min_pct = {"ST": 0.006, "MID": 0.012, "LT": 0.020}
+    atr_mult= {"ST": 0.50, "MID": 0.80, "LT": 1.20}
+
+    floor1 = max(min_rr[hz_tag]*risk, min_pct[hz_tag]*price, atr_mult[hz_tag]*atr_val)
+
+    # TP1
+    if abs(tp1 - entry) < floor1:
+        tp1 = entry + side*floor1
+
+    # TP2 — дальше TP1/entry
+    floor2 = max(1.6*floor1, (min_rr[hz_tag]*1.8)*risk)
+    if abs(tp2 - entry) < floor2:
+        tp2 = entry + side*floor2
+
+    # TP3 — отдельный зазор от TP2
+    min_gap3 = max(0.8*floor1, 0.6*risk)
+    if abs(tp3 - tp2) < min_gap3:
+        tp3 = tp2 + side*min_gap3
+
+    return tp1, tp2, tp3
+
 # ---------- основная логика ----------
 def analyze_asset(ticker: str, horizon: str):
     cli = PolygonClient()
     cfg = _horizon_cfg(horizon)
+    hz = _hz_tag(horizon)
 
     # данные
     days = max(90, cfg["look"]*2)
@@ -218,6 +263,10 @@ def analyze_asset(ticker: str, horizon: str):
         tp1, tp2, tp3 = entry + 0.7*step_d, entry + 1.4*step_d, entry + 2.1*step_d
         alt = "Под верхом — не догоняю; работаю на пробое после ретеста или на откате к опоре."
 
+    # ---------- ФИКС: минимальные дистанции для TP1/TP2/TP3 ----------
+    atr_for_floor = atr_w if hz != "ST" else atr_d
+    tp1, tp2, tp3 = _apply_tp_floors(entry, sl, tp1, tp2, tp3, action, hz, price, atr_for_floor)
+
     # вероятности достижения целей
     p1 = _clip01(0.58 + 0.27*(conf-0.55)/0.35)
     p2 = _clip01(0.44 + 0.21*(conf-0.55)/0.35)
@@ -278,3 +327,4 @@ def analyze_asset(ticker: str, horizon: str):
         "note_html": note_html,
         "alt": alt,
     }
+
