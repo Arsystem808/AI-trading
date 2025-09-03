@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from core.polygon_client import PolygonClient
 
-# ---------- helpers (в UI не раскрываем) ----------
+# ---------- helpers ----------
 def _atr_like(df: pd.DataFrame, n: int = 14) -> pd.Series:
     hl = df["high"] - df["low"]
     hc = (df["high"] - df["close"].shift(1)).abs()
@@ -14,7 +14,6 @@ def _atr_like(df: pd.DataFrame, n: int = 14) -> pd.Series:
     return tr.rolling(n, min_periods=1).mean()
 
 def _weekly_atr(df: pd.DataFrame, n_weeks: int = 8) -> float:
-    """ATR по недельным свечам (закрытие пятницы)."""
     w = df.resample("W-FRI").agg({"high":"max","low":"min","close":"last"}).dropna()
     if len(w) < 2:
         return float((df["high"] - df["low"]).tail(14).mean())
@@ -59,20 +58,16 @@ def _clip01(x: float) -> float:
     return float(max(0.0, min(1.0, x)))
 
 def _horizon_cfg(text: str):
-    """
-    Недельные пивоты для всех горизонтов;
-    weekly ATR — для средне/долгосрока (шире стоп/буфер).
-    """
+    # недельные пивоты; weekly ATR — для средне/долгосрока
     if "Кратко" in text:  return dict(look=60,  trend=14, atr=14, pivot_period="W-FRI", use_weekly_atr=False)
     if "Средне" in text:  return dict(look=120, trend=28, atr=14, pivot_period="W-FRI", use_weekly_atr=True)
     return dict(look=240, trend=56, atr=14, pivot_period="W-FRI", use_weekly_atr=True)
 
-# ---------- Fibonacci pivots (внутренне) ----------
+# ---------- скрытые Fibonacci-pivots ----------
 def _last_period_hlc(df: pd.DataFrame, rule: str):
     g = df.resample(rule).agg({"high":"max","low":"min","close":"last"}).dropna()
-    if len(g) < 2:
-        return None
-    row = g.iloc[-2]  # последняя ЗАКРЫТАЯ неделя/месяц
+    if len(g) < 2: return None
+    row = g.iloc[-2]
     return float(row["high"]), float(row["low"]), float(row["close"])
 
 def _fib_pivots(H: float, L: float, C: float):
@@ -86,18 +81,14 @@ def _pivot_ladder(piv: dict) -> list[float]:
     keys = ["S3","S2","S1","P","R1","R2","R3"]
     return [float(piv[k]) for k in keys if k in piv and piv[k] is not None]
 
-def _three_targets_from_pivots(entry: float, direction: str, piv: dict, step: float) -> tuple[float,float,float]:
-    """
-    Гарантируем монотонность: BUY — цели строго выше entry; SHORT — ниже.
-    Если подходящих пивотов < 3, докладываем ATR-ступени.
-    """
+def _three_targets_from_pivots(entry: float, direction: str, piv: dict, step: float):
     ladder = sorted(set(_pivot_ladder(piv)))
     eps = 0.10 * step
     if direction == "BUY":
         ups = [x for x in ladder if x > entry + eps]
         while len(ups) < 3:
             k = len(ups) + 1
-            ups.append(entry + (0.7 + 0.7*(k-1)) * step)  # ~0.7/1.4/2.1 ATR
+            ups.append(entry + (0.7 + 0.7*(k-1)) * step)
         return ups[0], ups[1], ups[2]
     else:
         dns = [x for x in ladder if x < entry - eps]
@@ -108,20 +99,17 @@ def _three_targets_from_pivots(entry: float, direction: str, piv: dict, step: fl
         return dns[0], dns[1], dns[2]
 
 def _classify_band(price: float, piv: dict, buf: float) -> int:
-    """
-    Возвращает полосу пивотов:
-    -3: <S2, -2: [S2,S1), -1: [S1,P), 0: [P,R1), +1: [R1,R2), +2: [R2,R3), +3: >=R3
-    """
+    # -3: <S2, -2: [S2,S1), -1: [S1,P), 0: [P,R1), +1: [R1,R2), +2: [R2,R3), +3: >=R3
     P, R1 = piv["P"], piv["R1"]
     R2, R3, S1, S2 = piv.get("R2"), piv.get("R3"), piv["S1"], piv.get("S2")
     neg_inf, pos_inf = -1e18, 1e18
     levels = [S2 if S2 is not None else neg_inf, S1, P, R1, R2 if R2 is not None else pos_inf, R3 if R3 is not None else pos_inf]
-    if price < levels[0] - buf: return -3
-    if price < levels[1] - buf: return -2
-    if price < levels[2] - buf: return -1
-    if price < levels[3] - buf: return 0
-    if R2 is None or price < levels[4] - buf: return +1
-    if price < levels[5] - buf: return +2
+    if price < levels[0]-buf: return -3
+    if price < levels[1]-buf: return -2
+    if price < levels[2]-buf: return -1
+    if price < levels[3]-buf: return 0
+    if R2 is None or price < levels[4]-buf: return +1
+    if price < levels[5]-buf: return +2
     return +3
 
 # ---------- основная логика ----------
@@ -129,12 +117,12 @@ def analyze_asset(ticker: str, horizon: str):
     cli = PolygonClient()
     cfg = _horizon_cfg(horizon)
 
-    # Данные
+    # данные
     days = max(90, cfg["look"]*2)
     df = cli.daily_ohlc(ticker, days=days)
     price = cli.last_trade_price(ticker)
 
-    # Позиция в своём роллинг-диапазоне (для «не гнаться»)
+    # позиция в своём диапазоне
     tail = df.tail(cfg["look"])
     rng_low  = float(tail["low"].min())
     rng_high = float(tail["high"].max())
@@ -155,98 +143,87 @@ def analyze_asset(ticker: str, horizon: str):
     long_upper = upper > body*1.3 and upper > lower*1.1
     long_lower = lower > body*1.3 and lower > upper*1.1
 
-    # Пивоты предыдущей недели (или fallback)
+    # пивоты (последняя завершённая неделя; fallback — текущий диапазон)
     hlc = _last_period_hlc(df, cfg["pivot_period"])
-    if hlc:
-        H, L, C = hlc
-    else:
-        H = float(df["high"].tail(60).max())
-        L = float(df["low"].tail(60).min())
-        C = float(df["close"].iloc[-1])
+    if not hlc:
+        hlc = (float(df["high"].tail(60).max()), float(df["low"].tail(60).min()), float(df["close"].iloc[-1]))
+    H, L, C = hlc
     piv = _fib_pivots(H, L, C)
-    P, R1, R2, R3, S1, S2, S3 = piv["P"], piv["R1"], piv.get("R2"), piv.get("R3"), piv["S1"], piv.get("S2"), piv.get("S3")
+    P, R1, R2 = piv["P"], piv["R1"], piv.get("R2")
 
-    # Буфер «вблизи уровня» — от weekly ATR (для средне/долгосрока шире)
-    buf = 0.25 * atr_w
+    buf  = 0.25 * atr_w
     band = _classify_band(price, piv, buf)  # -3..+3
 
-    # ---- СЦЕНАРИИ (жёсткий short-bias у верхней кромки) ----
-    last_o = float(df["open"].iloc[-1]); last_c = float(df["close"].iloc[-1])
-    last_h = float(df["high"].iloc[-1]); last_l = float(df["low"].iloc[-1])
-    upper_wick = max(0.0, last_h - max(last_o, last_c))
+    # ---- сценарии (жёсткий short-bias у верха; BUY только на пробое) ----
+    last_o, last_c = float(df["open"].iloc[-1]), float(df["close"].iloc[-1])
+    last_h = float(df["high"].iloc[-1])
+    upper_wick_d = max(0.0, last_h - max(last_o, last_c))
     body_d = abs(last_c - last_o)
-    bearish_reject = (last_c < last_o) and (upper_wick > body_d)  # красная с верхней тенью
-    very_high_pos = pos >= 0.85  # верхние 15% диапазона
+    bearish_reject = (last_c < last_o) and (upper_wick_d > body_d)
+    very_high_pos = pos >= 0.80  # верхние 20% диапазона
 
-    if band >= +2:  # зона верхней полосы (R2+)
-        # BUY только на реальном пробое с инерцией; иначе — SHORT (fade)
+    if very_high_pos:
+        # приоритет: SHORT; BUY только при явном пробое верхней зоны
         if (R2 is not None) and (price > R2 + 0.6*buf) and (slope_norm > 0):
             action, scenario = "BUY", "breakout_up"
         else:
             action, scenario = "SHORT", "fade_top"
-    elif band == +1:  # между R1 и R2
-        # по умолчанию SHORT; WAIT лишь при чистом тренде вверх без признаков слабости
-        if (slope_norm > 0.0015) and (not bearish_reject) and (not long_upper) and (not very_high_pos):
-            action, scenario = "WAIT", "upper_wait"
+    else:
+        if band >= +2:
+            action, scenario = ("BUY","breakout_up") if ((R2 is not None) and (price > R2 + 0.6*buf) and (slope_norm > 0)) else ("SHORT","fade_top")
+        elif band == +1:
+            action, scenario = ("WAIT","upper_wait") if (slope_norm > 0.0015 and not bearish_reject and not long_upper) else ("SHORT","fade_top")
+        elif band == 0:
+            action, scenario = ("BUY","trend_follow") if slope_norm >= 0 else ("WAIT","mid_range")
+        elif band == -1:
+            action, scenario = ("BUY","revert_from_bottom") if (streak <= -3 or long_lower) else ("BUY","trend_follow")
         else:
-            action, scenario = "SHORT", "fade_top"
-    elif band == 0:   # между центром и верхней половиной
-        action, scenario = ("BUY", "trend_follow") if slope_norm >= 0 else ("WAIT", "mid_range")
-    elif band == -1:  # нижняя половина
-        action, scenario = "BUY", "revert_from_bottom" if (streak <= -3 or long_lower) else ("BUY","trend_follow")[0]
-    else:             # ниже нижней зоны или сильно выше R3
-        action, scenario = ("BUY","revert_from_bottom") if band <= -2 else ("WAIT","upper_wait")
+            action, scenario = ("BUY","revert_from_bottom") if band <= -2 else ("WAIT","upper_wait")
 
-    # Guard: на средне/долгосроке в верхних 20% диапазона BUY запрещён (кроме пробоя)
-    if cfg.get("use_weekly_atr") and pos >= 0.8 and action == "BUY" and scenario != "breakout_up":
-        action, scenario = "WAIT", "upper_wait"
-
-    # Уверенность
+    # уверенность
     base = 0.55 + 0.12*_clip01(abs(slope_norm)*1800) + 0.08*_clip01((vol_ratio-0.9)/0.6)
     if action == "WAIT": base -= 0.07
     if band >= +1 and action == "BUY": base -= 0.10
     if band <= -1 and action == "BUY": base += 0.05
     conf = float(max(0.55, min(0.90, base)))
 
-    # Шаги уровней
+    # уровни (для WAIT они не показываются в UI)
     step_d, step_w = atr_d, atr_w
-
-    # Уровни (для WAIT UI их не показывает)
     if action == "BUY":
         if scenario == "breakout_up":
             base_ref = R2 if R2 is not None else R1
             entry = max(price, base_ref + 0.10*step_w)
             sl    = base_ref - 1.00*step_w
             tp1, tp2, tp3 = _three_targets_from_pivots(entry, "BUY", piv, step_w)
-        elif band <= 0:
-            if price < P:
-                entry = max(price, S1 + 0.15*step_w); sl = S1 - 0.60*step_w
-            else:
-                entry = max(price, P  + 0.10*step_w); sl = P  - 0.60*step_w
+        elif price < P:
+            entry = max(price, piv["S1"] + 0.15*step_w); sl = piv["S1"] - 0.60*step_w
             tp1, tp2, tp3 = _three_targets_from_pivots(entry, "BUY", piv, step_w)
         else:
-            entry = max(price, R1 + 0.10*step_w); sl = R1 - 0.60*step_w
+            entry = max(price, P + 0.10*step_w); sl = P - 0.60*step_w
             tp1, tp2, tp3 = _three_targets_from_pivots(entry, "BUY", piv, step_w)
         alt = "Если продавят ниже и не вернут — не лезем; ждём возврата сверху и подтверждения."
     elif action == "SHORT":
-        if band >= +1:
-            entry = min(price, R1 - 0.15*step_w); sl = R1 + 0.60*step_w
+        # fade сверху — якорим к верхней зоне
+        if price >= R1:
+            entry = min(price, R1 - 0.15*step_w)  # после отказа — берём не по рынку
+            sl    = R1 + 0.60*step_w
         else:
-            entry = price + 0.15*step_d;         sl = price + 1.00*step_d
+            entry = price + 0.15*step_d
+            sl    = price + 1.00*step_d
         tp1, tp2, tp3 = _three_targets_from_pivots(entry, "SHORT", piv, step_w)
-        alt = "Если протолкнут выше и удержат — без погони; ждём возврата и признаков слабости выше."
+        alt = "Если протолкнут выше и удержат — без погони; ждём возврата и признаков слабости сверху."
     else:  # WAIT
         entry = price
         sl    = price - 0.90*step_d
         tp1, tp2, tp3 = entry + 0.7*step_d, entry + 1.4*step_d, entry + 2.1*step_d
-        alt = "Под верхней кромкой — не догоняю; работаю на пробое после ретеста или на откате к опоре."
+        alt = "Под верхом — не догоняю; работаю на пробое после ретеста или на откате к опоре."
 
-    # Вероятности целей
+    # вероятности достижения целей
     p1 = _clip01(0.58 + 0.27*(conf-0.55)/0.35)
     p2 = _clip01(0.44 + 0.21*(conf-0.55)/0.35)
     p3 = _clip01(0.28 + 0.13*(conf-0.55)/0.35)
 
-    # Контекст-чипсы (без названий индикаторов)
+    # контекст-чипсы (без названий индикаторов)
     chips = []
     if pos >= 0.8: chips.append("верхний диапазон")
     elif pos >= 0.6: chips.append("под верхним краем")
@@ -260,7 +237,7 @@ def analyze_asset(ticker: str, horizon: str):
     if long_upper: chips.append("тени сверху")
     if long_lower: chips.append("тени снизу")
 
-    # «живой» текст — без терминов S1/P/R2
+    # «живой» текст
     seed = int(hashlib.sha1(f"{ticker}{df.index[-1].date()}".encode()).hexdigest(), 16) % (2**32)
     rng  = random.Random(seed)
     if action == "BUY":
@@ -297,7 +274,7 @@ def analyze_asset(ticker: str, horizon: str):
         "recommendation": {"action": action, "confidence": float(round(conf,4))},
         "levels": {"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3)},
         "probs": {"tp1": float(p1), "tp2": float(p2), "tp3": float(p3)},
-        "context": chips,        # без упоминаний S1/P/R2
-        "note_html": note_html,  # «человечный» текст
+        "context": chips,
+        "note_html": note_html,
         "alt": alt,
     }
