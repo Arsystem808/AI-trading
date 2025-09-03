@@ -18,8 +18,7 @@ st.set_page_config(page_title="Arxora — трейд-ИИ (MVP)",
 def render_arxora_header():
     hero_path = "assets/arxora_logo_hero.png"
     if os.path.exists(hero_path):
-        # fix: use_container_width (not deprecated use_column_width)
-        st.image(hero_path, use_container_width=True)
+        st.image(hero_path, use_container_width=True)  # modern param
     else:
         PURPLE = "#5B5BF7"; BLACK = "#0B0D0E"
         st.markdown(
@@ -47,7 +46,7 @@ def render_arxora_header():
 render_arxora_header()
 
 # =====================
-# Полезные фразы
+# Фразы
 # =====================
 CUSTOM_PHRASES = {
     "BUY": [
@@ -116,13 +115,12 @@ def unit_suffix(ticker: str) -> str:
     if style == "per_contract":  return " за контракт"
     return ""
 
-def rr_line(levels):
+def rr_line_2tp(levels):
     risk = abs(levels["entry"] - levels["sl"])
     if risk <= 1e-9: return ""
     rr1 = abs(levels["tp1"] - levels["entry"]) / risk
     rr2 = abs(levels["tp2"] - levels["entry"]) / risk
-    rr3 = abs(levels["tp3"] - levels["entry"]) / risk
-    return f"RR ≈ 1:{rr1:.1f} (TP1) · 1:{rr2:.1f} (TP2) · 1:{rr3:.1f} (TP3)"
+    return f"RR ≈ 1:{rr1:.1f} (TP1) · 1:{rr2:.1f} (TP2)"
 
 def render_plan_line(action, levels, ticker="", seed_extra=""):
     seed = int(hashlib.sha1(f"{ticker}{seed_extra}{levels['entry']}{levels['sl']}{action}".encode()).hexdigest(), 16) % (2**32)
@@ -142,7 +140,7 @@ def render_stopline(levels):
     return line.format(sl=_fmt(levels["sl"]), risk_pct=compute_risk_pct(levels))
 
 # =====================
-# HTML карточка (используем в колонках)
+# HTML карточка
 # =====================
 def card_html(title, value, sub=None, color=None):
     bg = "#141a20"
@@ -160,25 +158,14 @@ def card_html(title, value, sub=None, color=None):
 # Polygon нормализация (всегда Polygon)
 # =====================
 def normalize_for_polygon(symbol: str) -> str:
-    """
-    Возвращает тикер в формате Polygon.
-    Примеры:
-      'X:btcusd' -> 'X:BTCUSD'
-      'BTCUSDT'  -> 'X:BTCUSD'
-      'ETHUSD'   -> 'X:ETHUSD'
-      'AAPL'     -> 'AAPL' (акции/ETF)
-    """
     s = (symbol or "").strip().upper().replace(" ", "")
-    # Уже с префиксом X:/C:/O: — просто нормализуем хвост
     if s.startswith(("X:", "C:", "O:")):
         head, tail = s.split(":", 1)
         tail = tail.replace("USDT", "USD").replace("USDC", "USD")
         return f"{head}:{tail}"
-    # Пары без префикса
     if re.match(r"^[A-Z]{2,10}USD(T|C)?$", s):
         s = s.replace("USDT", "USD").replace("USDC", "USD")
         return f"X:{s}"
-    # Иначе — акции/ETF/прочее без изменений
     return s
 
 # =====================
@@ -188,7 +175,7 @@ col1, col2 = st.columns([2,1])
 with col1:
     ticker_input = st.text_input(
         "Тикер",
-        value="",  # без AAPL по умолчанию
+        value="",
         placeholder="Примеры: AAPL · TSLA · X:BTCUSD · BTCUSDT"
     )
     ticker = ticker_input.strip().upper()
@@ -230,21 +217,21 @@ if run:
 
         lv = out["levels"]
         if action in ("BUY", "SHORT"):
-            c1, c2, c3 = st.columns(3)
+            # Entry & SL
+            c1, c2 = st.columns(2)
             with c1:
                 st.markdown(card_html("Entry", f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
             with c2:
                 st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
-            with c3:
-                st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}", sub=f"Probability {int(round(out['probs']['tp1']*100))}%"), unsafe_allow_html=True)
 
+            # TP1 & TP2 only
             c1, c2 = st.columns(2)
             with c1:
-                st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}", sub=f"Probability {int(round(out['probs']['tp2']*100))}%"), unsafe_allow_html=True)
+                st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}", sub=f"Probability {int(round(out['probs'].get('tp1',0)*100))}%"), unsafe_allow_html=True)
             with c2:
-                st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}", sub=f"Probability {int(round(out['probs']['tp3']*100))}%"), unsafe_allow_html=True)
+                st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}", sub=f"Probability {int(round(out['probs'].get('tp2',0)*100))}%"), unsafe_allow_html=True)
 
-            rr = rr_line(lv)
+            rr = rr_line_2tp(lv)
             if rr:
                 st.markdown(f"<div style='opacity:0.75; margin-top:4px'>{rr}</div>", unsafe_allow_html=True)
 
