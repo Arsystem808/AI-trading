@@ -1,5 +1,5 @@
 [README.md](https://github.com/user-attachments/files/22102641/README.md)
-# Arxora TradeAI
+# CapinteL‑Q — трейд‑ИИ (MVP) — Polygon
 
 Эта версия использует **Polygon.io** как единственный источник данных.
 
