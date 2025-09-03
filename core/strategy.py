@@ -365,4 +365,3 @@ def analyze_asset(ticker: str, horizon: str):
         "note_html": note_html,
         "alt": alt,
     }
-c
