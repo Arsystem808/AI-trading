@@ -9,18 +9,18 @@ from core.strategy import analyze_asset
 load_dotenv()
 
 # =====================
-# Arxora BRANDING
+# Arxora BRANDING (renamed + favicon + header banner)
 # =====================
 st.set_page_config(page_title="Arxora — трейд-ИИ (MVP)",
                    page_icon="assets/arxora_favicon_512.png",
                    layout="centered")
 
 def render_arxora_header():
-    hero_path = "assets/arxora_logo_hero.png"
+    hero_path = "assets/arxora_logo_hero.png"  # опционально: баннер (фиолетовый/чёрный)
     if os.path.exists(hero_path):
-        # fix: use_container_width (not deprecated use_column_width)
-        st.image(hero_path, use_container_width=True)
+        st.image(hero_path, use_column_width=True)
     else:
+        # Фоллбек без картинки, в том же стиле
         PURPLE = "#5B5BF7"; BLACK = "#0B0D0E"
         st.markdown(
             f"""
@@ -41,13 +41,14 @@ def render_arxora_header():
                 </div>
               </div>
             </div>
-            """, unsafe_allow_html=True,
+            """,
+            unsafe_allow_html=True,
         )
 
 render_arxora_header()
 
 # =====================
-# Полезные фразы
+# ТВОИ ФРАЗЫ (просто и профессионально)
 # =====================
 CUSTOM_PHRASES = {
     "BUY": [
@@ -73,12 +74,13 @@ CUSTOM_PHRASES = {
 }
 
 # =====================
-# Хелперы (формат/риск/юниты)
+# ХЕЛПЕРЫ ДЛЯ ТЕКСТА
 # =====================
 def _fmt(x):
     return f"{float(x):.2f}"
 
 def compute_display_range(levels, widen_factor=0.25):
+    """Строим аккуратный диапазон вокруг entry по четверти риска."""
     entry = float(levels["entry"]); sl = float(levels["sl"])
     risk = abs(entry - sl)
     width = max(risk * widen_factor, 0.01)
@@ -89,15 +91,16 @@ def compute_risk_pct(levels):
     entry = float(levels["entry"]); sl = float(levels["sl"])
     return "—" if entry == 0 else f"{abs(entry - sl)/abs(entry)*100.0:.1f}"
 
+# Определение единицы цены по типу актива
 UNIT_STYLE = {"equity":"za_akciyu","etf":"omit","crypto":"per_base","fx":"per_base","option":"per_contract"}
 ETF_HINTS = {"SPY","QQQ","IWM","DIA","EEM","EFA","XLK","XLF","XLE","XLY","XLI","XLV","XLP","XLU","VNQ","GLD","SLV"}
 
 def detect_asset_class(ticker: str):
     t = ticker.upper().strip()
-    if t.startswith("X:"): return "crypto"
-    if t.startswith("C:"): return "fx"
-    if t.startswith("O:"): return "option"
-    if re.match(r"^[A-Z]{2,10}[-:/]?USD[TDC]?$", t): return "crypto"
+    if t.startswith("X:"): return "crypto"   # Polygon crypto
+    if t.startswith("C:"): return "fx"       # Polygon FX
+    if t.startswith("O:"): return "option"   # options
+    if re.match(r"^[A-Z]{2,10}[-:/]?USD[TDC]?$", t): return "crypto"  # BTCUSD / ETHUSDT / SOL-USD
     if t in ETF_HINTS: return "etf"
     return "equity"
 
@@ -127,11 +130,13 @@ def rr_line(levels):
 def render_plan_line(action, levels, ticker="", seed_extra=""):
     seed = int(hashlib.sha1(f"{ticker}{seed_extra}{levels['entry']}{levels['sl']}{action}".encode()).hexdigest(), 16) % (2**32)
     rnd = random.Random(seed)
+
     if action == "WAIT":
         return rnd.choice(CUSTOM_PHRASES["WAIT"])
+
     rng_low, rng_high = compute_display_range(levels)
     us = unit_suffix(ticker)
-    tpl = CUSTOM_PHRASES[action][0]
+    tpl = CUSTOM_PHRASES[action][0]  # фиксируем клиентский стиль без ротации
     return tpl.format(range_low=rng_low, range_high=rng_high, unit_suffix=us)
 
 def render_context_line(kind_key="neutral"):
@@ -142,55 +147,46 @@ def render_stopline(levels):
     return line.format(sl=_fmt(levels["sl"]), risk_pct=compute_risk_pct(levels))
 
 # =====================
-# HTML карточка (используем в колонках)
+# Crypto ticker normalizer (X:BTCUSD / BINANCE:ETHUSDT / BTCUSDT / ETHUSD -> Yahoo style)
 # =====================
-def card_html(title, value, sub=None, color=None):
+def normalize_to_yf(symbol: str) -> str:
+    """Понимает X:BTCUSD, BINANCE:ETHUSDT, BTCUSDT, ETHUSD и т.п.
+    Возвращает BTC-USD/ETH-USD. Для обычных тикеров (AAPL) — без изменений.
+    """
+    s = (symbol or "").strip().upper().replace(" ", "")
+    for pref in ("X:", "CRYPTO:", "BINANCE:", "COINBASE:", "KRAKEN:", "BYBIT:", "HUOBI:", "OKX:"):
+        if s.startswith(pref):
+            s = s[len(pref):]
+    if s.endswith("USDT"):
+        s = s[:-4] + "USD"
+    if len(s) >= 6 and s.endswith("USD"):
+        return s[:-3] + "-USD"
+    return s
+
+# =====================
+# UI helpers
+# =====================
+def card(title, value, sub=None, color=None):
     bg = "#141a20"
     if color == "green": bg = "#123b2a"
     elif color == "red": bg = "#3b1f20"
-    return f"""
+    st.markdown(
+        f"""
         <div style="background:{bg}; padding:12px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.06); margin:6px 0;">
             <div style="font-size:0.9rem; opacity:0.85;">{title}</div>
             <div style="font-size:1.4rem; font-weight:700; margin-top:4px;">{value}</div>
             {f"<div style='font-size:0.8rem; opacity:0.7; margin-top:2px;'>{sub}</div>" if sub else ""}
         </div>
-    """
-
-# =====================
-# Polygon нормализация (всегда Polygon)
-# =====================
-def normalize_for_polygon(symbol: str) -> str:
-    """
-    Возвращает тикер в формате Polygon.
-    Примеры:
-      'X:btcusd' -> 'X:BTCUSD'
-      'BTCUSDT'  -> 'X:BTCUSD'
-      'ETHUSD'   -> 'X:ETHUSD'
-      'AAPL'     -> 'AAPL' (акции/ETF)
-    """
-    s = (symbol or "").strip().upper().replace(" ", "")
-    # Уже с префиксом X:/C:/O: — просто нормализуем хвост
-    if s.startswith(("X:", "C:", "O:")):
-        head, tail = s.split(":", 1)
-        tail = tail.replace("USDT", "USD").replace("USDC", "USD")
-        return f"{head}:{tail}"
-    # Пары без префикса
-    if re.match(r"^[A-Z]{2,10}USD(T|C)?$", s):
-        s = s.replace("USDT", "USD").replace("USDC", "USD")
-        return f"X:{s}"
-    # Иначе — акции/ETF/прочее без изменений
-    return s
+        """,
+        unsafe_allow_html=True,
+    )
 
 # =====================
 # Inputs
 # =====================
 col1, col2 = st.columns([2,1])
 with col1:
-    ticker_input = st.text_input(
-        "Тикер",
-        value="",  # без AAPL по умолчанию
-        placeholder="Примеры: AAPL · TSLA · X:BTCUSD · BTCUSDT"
-    )
+    ticker_input = st.text_input("Тикер", value="AAPL", placeholder="Примеры: AAPL, TSLA, X:BTCUSD, BINANCE:ETHUSDT")
     ticker = ticker_input.strip().upper()
 with col2:
     horizon = st.selectbox(
@@ -199,7 +195,9 @@ with col2:
         index=1
     )
 
-symbol_for_engine = normalize_for_polygon(ticker)
+# Нормализация тикера под загрузчик данных (если нужно для крипты)
+ticker_norm = normalize_to_yf(ticker)
+
 run = st.button("Проанализировать", type="primary")
 
 # =====================
@@ -207,13 +205,16 @@ run = st.button("Проанализировать", type="primary")
 # =====================
 if run:
     try:
-        out = analyze_asset(ticker=symbol_for_engine, horizon=horizon)
+        # Подставляем нормализованный тикер (для крипты), для акций/ETF он не меняется
+        out = analyze_asset(ticker=ticker_norm, horizon=horizon)
 
+        # Большая цена
         st.markdown(
             f"<div style='font-size:3rem; font-weight:800; text-align:center; margin:6px 0 14px 0;'>${out['last_price']:.2f}</div>",
             unsafe_allow_html=True,
         )
 
+        # Баннер действия
         action = out["recommendation"]["action"]
         conf = out["recommendation"].get("confidence", 0)
         conf_pct = f"{int(round(float(conf)*100))}%"
@@ -229,41 +230,45 @@ if run:
         )
 
         lv = out["levels"]
+        # BUY/SHORT: показываем уровни; WAIT: скрываем
         if action in ("BUY", "SHORT"):
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.markdown(card_html("Entry", f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
-            with c2:
-                st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
-            with c3:
-                st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}", sub=f"Probability {int(round(out['probs']['tp1']*100))}%"), unsafe_allow_html=True)
-
             c1, c2 = st.columns(2)
-            with c1:
-                st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}", sub=f"Probability {int(round(out['probs']['tp2']*100))}%"), unsafe_allow_html=True)
-            with c2:
-                st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}", sub=f"Probability {int(round(out['probs']['tp3']*100))}%"), unsafe_allow_html=True)
+            with c1: card("Entry", f"{lv['entry']:.2f}", color="green")
+            with c2: card("Stop Loss", f"{lv['sl']:.2f}", color="red")
+
+            c1, c2, c3 = st.columns(3)
+            with c1: card("TP 1", f"{lv['tp1']:.2f}", sub=f"Probability {int(round(out['probs']['tp1']*100))}%")
+            with c2: card("TP 2", f"{lv['tp2']:.2f}", sub=f"Probability {int(round(out['probs']['tp2']*100))}%")
+            with c3: card("TP 3", f"{lv['tp3']:.2f}", sub=f"Probability {int(round(out['probs']['tp3']*100))}%")
 
             rr = rr_line(lv)
             if rr:
                 st.markdown(f"<div style='opacity:0.75; margin-top:4px'>{rr}</div>", unsafe_allow_html=True)
 
+        # План фразой (твой стиль)
         plan = render_plan_line(action, lv, ticker=ticker, seed_extra=horizon)
         st.markdown(f"<div style='margin-top:8px'>{plan}</div>", unsafe_allow_html=True)
 
+        # Краткий контекст
         ctx_key = "neutral"
         if action == "BUY": ctx_key = "support"
         elif action == "SHORT": ctx_key = "resistance"
         ctx = render_context_line(ctx_key)
         st.markdown(f"<div style='opacity:0.9'>{ctx}</div>", unsafe_allow_html=True)
 
+        # Строка про стоп
         if action in ("BUY","SHORT"):
             stopline = render_stopline(lv)
             st.markdown(f"<div style='opacity:0.9; margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
 
+        # Альтернатива сценария (из бэкэнда)
         if out.get("alt"):
-            st.markdown(f"<div style='margin-top:6px;'><b>Если пойдёт против базового сценария:</b> {out['alt']}</div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div style='margin-top:6px;'><b>Если пойдёт против базового сценария:</b> {out['alt']}</div>",
+                unsafe_allow_html=True,
+            )
 
+        # Дисклеймер
         st.caption(CUSTOM_PHRASES["DISCLAIMER"])
 
     except Exception as e:
