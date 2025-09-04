@@ -1,59 +1,76 @@
 # core/ai_inference.py
 import os
-import math
-import joblib
+from typing import Any, Dict, Tuple
 import numpy as np
 
-# Ленивая загрузка моделей по горизонту
-_MODELS = {}  # {"ST": clf, "MID": clf, "LT": clf}
+try:
+    import joblib  # type: ignore
+except Exception as e:
+    raise RuntimeError("Не установлен joblib. Добавьте 'joblib' в requirements.txt") from e
 
-def _model_path(hz: str) -> str:
-    # Можно переопределить через ENV, иначе берём из ./models/
-    base = os.getenv("ARXORA_MODEL_DIR", "models")
-    return os.path.join(base, f"arxora_lgbm_{hz}.joblib")
+MODEL_FILENAMES = {
+    "ST": "arxora_lgbm_ST.joblib",
+    "MID": "arxora_lgbm_MID.joblib",
+    "LT": "arxora_lgbm_LT.joblib",
+}
 
-def _get_model(hz: str):
-    hz = hz.upper()
-    if hz in _MODELS:
-        return _MODELS[hz]
-    path = _model_path(hz)
-    try:
-        clf = joblib.load(path)
-        _MODELS[hz] = clf
-        return clf
-    except Exception:
-        _MODELS[hz] = None
-        return None
+def _models_dir() -> str:
+    return os.getenv("ARXORA_MODEL_DIR", "models")
 
-def score_signal(feat: dict, hz: str):
+def load_model_for_horizon(hz: str, models_dir: str | None = None) -> tuple[Any, Dict[str, Any], str]:
     """
-    feat — словарь признаков. Возвращает:
-      {"p_long": float, "p_short": float} или None (если модели нет).
+    Возвращает (model, meta, path).
+    Если в .joblib лежит dict, извлекаем поле 'model', остальное отдаём как meta.
     """
-    clf = _get_model(hz)
-    if clf is None:
-        return None
+    models_dir = models_dir or _models_dir()
+    fname = MODEL_FILENAMES.get(hz, MODEL_FILENAMES["ST"])
+    path = os.path.join(models_dir, fname)
+    if not os.path.exists(path):
+        return None, {}, path
 
-    # Минимальный вектор признаков (синхронен со стратегией)
-    x = np.array([[
-        float(feat.get("pos", 0.5)),
-        float(feat.get("slope_norm", 0.0)),
-        float(feat.get("atr_d_over_price", 0.0)),
-        float(feat.get("vol_ratio", 1.0)),
-        float(feat.get("streak", 0.0)),
-        float(feat.get("band", 0)),
-        1.0 if feat.get("long_upper") else 0.0,
-        1.0 if feat.get("long_lower") else 0.0,
-    ]], dtype=float)
+    obj = joblib.load(path)
 
-    # Ожидается бинарная классификация: proba[:,1] — вероятность long
-    try:
-        proba = clf.predict_proba(x)[0, 1]
-    except Exception:
-        # На случай регрессии или модели без proba — используем predict и сигмоиду
-        pred = float(np.ravel(clf.predict(x))[0])
-        proba = 1.0 / (1.0 + math.exp(-pred))
+    if isinstance(obj, dict) and "model" in obj:
+        model = obj["model"]
+        meta = {k: v for k, v in obj.items() if k != "model"}
+    else:
+        model, meta = obj, {}
 
-    p_long = float(proba)
-    p_short = float(1.0 - p_long)
-    return {"p_long": p_long, "p_short": p_short}
+    return model, meta, path
+
+def apply_model(model: Any, meta: Dict[str, Any], X) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """
+    Делает предсказание вероятности класса 1.
+    - Если есть meta['features'] — берём только эти признаки.
+    - Если есть meta['scaler'] — применяем его.
+    - Если у модели нет predict_proba, используем сигмоиду поверх predict.
+    """
+    if model is None:
+        raise ValueError("Модель не загружена")
+
+    feats = meta.get("features")
+    if feats is not None:
+        X = X[feats].copy()
+
+    scaler = meta.get("scaler")
+    if scaler is not None:
+        X[feats] = scaler.transform(X[feats])
+
+    if hasattr(model, "predict_proba"):
+        proba = model.predict_proba(X)
+        # иногда возвращается (n_samples,) — приведём к (n,2) или (n,)
+        if isinstance(proba, (list, tuple)):
+            proba = np.asarray(proba)
+        if proba.ndim == 2 and proba.shape[1] > 1:
+            proba = proba[:, 1]
+        else:
+            proba = np.asarray(proba).reshape(-1)
+    else:
+        # регрессор/бинарный предикт без proba
+        yhat = model.predict(X)
+        yhat = np.asarray(yhat).reshape(-1)
+        # мягкая нормализация в 0..1
+        s = yhat.std() + 1e-9
+        proba = 1.0 / (1.0 + np.exp(-(yhat - yhat.mean()) / s))
+
+    return proba, meta
