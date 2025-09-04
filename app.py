@@ -1,16 +1,16 @@
 # app.py
 import os
 import re
-import hashlib
-import random
+import html
 import streamlit as st
 from dotenv import load_dotenv
 from core.strategy import analyze_asset
 
-# ---------- опциональный импорт OpenAI ----------
+# ============== optional: OpenAI Q&A ==============
 def _get_openai_client():
+    """Возвращает OpenAI-клиента, если установлен пакет и есть ключ."""
     try:
-        from openai import OpenAI  # современный SDK (v1)
+        from openai import OpenAI  # SDK v1+
     except Exception:
         return None
     key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
@@ -33,7 +33,7 @@ def _llm_chat(system: str, user: str, temperature=0.2, max_tokens=320):
     except Exception:
         return None
 
-# ---------- базовая настройка ----------
+# ============== base config ==============
 load_dotenv()
 st.set_page_config(
     page_title="Arxora — трейд-ИИ (MVP)",
@@ -41,7 +41,7 @@ st.set_page_config(
     layout="centered",
 )
 
-# ---------- хедер / брендинг ----------
+# ============== branding/header ==============
 def render_arxora_header():
     hero_path = "assets/arxora_logo_hero.png"
     if os.path.exists(hero_path):
@@ -50,7 +50,7 @@ def render_arxora_header():
         PURPLE = "#5B5BF7"; BLACK = "#0B0D0E"
         st.markdown(
             f"""
-            <div style="border-radius:8px;overflow:hidden;
+            <div style="border-radius:10px;overflow:hidden;
                         box-shadow:0 0 0 1px rgba(0,0,0,.06),0 12px 32px rgba(0,0,0,.18);">
               <div style="background:{PURPLE};padding:28px 16px;">
                 <div style="max-width:1120px;margin:0 auto;">
@@ -71,23 +71,28 @@ def render_arxora_header():
             unsafe_allow_html=True,
         )
 
+# ============== UI helpers ==============
 def card_html(title, value, sub=None, color=None):
     bg = "#141a20"
     if color == "green": bg = "#123b2a"
     elif color == "red": bg = "#3b1f20"
     return f"""
         <div style="background:{bg}; padding:12px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.06); margin:6px 0;">
-            <div style="font-size:0.9rem; opacity:0.85;">{title}</div>
-            <div style="font-size:1.4rem; font-weight:700; margin-top:4px;">{value}</div>
-            {f"<div style='font-size:0.8rem; opacity:0.7; margin-top:2px;'>{sub}</div>" if sub else ""}
+            <div style="font-size:0.9rem; opacity:0.85;">{html.escape(str(title))}</div>
+            <div style="font-size:1.4rem; font-weight:700; margin-top:4px;">{html.escape(str(value))}</div>
+            {f"<div style='font-size:0.8rem; opacity:0.7; margin-top:2px;'>{html.escape(str(sub))}</div>" if sub else ""}
         </div>
     """
 
 def chips_html(items):
-    if not items: return ""
-    chips = "".join([f"<span style='display:inline-block;padding:4px 8px;border-radius:999px;"
-                     f"background:rgba(255,255,255,0.06);margin:2px 6px 2px 0;font-size:0.8rem;'>{st._escape_html(x)}</span>"
-                     for x in items])
+    if not items:
+        return ""
+    chips = "".join([
+        f"<span style='display:inline-block;padding:4px 8px;border-radius:999px;"
+        f"background:rgba(255,255,255,0.06);margin:2px 6px 2px 0;font-size:0.8rem;'>"
+        f"{html.escape(str(x))}</span>"
+        for x in items
+    ])
     return f"<div style='margin-top:6px'>{chips}</div>"
 
 def rr_line_3tp(levels):
@@ -103,8 +108,7 @@ def rr_line_3tp(levels):
         return ""
 
 def normalize_for_polygon(symbol: str) -> str:
-    """Приводим ввод к формату Polygon:
-       BTCUSDT/ETHUSD → X:BTCUSD/X:ETHUSD; уже X:/C:/O: — просто чистим хвост."""
+    """BTCUSDT/ETHUSD → X:BTCUSD/X:ETHUSD; X:/C:/O: оставляем, но USD*T → USD."""
     s = (symbol or "").strip().upper().replace(" ", "")
     if not s:
         return s
@@ -117,8 +121,9 @@ def normalize_for_polygon(symbol: str) -> str:
         return f"X:{s}"
     return s
 
+# ============== Q&A block ==============
 def render_plan_qa(ticker: str, horizon: str, out: dict):
-    """Мини-чат «Вопросы по плану». Работает только при наличии OPENAI_API_KEY."""
+    """Мини-чат «Вопросы по плану». Работает, если есть OPENAI_API_KEY."""
     st.markdown("<hr/>", unsafe_allow_html=True)
     st.subheader("Вопросы по плану")
 
@@ -139,12 +144,12 @@ def render_plan_qa(ticker: str, horizon: str, out: dict):
     probs = out.get("probs", {})
     rec = out.get("recommendation", {})
     action = rec.get("action", "WAIT")
-    conf = rec.get("confidence", 0)
+    conf = float(rec.get("confidence", 0))
 
     context_blob = (
         f"Тикер: {ticker}\n"
         f"Горизонт: {horizon}\n"
-        f"Действие: {action} (уверенность {int(float(conf)*100)}%)\n"
+        f"Действие: {action} (уверенность {int(conf*100)}%)\n"
         f"Цена: {out.get('last_price', 0):.2f}\n"
         f"Entry: {lv.get('entry', 0):.2f}\n"
         f"SL: {lv.get('sl', 0):.2f}\n"
@@ -154,7 +159,6 @@ def render_plan_qa(ticker: str, horizon: str, out: dict):
         f"Контекст: {', '.join(out.get('context', []))}\n"
         "Отвечай, опираясь ТОЛЬКО на эти факты. Не раскрывай внутренние формулы."
     )
-
     system = (
         "Ты помощник трейд-платформы Arxora. "
         "Отвечай коротко (1–4 предложения), профессионально, без воды и жаргона. "
@@ -163,101 +167,117 @@ def render_plan_qa(ticker: str, horizon: str, out: dict):
 
     ans = _llm_chat(system, f"{context_blob}\n\nВопрос пользователя: {user_q}")
     if not ans:
-        ans = "AI-ответ отключён (нет OPENAI_API_KEY или библиотека OpenAI не установлена)."
+        ans = "AI-ответ отключён (нет OPENAI_API_KEY или пакет OpenAI не установлен)."
 
     st.session_state.qa.append(("assistant", ans))
     st.rerun()
 
-# ---------- UI ----------
+# ============== UI ==============
 render_arxora_header()
 
 col1, col2 = st.columns([2, 1])
 with col1:
-    ticker_input = st.text_input("Тикер", value="", placeholder="Примеры: AAPL · TSLA · X:BTCUSD · BTCUSDT")
+    ticker_input = st.text_input(
+        "Тикер",
+        value="",
+        placeholder="Примеры: AAPL · TSLA · X:BTCUSD · BTCUSDT",
+    )
     ticker_raw = ticker_input.strip().upper()
 with col2:
     horizon = st.selectbox(
         "Горизонт",
         ["Краткосрок (1–5 дней)", "Среднесрок (1–4 недели)", "Долгосрок (1–6 месяцев)"],
-        index=1
+        index=1,
     )
 
 symbol = normalize_for_polygon(ticker_raw)
 run = st.button("Проанализировать", type="primary")
 
-# ---------- Main ----------
+# ============== Main ==============
 if run:
-    try:
-        out = analyze_asset(ticker=symbol, horizon=horizon)
+    if not symbol:
+        st.error("Укажи тикер.")
+    else:
+        try:
+            out = analyze_asset(ticker=symbol, horizon=horizon)
 
-        # Цена крупно
-        st.markdown(
-            f"<div style='font-size:3rem; font-weight:800; text-align:center; margin:6px 0 14px 0;'>${out['last_price']:.2f}</div>",
-            unsafe_allow_html=True,
-        )
-
-        # Рекомендация
-        action = out["recommendation"]["action"]
-        conf = float(out["recommendation"].get("confidence", 0.0))
-        conf_pct = f"{int(round(conf*100))}%"
-        action_text = "Buy LONG" if action == "BUY" else ("Sell SHORT" if action == "SHORT" else "WAIT")
-
-        st.markdown(
-            f"""
-            <div style="background:#0f1b2b; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:10px;">
-                <div style="font-size:1.15rem; font-weight:700;">{action_text}</div>
-                <div style="opacity:0.75; font-size:0.95rem; margin-top:2px;">{conf_pct} confidence</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        lv = out["levels"]
-
-        # Уровни для BUY/SHORT
-        if action in ("BUY", "SHORT"):
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown(card_html("Entry", f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
-            with c2:
-                st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
-
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}", sub=f"Probability {int(round(out['probs'].get('tp1',0)*100))}%"),
-                            unsafe_allow_html=True)
-            with c2:
-                st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}", sub=f"Probability {int(round(out['probs'].get('tp2',0)*100))}%"),
-                            unsafe_allow_html=True)
-            with c3:
-                st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}", sub=f"Probability {int(round(out['probs'].get('tp3',0)*100))}%"),
-                            unsafe_allow_html=True)
-
-            rr = rr_line_3tp(lv)
-            if rr:
-                st.markdown(f"<div style='opacity:0.75; margin-top:4px'>{rr}</div>", unsafe_allow_html=True)
-
-        # Контекст-чипсы
-        st.markdown(chips_html(out.get("context", [])), unsafe_allow_html=True)
-
-        # Живой текст из стратегии (если есть)
-        if out.get("note_html"):
-            st.markdown(out["note_html"], unsafe_allow_html=True)
-
-        # Альтернативный сценарий
-        if out.get("alt"):
+            # Цена крупно
             st.markdown(
-                f"<div style='margin-top:6px;'><b>Если пойдёт против базового сценария:</b> {out['alt']}</div>",
+                f"<div style='font-size:3rem; font-weight:800; text-align:center; margin:6px 0 14px 0;'>${out['last_price']:.2f}</div>",
                 unsafe_allow_html=True,
             )
 
-        # Дисклеймер
-        st.caption("Данная информация является примером того, как AI может генерировать инвестиционные идеи и не является прямой инвестиционной рекомендацией. Торговля на финансовых рынках сопряжена с высоким риском.")
+            # Рекомендация
+            action = out["recommendation"]["action"]
+            conf = float(out["recommendation"].get("confidence", 0.0))
+            conf_pct = f"{int(round(conf*100))}%"
+            action_text = "Buy LONG" if action == "BUY" else ("Sell SHORT" if action == "SHORT" else "WAIT")
 
-        # Блок Q&A (работает при наличии OPENAI_API_KEY)
-        render_plan_qa(ticker_raw or symbol, horizon, out)
+            st.markdown(
+                f"""
+                <div style="background:#0f1b2b; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:10px;">
+                    <div style="font-size:1.15rem; font-weight:700;">{action_text}</div>
+                    <div style="opacity:0.75; font-size:0.95rem; margin-top:2px;">{conf_pct} confidence</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-    except Exception as e:
-        st.error(f"Ошибка анализа: {e}")
+            lv = out["levels"]
+
+            # Уровни для BUY/SHORT
+            if action in ("BUY", "SHORT"):
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.markdown(card_html("Entry", f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
+                with c2:
+                    st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
+
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    st.markdown(
+                        card_html("TP 1", f"{lv['tp1']:.2f}",
+                                  sub=f"Probability {int(round(out['probs'].get('tp1',0)*100))}%"),
+                        unsafe_allow_html=True
+                    )
+                with c2:
+                    st.markdown(
+                        card_html("TP 2", f"{lv['tp2']:.2f}",
+                                  sub=f"Probability {int(round(out['probs'].get('tp2',0)*100))}%"),
+                        unsafe_allow_html=True
+                    )
+                with c3:
+                    st.markdown(
+                        card_html("TP 3", f"{lv['tp3']:.2f}",
+                                  sub=f"Probability {int(round(out['probs'].get('tp3',0)*100))}%"),
+                        unsafe_allow_html=True
+                    )
+
+                rr = rr_line_3tp(lv)
+                if rr:
+                    st.markdown(f"<div style='opacity:0.75; margin-top:4px'>{html.escape(rr)}</div>", unsafe_allow_html=True)
+
+            # Контекст-чипсы
+            st.markdown(chips_html(out.get("context", [])), unsafe_allow_html=True)
+
+            # Живой текст из стратегии (если есть)
+            if out.get("note_html"):
+                st.markdown(out["note_html"], unsafe_allow_html=True)
+
+            # Альтернативный сценарий
+            if out.get("alt"):
+                st.markdown(
+                    f"<div style='margin-top:6px;'><b>Если пойдёт против базового сценария:</b> {html.escape(out['alt'])}</div>",
+                    unsafe_allow_html=True,
+                )
+
+            # Дисклеймер
+            st.caption("Данная информация является примером того, как AI может генерировать инвестиционные идеи и не является прямой инвестиционной рекомендацией. Торговля на финансовых рынках сопряжена с высоким риском.")
+
+            # Q&A (если есть OPENAI_API_KEY)
+            render_plan_qa(ticker_raw or symbol, horizon, out)
+
+        except Exception as e:
+            st.error(f"Ошибка анализа: {e}")
 else:
     st.info("Введите тикер и нажмите «Проанализировать».")
