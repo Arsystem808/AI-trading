@@ -398,3 +398,299 @@ def analyze_asset(ticker: str, horizon: str):
         "note_html": note_html,
         "alt": alt,
     }
+# ==== SNAPSHOT-АНАЛИЗ: та же логика, что analyze_asset, но на срезе истории ====
+def analyze_snapshot(df: pd.DataFrame, price: float, horizon: str):
+    cfg = _horizon_cfg(horizon)
+    hz  = _hz_tag(horizon)
+
+    # позиция в диапазоне
+    tail = df.tail(cfg["look"])
+    rng_low  = float(tail["low"].min())
+    rng_high = float(tail["high"].max())
+    rng_w    = max(1e-9, rng_high - rng_low)
+    pos = (price - rng_low) / rng_w  # 0..1
+
+    closes = df["close"]
+    slope  = _linreg_slope(closes.tail(cfg["trend"]).values)
+    slope_norm = slope / max(1e-9, price)
+
+    atr_d  = float(_atr_like(df, n=cfg["atr"]).iloc[-1])
+    atr_w  = _weekly_atr(df) if cfg.get("use_weekly_atr") else atr_d
+    vol_ratio = atr_d / max(1e-9, float(_atr_like(df, n=cfg["atr"]*2).iloc[-1]))
+    streak    = _streak(closes)
+
+    last_row = df.iloc[-1]
+    body, upper, lower = _wick_profile(last_row)
+    long_upper = upper > body*1.3 and upper > lower*1.1
+    long_lower = lower > body*1.3 and lower > upper*1.1
+
+    # пивоты (последняя завершённая неделя; fallback — текущий диапазон)
+    hlc = _last_period_hlc(df, cfg["pivot_period"])
+    if not hlc:
+        hlc = (float(df["high"].tail(60).max()),
+               float(df["low"].tail(60).min()),
+               float(df["close"].iloc[-1]))
+    H, L, C = hlc
+    piv = _fib_pivots(H, L, C)
+    P, R1, R2 = piv["P"], piv["R1"], piv.get("R2")
+
+    buf  = 0.25 * atr_w
+    band = _classify_band(price, piv, buf)  # -3..+3
+
+    # сценарии
+    last_o, last_c = float(df["open"].iloc[-1]), float(df["close"].iloc[-1])
+    last_h = float(df["high"].iloc[-1])
+    upper_wick_d = max(0.0, last_h - max(last_o, last_c))
+    body_d = abs(last_c - last_o)
+    bearish_reject = (last_c < last_o) and (upper_wick_d > body_d)
+    very_high_pos = pos >= 0.80
+
+    if very_high_pos:
+        if (R2 is not None) and (price > R2 + 0.6*buf) and (slope_norm > 0):
+            action, scenario = "BUY", "breakout_up"
+        else:
+            action, scenario = "SHORT", "fade_top"
+    else:
+        if band >= +2:
+            action, scenario = ("BUY","breakout_up") if ((R2 is not None) and (price > R2 + 0.6*buf) and (slope_norm > 0)) else ("SHORT","fade_top")
+        elif band == +1:
+            action, scenario = ("WAIT","upper_wait") if (slope_norm > 0.0015 and not bearish_reject and not long_upper) else ("SHORT","fade_top")
+        elif band == 0:
+            action, scenario = ("BUY","trend_follow") if slope_norm >= 0 else ("WAIT","mid_range")
+        elif band == -1:
+            action, scenario = ("BUY","revert_from_bottom") if (streak <= -3 or long_lower) else ("BUY","trend_follow")
+        else:
+            action, scenario = ("BUY","revert_from_bottom") if band <= -2 else ("WAIT","upper_wait")
+
+    base = 0.55 + 0.12*_clip01(abs(slope_norm)*1800) + 0.08*_clip01((vol_ratio-0.9)/0.6)
+    if action == "WAIT": base -= 0.07
+    if band >= +1 and action == "BUY": base -= 0.10
+    if band <= -1 and action == "BUY": base += 0.05
+    conf = float(max(0.55, min(0.90, base)))
+
+    step_d, step_w = atr_d, atr_w
+    if action == "BUY":
+        if (R2 is not None) and (price > R2 + 0.6*buf) and (slope_norm > 0):
+            base_ref = R2 if R2 is not None else R1
+            entry = max(price, base_ref + 0.10*step_w)
+            sl    = base_ref - 1.00*step_w
+            tp1, tp2, tp3 = _three_targets_from_pivots(entry, "BUY", piv, step_w)
+        elif price < P:
+            entry = max(price, piv["S1"] + 0.15*step_w); sl = piv["S1"] - 0.60*step_w
+            tp1, tp2, tp3 = _three_targets_from_pivots(entry, "BUY", piv, step_w)
+        else:
+            entry = max(price, P + 0.10*step_w); sl = P - 0.60*step_w
+            tp1, tp2, tp3 = _three_targets_from_pivots(entry, "BUY", piv, step_w)
+        alt = "Если продавят ниже и не вернут — не лезем; ждём возврата сверху и подтверждения."
+    elif action == "SHORT":
+        if price >= R1:
+            entry = min(price, R1 - 0.15*step_w)
+            sl    = R1 + 0.60*step_w
+        else:
+            entry = price + 0.15*step_d
+            sl    = price + 1.00*step_d
+        tp1, tp2, tp3 = _three_targets_from_pivots(entry, "SHORT", piv, step_w)
+        alt = "Если протолкнут выше и удержат — без погони; ждём возврата и признаков слабости сверху."
+    else:  # WAIT
+        entry = price
+        sl    = price - 0.90*step_d
+        tp1, tp2, tp3 = entry + 0.7*step_d, entry + 1.4*step_d, entry + 2.1*step_d
+        alt = "Под верхом — не догоняю; работаю на пробое после ретеста или на откате к опоре."
+
+    atr_for_floor = atr_w if hz != "ST" else atr_d
+    tp1, tp2, tp3 = _apply_tp_floors(entry, sl, tp1, tp2, tp3, action, hz, price, atr_for_floor)
+    tp1, tp2, tp3 = _order_targets(entry, tp1, tp2, tp3, action)
+
+    p1 = _clip01(0.58 + 0.27*(conf-0.55)/0.35)
+    p2 = _clip01(0.44 + 0.21*(conf-0.55)/0.35)
+    p3 = _clip01(0.28 + 0.13*(conf-0.55)/0.35)
+
+    chips = []
+    if pos >= 0.8: chips.append("верхний диапазон")
+    elif pos >= 0.6: chips.append("под верхним краем")
+    elif pos >= 0.4: chips.append("средняя зона")
+    elif pos >= 0.2: chips.append("нижняя половина")
+    else:            chips.append("ниже опоры")
+
+    return {
+        "last_price": float(price),
+        "recommendation": {"action": action, "confidence": float(round(conf,4))},
+        "levels": {"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3)},
+        "probs": {"tp1": float(p1), "tp2": float(p2), "tp3": float(p3)},
+        "context": chips,
+        "note_html": "",
+        "alt": alt,
+    }
+
+# ==== БЭКТЕСТ с TP1/TP2/TP3 и частичным выходом ====
+def backtest_asset(
+    ticker: str,
+    horizon: str,
+    months: int = 6,
+    weights = (0.4, 0.4, 0.2),   # доли выхода на TP1/TP2/TP3
+    be_after_tp1: bool = True,   # перенос стопа в BE после TP1
+    trail_after_tp2: bool = True,# перенос стопа к TP1 после TP2
+    sl_priority: bool = True,    # конфликт TP/SL в один день: сначала SL (консервативно)
+):
+    cli = PolygonClient()
+    cfg = _horizon_cfg(horizon)
+    look = cfg["look"]
+
+    # История: полгода + запас под контекст
+    days = int(months * 31) + (look + 40)
+    df_full = cli.daily_ohlc(ticker, days=days).copy().dropna()
+    if len(df_full) < look + 20:
+        raise ValueError("Недостаточно данных для бэктеста.")
+
+    # нормализация весов
+    w1, w2, w3 = weights
+    s = max(1e-9, (w1 + w2 + w3))
+    w1, w2, w3 = w1/s, w2/s, w3/s
+
+    # параметры удержания и окна входа
+    hold_map = {"ST": 5, "MID": 20, "LT": 60}
+    hz = _hz_tag(horizon)
+    max_hold = hold_map.get(hz, 20)
+    fill_window = 3
+
+    trades = []
+    equity = [0.0]
+    dates  = []
+
+    start_idx = max(look + 5, len(df_full) - int(months * 21))  # ~рабочие дни
+    for i in range(start_idx, len(df_full) - 1):
+        df_asof = df_full.iloc[:i+1]
+        price_asof = float(df_asof["close"].iloc[-1])
+
+        out = analyze_snapshot(df_asof, price_asof, horizon)
+        rec = out["recommendation"]["action"]
+        if rec not in ("BUY", "SHORT"):
+            continue
+
+        lv = out["levels"]
+        entry = float(lv["entry"]); sl = float(lv["sl"])
+        tp1  = float(lv["tp1"]);   tp2 = float(lv["tp2"]);   tp3 = float(lv["tp3"])
+        side = 1 if rec == "BUY" else -1
+        risk = abs(entry - sl)
+        if risk <= 1e-9:
+            continue
+
+        # окно «касания» entry
+        fill_ix = None
+        for j in range(i+1, min(i+1+fill_window, len(df_full))):
+            lo = float(df_full["low"].iloc[j]); hi = float(df_full["high"].iloc[j])
+            if lo <= entry <= hi:
+                fill_ix = j
+                break
+        if fill_ix is None:
+            continue
+
+        # после входа: частичный выход по целям
+        remaining = 1.0
+        r_accum   = 0.0
+        hit1 = hit2 = hit3 = False
+        cur_sl = sl
+        exit_ix = fill_ix
+        exit_reason = "timeout"
+        exit_price  = float(df_full["close"].iloc[min(fill_ix + max_hold, len(df_full)-1)])
+
+        def add_r(weight, target):
+            nonlocal r_accum, remaining
+            r_accum += weight * (side * (target - entry) / risk)
+            remaining -= weight
+
+        for k in range(fill_ix, min(fill_ix + max_hold, len(df_full))):
+            lo = float(df_full["low"].iloc[k]); hi = float(df_full["high"].iloc[k])
+
+            def sl_hit():  return (lo <= cur_sl) if side > 0 else (hi >= cur_sl)
+            def tp1_hit(): return (hi >= tp1)   if side > 0 else (lo <= tp1)
+            def tp2_hit(): return (hi >= tp2)   if side > 0 else (lo <= tp2)
+            def tp3_hit(): return (hi >= tp3)   if side > 0 else (lo <= tp3)
+
+            # приоритет SL в конфликтный день
+            if sl_priority and sl_hit():
+                exit_reason = "SL"
+                exit_price  = cur_sl
+                r_accum    += remaining * (side * (cur_sl - entry) / risk)
+                remaining   = 0.0
+                exit_ix     = k
+                break
+
+            progressed = False
+            if (not hit1) and tp1_hit():
+                hit1 = True
+                add_r(w1, tp1); progressed = True
+                if be_after_tp1: cur_sl = entry
+            if remaining <= 1e-9:
+                exit_reason = "TP1"; exit_ix = k; break
+
+            if hit1 and (not hit2) and tp2_hit():
+                hit2 = True
+                add_r(w2, tp2); progressed = True
+                if trail_after_tp2: cur_sl = tp1
+            if remaining <= 1e-9:
+                exit_reason = "TP2"; exit_ix = k; break
+
+            if hit2 and (not hit3) and tp3_hit():
+                hit3 = True
+                add_r(w3, tp3)
+                exit_reason = "TP3"
+                remaining = 0.0
+                exit_ix = k
+                break
+
+            # неконсервативный вариант порядка: SL в конце
+            if (not sl_priority) and sl_hit():
+                exit_reason = "SL"
+                exit_price  = cur_sl
+                r_accum    += remaining * (side * (cur_sl - entry) / risk)
+                remaining   = 0.0
+                exit_ix     = k
+                break
+
+            if not progressed:
+                exit_ix = k  # двигаем курсор дальше
+
+        # timeout
+        if remaining > 1e-9:
+            k = min(fill_ix + max_hold, len(df_full)-1)
+            exit_ix = k
+            exit_reason = "timeout"
+            exit_price = float(df_full["close"].iloc[k])
+            r_accum += remaining * (side * (exit_price - entry) / risk)
+            remaining = 0.0
+
+        trades.append({
+            "date_entry": df_full.index[fill_ix].date(),
+            "date_exit":  df_full.index[exit_ix].date(),
+            "action": rec,
+            "entry": entry, "sl": sl,
+            "tp1": tp1, "tp2": tp2, "tp3": tp3,
+            "exit": exit_price, "reason": exit_reason,
+            "R": round(r_accum, 3),
+            "weights": (round(w1,2), round(w2,2), round(w3,2)),
+            "moved_BE": bool(be_after_tp1), "trail_TP1": bool(trail_after_tp2),
+        })
+
+        equity.append(equity[-1] + r_accum)
+        dates.append(df_full.index[exit_ix])
+
+    # сводка
+    if trades:
+        wins = sum(1 for t in trades if t["R"] > 0)
+        winrate = 100.0 * wins / len(trades)
+        total_R = equity[-1]
+        avg_R   = total_R / len(trades)
+    else:
+        winrate = 0.0; total_R = 0.0; avg_R = 0.0
+
+    return {
+        "trades": trades,
+        "equity_R": {"dates": dates, "values": equity[1:]},
+        "summary": {
+            "n_trades": len(trades),
+            "winrate_pct": round(winrate, 1),
+            "total_R": round(total_R, 2),
+            "avg_R": round(avg_R, 3),  # мат. ожидание в R/сделку
+        }
+    }
