@@ -292,3 +292,195 @@ if run:
         st.error(f"Ошибка анализа: {e}")
 else:
     st.info("Введите тикер и нажмите «Проанализировать».")
+    # =====================
+# Admin · Train ST model inline (optional)
+# =====================
+with st.expander("🧠 ML · быстрый тренинг (ST) прямо здесь"):
+    st.caption("Обучит краткосрочную модель (ST) по дневным данным из Polygon и сохранит её в models/.")
+
+    tickers_text = st.text_input(
+        "Тикеры (через запятую)",
+        "SPY,QQQ,AAPL,MSFT,TSLA,X:BTCUSD,X:ETHUSD",
+        key="train_tickers"
+    )
+    months = st.slider("Месяцев истории", 3, 36, 12, key="train_months")
+    start_btn = st.button("🚀 Обучить ST-модель сейчас", key="train_start")
+
+    if start_btn:
+        try:
+            import joblib
+            # LightGBM опционален, fallback — LogisticRegression
+            try:
+                from lightgbm import LGBMClassifier
+                use_lgbm = True
+            except Exception:
+                from sklearn.linear_model import LogisticRegression
+                use_lgbm = False
+        except Exception:
+            st.error("Нужно установить зависимости: `pip install joblib scikit-learn lightgbm`")
+            st.stop()
+
+        from pathlib import Path
+        import numpy as np
+        import pandas as pd
+
+        # берем нужные хелперы из твоей стратегии, чтобы совпали фичи/логика
+        try:
+            from core.polygon_client import PolygonClient
+            from core.strategy import (
+                _horizon_cfg, _atr_like, _weekly_atr, _linreg_slope, _streak,
+                _last_period_hlc, _fib_pivots, _classify_band,
+                _apply_tp_floors, _order_targets, _hz_tag, _three_targets_from_pivots
+            )
+        except Exception as e:
+            st.error(f"Импорт модулей не удался: {e}")
+            st.stop()
+
+        HORIZON = "Краткосрок (1–5 дней)"
+        cfg = _horizon_cfg(HORIZON)
+        look = cfg["look"]
+        HOLD_DAYS = 5
+        FILL_WINDOW = 3
+        FEATS = ["pos","slope_norm","atr_d_over_price","vol_ratio","streak","band","long_upper","long_lower"]
+
+        def compute_levels_asof(df_asof: pd.DataFrame):
+            price = float(df_asof["close"].iloc[-1])
+            atr_d  = float(_atr_like(df_asof, n=cfg["atr"]).iloc[-1])
+            atr_w  = _weekly_atr(df_asof) if cfg.get("use_weekly_atr") else atr_d
+            hlc = _last_period_hlc(df_asof, cfg["pivot_period"])
+            if not hlc:
+                hlc = (float(df_asof["high"].tail(60).max()),
+                       float(df_asof["low"].tail(60).min()),
+                       float(df_asof["close"].iloc[-1]))
+            H,L,C = hlc
+            piv = _fib_pivots(H,L,C)
+            P,R1,R2 = piv["P"],piv["R1"],piv.get("R2")
+            step_w = atr_w
+            if price < P:
+                entry = max(price, piv["S1"] + 0.15*step_w); sl = piv["S1"] - 0.60*step_w
+            else:
+                entry = max(price, P + 0.10*step_w); sl = P - 0.60*step_w
+            hz = _hz_tag(HORIZON)
+            tp1, tp2, tp3 = _three_targets_from_pivots(entry, "BUY", piv, step_w)
+            tp1, tp2, tp3 = _apply_tp_floors(entry, sl, tp1, tp2, tp3, "BUY", hz, price, step_w)
+            tp1, tp2, tp3 = _order_targets(entry, tp1, tp2, tp3, "BUY")
+            return entry, sl, tp1
+
+        def label_tp_before_sl(df: pd.DataFrame, start_ix: int, entry: float, sl: float, tp1: float, hold_days: int) -> int:
+            lo = df["low"].values; hi = df["high"].values
+            N = len(df)
+            end = min(N, start_ix + hold_days)
+            for k in range(start_ix, end):
+                if lo[k] <= sl:  return 0
+                if hi[k] >= tp1: return 1
+            return 0
+
+        cli = PolygonClient()
+        rows = []
+        tickers = [t.strip() for t in tickers_text.split(",") if t.strip()]
+
+        prog = st.progress(0.0, text="Готовим датасет…")
+        total = len(tickers)
+
+        for idx, t in enumerate(tickers, 1):
+            try:
+                days = int(months*31) + look + 40
+                df = cli.daily_ohlc(t, days=days).dropna()
+                if len(df) < look + 30:
+                    st.write(f"⚠️ {t}: мало данных ({len(df)}) — пропускаю")
+                    prog.progress(min(idx/total, 1.0))
+                    continue
+
+                for i in range(look+5, len(df)-6):
+                    df_asof = df.iloc[:i+1]
+                    price = float(df_asof["close"].iloc[-1])
+
+                    tail = df_asof.tail(look)
+                    rng_low, rng_high = float(tail["low"].min()), float(tail["high"].max())
+                    rng_w = max(1e-9, rng_high - rng_low)
+                    pos = (price - rng_low) / rng_w
+
+                    atr_d = float(_atr_like(df_asof, n=cfg["atr"]).iloc[-1])
+                    atr2  = float(_atr_like(df_asof, n=cfg["atr"]*2).iloc[-1])
+                    vol_ratio = atr_d/max(1e-9, atr2)
+                    slope  = _linreg_slope(df_asof["close"].tail(cfg["trend"]).values)/max(1e-9, price)
+                    streak = _streak(df_asof["close"])
+
+                    hlc = _last_period_hlc(df_asof, cfg["pivot_period"])
+                    if not hlc:
+                        hlc = (float(df_asof["high"].tail(60).max()),
+                               float(df_asof["low"].tail(60).min()),
+                               float(df_asof["close"].iloc[-1]))
+                    piv = _fib_pivots(*hlc)
+                    band = _classify_band(price, piv, 0.25*(_weekly_atr(df_asof) if cfg.get("use_weekly_atr") else atr_d))
+
+                    lw_row = df_asof.iloc[-1]
+                    body  = abs(lw_row["close"] - lw_row["open"])
+                    upper = max(0.0, lw_row["high"] - max(lw_row["open"], lw_row["close"]))
+                    lower = max(0.0, min(lw_row["open"], lw_row["close"]) - lw_row["low"])
+                    long_upper = (upper > body*1.3) and (upper > lower*1.1)
+                    long_lower = (lower > body*1.3) and (lower > upper*1.1)
+
+                    entry, sl, tp1 = compute_levels_asof(df_asof)
+
+                    touch_ix = None
+                    j_end = min(i + 1 + FILL_WINDOW, len(df))
+                    for j in range(i+1, j_end):
+                        lo = float(df["low"].iloc[j]); hi = float(df["high"].iloc[j])
+                        if lo <= entry <= hi:
+                            touch_ix = j
+                            break
+                    if touch_ix is None:
+                        continue
+
+                    y = label_tp_before_sl(df, touch_ix, entry, sl, tp1, HOLD_DAYS)
+
+                    rows.append(dict(
+                        ticker=t, date=df_asof.index[-1].date(), y=int(y),
+                        pos=pos, slope_norm=slope, atr_d_over_price=atr_d/max(1e-9, price),
+                        vol_ratio=vol_ratio, streak=float(streak), band=float(band),
+                        long_upper=float(long_upper), long_lower=float(long_lower)
+                    ))
+
+            except Exception as e:
+                st.write(f"❌ {t}: {e}")
+            finally:
+                prog.progress(min(idx/total, 1.0))
+
+        if not rows:
+            st.error("Не удалось собрать датасет. Проверь ключ Polygon/тикеры/историю.")
+            st.stop()
+
+        dfX = pd.DataFrame(rows)
+        st.write("📊 Размер датасета:", dfX.shape, "доля y=1:", float(dfX["y"].mean()))
+
+        X = dfX[FEATS].astype(float); y = dfX["y"].astype(int)
+
+        if use_lgbm:
+            model = LGBMClassifier(
+                n_estimators=400, learning_rate=0.05,
+                num_leaves=63, subsample=0.8, colsample_bytree=0.8,
+                random_state=42
+            )
+        else:
+            from sklearn.linear_model import LogisticRegression
+            model = LogisticRegression(max_iter=500, class_weight="balanced")
+
+        model.fit(X, y)
+        # упаковка: как в ai_inference.load_model ожидается {model, features, auc}
+        from sklearn.metrics import roc_auc_score
+        try:
+            proba = model.predict_proba(X)[:,1]
+        except Exception:
+            proba = model.predict(X).astype(float)
+        auc = float(roc_auc_score(y, proba)) if len(np.unique(y))>1 else float("nan")
+
+        models_dir = Path(os.getenv("ARXORA_MODEL_DIR","models"))
+        models_dir.mkdir(parents=True, exist_ok=True)
+        out_path = models_dir / "arxora_lgbm_ST.joblib"
+        joblib.dump({"model": model, "features": FEATS, "auc": auc}, out_path)
+
+        st.success(f"✅ Модель сохранена: {out_path}")
+        st.write(f"AUC по обучению (грубо): {auc:.3f}")
+        st.info("Перезапусти анализ (или приложение), бейдж должен переключиться на Mode: AI.")
+
