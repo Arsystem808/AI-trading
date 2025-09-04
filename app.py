@@ -1,30 +1,24 @@
-# app.py
 import os
 import re
 import hashlib
 import random
 import streamlit as st
 from dotenv import load_dotenv
-
-# импортируем стратегию безопасно и проверяем наличие бэктеста
-from core import strategy as _strategy
-analyze_asset = _strategy.analyze_asset
-HAS_BACKTEST = hasattr(_strategy, "backtest_asset")
+from core.strategy import analyze_asset
 
 load_dotenv()
 
 # =====================
 # Arxora BRANDING
 # =====================
-st.set_page_config(
-    page_title="Arxora — трейд-ИИ (MVP)",
-    page_icon="assets/arxora_favicon_512.png",
-    layout="centered",
-)
+st.set_page_config(page_title="Arxora — трейд-ИИ (MVP)",
+                   page_icon="assets/arxora_favicon_512.png",
+                   layout="centered")
 
 def render_arxora_header():
     hero_path = "assets/arxora_logo_hero.png"
     if os.path.exists(hero_path):
+        # fix: use_container_width (not deprecated use_column_width)
         st.image(hero_path, use_container_width=True)
     else:
         PURPLE = "#5B5BF7"; BLACK = "#0B0D0E"
@@ -47,8 +41,7 @@ def render_arxora_header():
                 </div>
               </div>
             </div>
-            """,
-            unsafe_allow_html=True,
+            """, unsafe_allow_html=True,
         )
 
 render_arxora_header()
@@ -149,7 +142,7 @@ def render_stopline(levels):
     return line.format(sl=_fmt(levels["sl"]), risk_pct=compute_risk_pct(levels))
 
 # =====================
-# HTML карточка
+# HTML карточка (используем в колонках)
 # =====================
 def card_html(title, value, sub=None, color=None):
     bg = "#141a20"
@@ -164,36 +157,29 @@ def card_html(title, value, sub=None, color=None):
     """
 
 # =====================
-# Polygon нормализация
+# Polygon нормализация (всегда Polygon)
 # =====================
 def normalize_for_polygon(symbol: str) -> str:
     """
     Возвращает тикер в формате Polygon.
+    Примеры:
       'X:btcusd' -> 'X:BTCUSD'
       'BTCUSDT'  -> 'X:BTCUSD'
       'ETHUSD'   -> 'X:ETHUSD'
-      'AAPL'     -> 'AAPL'
+      'AAPL'     -> 'AAPL' (акции/ETF)
     """
     s = (symbol or "").strip().upper().replace(" ", "")
+    # Уже с префиксом X:/C:/O: — просто нормализуем хвост
     if s.startswith(("X:", "C:", "O:")):
         head, tail = s.split(":", 1)
         tail = tail.replace("USDT", "USD").replace("USDC", "USD")
         return f"{head}:{tail}"
+    # Пары без префикса
     if re.match(r"^[A-Z]{2,10}USD(T|C)?$", s):
         s = s.replace("USDT", "USD").replace("USDC", "USD")
         return f"X:{s}"
+    # Иначе — акции/ETF/прочее без изменений
     return s
-
-# =====================
-# Session state (чтобы результат не пропадал)
-# =====================
-for k, v in {
-    "result": None,
-    "saved_ticker": "",
-    "saved_horizon": "",
-}.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
 
 # =====================
 # Inputs
@@ -202,10 +188,10 @@ col1, col2 = st.columns([2,1])
 with col1:
     ticker_input = st.text_input(
         "Тикер",
-        value="",
+        value="",  # без AAPL по умолчанию
         placeholder="Примеры: AAPL · TSLA · X:BTCUSD · BTCUSDT"
     )
-    ticker_raw = ticker_input.strip().upper()
+    ticker = ticker_input.strip().upper()
 with col2:
     horizon = st.selectbox(
         "Горизонт",
@@ -213,152 +199,74 @@ with col2:
         index=1
     )
 
-symbol_for_engine = normalize_for_polygon(ticker_raw)
+symbol_for_engine = normalize_for_polygon(ticker)
 run = st.button("Проанализировать", type="primary")
-
-# =====================
-# Рендер результата
-# =====================
-def render_result(out, ticker_shown: str):
-    st.markdown(
-        f"<div style='font-size:3rem; font-weight:800; text-align:center; margin:6px 0 14px 0;'>${out['last_price']:.2f}</div>",
-        unsafe_allow_html=True,
-    )
-    action = out["recommendation"]["action"]
-    conf = float(out["recommendation"].get("confidence", 0))
-    conf_pct = f"{int(round(conf*100))}%"
-    action_text = "Buy LONG" if action == "BUY" else ("Sell SHORT" if action == "SHORT" else "WAIT")
-    st.markdown(
-        f"""
-        <div style="background:#0f1b2b; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:10px;">
-            <div style="font-size:1.15rem; font-weight:700;">{action_text}</div>
-            <div style="opacity:0.75; font-size:0.95rem; margin-top:2px;">{conf_pct} confidence</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    lv = out["levels"]
-    if action in ("BUY", "SHORT"):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown(card_html("Entry", f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
-        with c2:
-            st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
-        with c3:
-            st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}",
-                                  sub=f"Probability {int(round(out['probs']['tp1']*100))}%"),
-                        unsafe_allow_html=True)
-
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}",
-                                  sub=f"Probability {int(round(out['probs']['tp2']*100))}%"),
-                        unsafe_allow_html=True)
-        with c2:
-            st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}",
-                                  sub=f"Probability {int(round(out['probs']['tp3']*100))}%"),
-                        unsafe_allow_html=True)
-
-        rr = rr_line(lv)
-        if rr:
-            st.markdown(f"<div style='opacity:0.75; margin-top:4px'>{rr}</div>", unsafe_allow_html=True)
-
-    plan = render_plan_line(action, lv, ticker=ticker_shown, seed_extra=horizon)
-    st.markdown(f"<div style='margin-top:8px'>{plan}</div>", unsafe_allow_html=True)
-
-    ctx_key = "neutral"
-    if action == "BUY": ctx_key = "support"
-    elif action == "SHORT": ctx_key = "resistance"
-    ctx = render_context_line(ctx_key)
-    st.markdown(f"<div style='opacity:0.9'>{ctx}</div>", unsafe_allow_html=True)
-
-    if action in ("BUY","SHORT"):
-        stopline = render_stopline(lv)
-        st.markdown(f"<div style='opacity:0.9; margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
-
-    if out.get("alt"):
-        st.markdown(
-            f"<div style='margin-top:6px;'><b>Если пойдёт против базового сценария:</b> {out['alt']}</div>",
-            unsafe_allow_html=True,
-        )
-
-    st.caption(CUSTOM_PHRASES["DISCLAIMER"])
-
-# =====================
-# Optional: Performance (появится, если в стратегии есть backtest_asset)
-# =====================
-def render_performance_block(ticker: str, horizon: str, months: int = 6):
-    if not HAS_BACKTEST:
-        return
-    import pandas as pd  # локальный импорт, чтобы не требовать pandas без нужды
-
-    st.markdown("### Performance (за полгода)")
-    # Настройки выхода по целям (если в бэктесте поддерживаются веса)
-    c1, c2, c3 = st.columns(3)
-    w1 = c1.slider("TP1 доля", 0.0, 1.0, 0.40, 0.05)
-    w2 = c2.slider("TP2 доля", 0.0, 1.0, 0.40, 0.05)
-    w3 = max(0.0, 1.0 - w1 - w2)
-    c3.metric("TP3 доля", f"{w3:.2f}")
-
-    be_after_tp1    = st.checkbox("Перенос стопа в BE после TP1", value=True)
-    trail_after_tp2 = st.checkbox("Стоп → TP1 после TP2", value=True)
-    sl_priority     = st.checkbox("SL при конфликте срабатывает первым (консервативно)", value=True)
-
-    with st.spinner("Считаем бэктест…"):
-        perf = _strategy.backtest_asset(
-            ticker=ticker,
-            horizon=horizon,
-            months=months,
-            weights=(w1, w2, w3),
-            be_after_tp1=be_after_tp1,
-            trail_after_tp2=trail_after_tp2,
-            sl_priority=sl_priority,
-        )
-
-    s = perf["summary"]
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Сделок", s["n_trades"])
-    m2.metric("Win-rate", f"{s['winrate_pct']}%")
-    m3.metric("Мат. ожидание (R/сделка)", s["avg_R"])
-
-    if perf["equity_R"]["values"]:
-        eq_df = pd.DataFrame({
-            "date": perf["equity_R"]["dates"],
-            "equity_R": perf["equity_R"]["values"],
-        }).set_index("date")
-        st.line_chart(eq_df, height=220)
-    else:
-        st.info("За выбранный период не нашлось исполнившихся входов.")
-
-    if perf["trades"]:
-        st.dataframe(pd.DataFrame(perf["trades"]), use_container_width=True)
 
 # =====================
 # Main
 # =====================
 if run:
-    if not symbol_for_engine:
-        st.error("Укажи тикер.")
-    else:
-        try:
-            out = analyze_asset(ticker=symbol_for_engine, horizon=horizon)
-            # сохраняем в состояние, чтобы не обнулялось на перерендере
-            st.session_state.result = out
-            st.session_state.saved_ticker = ticker_raw or symbol_for_engine
-            st.session_state.saved_horizon = horizon
-        except Exception as e:
-            st.error(f"Ошибка анализа: {e}")
-
-# Рисуем последний результат из состояния
-if st.session_state.result:
-    render_result(st.session_state.result, st.session_state.saved_ticker)
-    # блок перформанса (если есть бэктест в стратегии)
     try:
-        render_performance_block(st.session_state.saved_ticker, st.session_state.saved_horizon, months=6)
-    except Exception as e:
-        st.warning(f"Бэктест недоступен: {e}")
-else:
-    if not run:
-        st.info("Введите тикер и нажмите «Проанализировать».")
+        out = analyze_asset(ticker=symbol_for_engine, horizon=horizon)
 
+        st.markdown(
+            f"<div style='font-size:3rem; font-weight:800; text-align:center; margin:6px 0 14px 0;'>${out['last_price']:.2f}</div>",
+            unsafe_allow_html=True,
+        )
+
+        action = out["recommendation"]["action"]
+        conf = out["recommendation"].get("confidence", 0)
+        conf_pct = f"{int(round(float(conf)*100))}%"
+        action_text = "Buy LONG" if action == "BUY" else ("Sell SHORT" if action == "SHORT" else "WAIT")
+        st.markdown(
+            f"""
+            <div style="background:#0f1b2b; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:10px;">
+                <div style="font-size:1.15rem; font-weight:700;">{action_text}</div>
+                <div style="opacity:0.75; font-size:0.95rem; margin-top:2px;">{conf_pct} confidence</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        lv = out["levels"]
+        if action in ("BUY", "SHORT"):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.markdown(card_html("Entry", f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
+            with c2:
+                st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
+            with c3:
+                st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}", sub=f"Probability {int(round(out['probs']['tp1']*100))}%"), unsafe_allow_html=True)
+
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}", sub=f"Probability {int(round(out['probs']['tp2']*100))}%"), unsafe_allow_html=True)
+            with c2:
+                st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}", sub=f"Probability {int(round(out['probs']['tp3']*100))}%"), unsafe_allow_html=True)
+
+            rr = rr_line(lv)
+            if rr:
+                st.markdown(f"<div style='opacity:0.75; margin-top:4px'>{rr}</div>", unsafe_allow_html=True)
+
+        plan = render_plan_line(action, lv, ticker=ticker, seed_extra=horizon)
+        st.markdown(f"<div style='margin-top:8px'>{plan}</div>", unsafe_allow_html=True)
+
+        ctx_key = "neutral"
+        if action == "BUY": ctx_key = "support"
+        elif action == "SHORT": ctx_key = "resistance"
+        ctx = render_context_line(ctx_key)
+        st.markdown(f"<div style='opacity:0.9'>{ctx}</div>", unsafe_allow_html=True)
+
+        if action in ("BUY","SHORT"):
+            stopline = render_stopline(lv)
+            st.markdown(f"<div style='opacity:0.9; margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
+
+        if out.get("alt"):
+            st.markdown(f"<div style='margin-top:6px;'><b>Если пойдёт против базового сценария:</b> {out['alt']}</div>", unsafe_allow_html=True)
+
+        st.caption(CUSTOM_PHRASES["DISCLAIMER"])
+
+    except Exception as e:
+        st.error(f"Ошибка анализа: {e}")
+else:
+    st.info("Введите тикер и нажмите «Проанализировать».")
