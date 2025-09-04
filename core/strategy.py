@@ -1,4 +1,5 @@
 # core/strategy.py
+import os
 import hashlib
 import random
 import numpy as np
@@ -260,12 +261,50 @@ def analyze_asset(ticker: str, horizon: str):
         else:
             action, scenario = ("BUY", "revert_from_bottom") if band <= -2 else ("WAIT", "upper_wait")
 
-    # уверенность
+    # уверенность (базовая от правил)
     base = 0.55 + 0.12 * _clip01(abs(slope_norm) * 1800) + 0.08 * _clip01((vol_ratio - 0.9) / 0.6)
     if action == "WAIT": base -= 0.07
     if band >= +1 and action == "BUY": base -= 0.10
     if band <= -1 and action == "BUY": base += 0.05
     conf = float(max(0.55, min(0.90, base)))
+
+    # ======== AI override (если есть модель — подменяет action/conf) ========
+    try:
+        from core.ai_inference import score_signal
+    except Exception:
+        score_signal = None
+
+    if score_signal is not None:
+        feats = dict(
+            pos=pos,
+            slope_norm=slope_norm,
+            atr_d_over_price=(atr_d / max(1e-9, price)),
+            vol_ratio=vol_ratio,
+            streak=float(streak),
+            band=float(band),
+            long_upper=bool(long_upper),
+            long_lower=bool(long_lower),
+        )
+        hz_tag = _hz_tag(horizon)
+        out_ai = score_signal(feats, hz=hz_tag)
+        if out_ai is not None:
+            p_long = float(out_ai.get("p_long", 0.5))
+            th_long = float(os.getenv("ARXORA_AI_TH_LONG", "0.55"))
+            th_short = float(os.getenv("ARXORA_AI_TH_SHORT", "0.45"))
+
+            if p_long >= th_long:
+                ai_action = "BUY"
+                ai_conf = 0.55 + 0.35 * (p_long - th_long) / max(1e-9, 1.0 - th_long)
+            elif p_long <= th_short:
+                ai_action = "SHORT"
+                ai_conf = 0.55 + 0.35 * ((th_short - p_long) / max(1e-9, th_short))
+            else:
+                ai_action = "WAIT"
+                ai_conf = 0.55 - 0.07
+
+            action = ai_action
+            conf = float(max(0.55, min(0.90, ai_conf)))
+    # ======== конец AI override ========
 
     # уровни (для WAIT они не показываются в UI)
     step_d, step_w = atr_d, atr_w
