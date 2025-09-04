@@ -690,4 +690,27 @@ def render_training_panel():
 # вызов панели (вне любых if/with)
 render_training_panel()
 
+# --- сохранение модели и кнопка скачивания ---
+models_dir = Path(os.getenv("ARXORA_MODEL_DIR", "models"))
+models_dir.mkdir(parents=True, exist_ok=True)
+out_path = models_dir / "arxora_lgbm_ST.joblib"
+
+import joblib as _joblib
+_joblib.dump({"model": model, "features": FEATS, "auc": auc}, out_path)
+
+st.success(f"✅ Модель сохранена: {out_path}")
+st.write(f"AUC по обучению (грубо): {auc:.3f}")
+
+# читаем файл ВНУТРИ with...
+with open(out_path, "rb") as fh:
+    binary = fh.read()
+
+# ...а кнопку вызываем СНАРУЖИ (содержимое уже в переменной)
+st.download_button(
+    label="⬇️ Скачать модель (ST)",
+    data=binary,
+    file_name="arxora_lgbm_ST.joblib",
+    mime="application/octet-stream",
+    key="dl_st_model"
+)
 
