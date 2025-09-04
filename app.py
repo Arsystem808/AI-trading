@@ -479,10 +479,6 @@ with st.expander("🧠 ML · быстрый тренинг (ST) прямо зд�
         models_dir.mkdir(parents=True, exist_ok=True)
         out_path = models_dir / "arxora_lgbm_ST.joblib"
         joblib.dump({"model": model, "features": FEATS, "auc": auc}, out_path)
-with open(out_path, "rb") as f:
-    st.download_button("⬇️ Скачать модель (ST)",
-                       data=f.read(),
-                       file_name="arxora_lgbm_ST.joblib")
 
         st.success(f"✅ Модель сохранена: {out_path}")
         st.write(f"AUC по обучению (грубо): {auc:.3f}")
