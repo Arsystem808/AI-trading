@@ -3,4 +3,3 @@ requests
 python-dotenv
 pandas
 numpy
-openai>=1.40.0
