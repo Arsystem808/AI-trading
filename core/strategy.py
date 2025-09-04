@@ -527,79 +527,107 @@ def backtest_asset(
     ticker: str,
     horizon: str,
     months: int = 6,
-    weights = (0.4, 0.4, 0.2),   # доли выхода на TP1/TP2/TP3
-    be_after_tp1: bool = True,   # перенос стопа в BE после TP1
-    trail_after_tp2: bool = True,# перенос стопа к TP1 после TP2
-    sl_priority: bool = True,    # конфликт TP/SL в один день: сначала SL (консервативно)
+    weights = (0.4, 0.4, 0.2),         # доли выхода на TP1/TP2/TP3 (сумма ≈ 1.0)
+    be_after_tp1: bool = True,         # перенос стопа в BE после TP1
+    trail_after_tp2: bool = True,      # перенос стопа к TP1 после TP2
+    sl_priority: bool = True,          # в конфликтный день сначала SL (консервативно)
+    min_conf: float = 0.70,            # МИН. уверенность сигнала (0..1)
+    no_overlap: bool = True,           # не допускать пересечения сделок
+    cooldown_days: int = 0,            # пауза после выхода (рабочих дней)
 ):
-    cli = PolygonClient()
-    cfg = _horizon_cfg(horizon)
-    look = cfg["look"]
+    """
+    Бэктест по дневным свечам с частичным выходом (TP1/TP2/TP3).
+    Новое:
+      • min_conf — фильтр по уверенности (например 0.70 => 70%);
+      • no_overlap — «одна сделка за раз»: пока сделка не завершена, новые сигналы игнорируем;
+      • cooldown_days — пауза после выхода.
 
-    # История: полгода + запас под контекст
-    days = int(months * 31) + (look + 40)
-    df_full = cli.daily_ohlc(ticker, days=days).copy().dropna()
-    if len(df_full) < look + 20:
-        raise ValueError("Недостаточно данных для бэктеста.")
-
+    Логика:
+      – анализ на close дня t (as-of),
+      – ждём касания entry в окне 3 дней; если не задело — (при no_overlap=True) перескакиваем окно,
+      – после входа: частичные выходы TP1/TP2/TP3 (weights), перенос SL (BE/TP1),
+      – таймаут удержания: ST=5, MID=20, LT=60 торговых дней.
+    """
     # нормализация весов
     w1, w2, w3 = weights
     s = max(1e-9, (w1 + w2 + w3))
     w1, w2, w3 = w1/s, w2/s, w3/s
 
-    # параметры удержания и окна входа
+    cli = PolygonClient()
+    cfg = _horizon_cfg(horizon)
+    look = cfg["look"]
+
+    # глубина истории
+    days = int(months * 31) + (look + 40)
+    df_full = cli.daily_ohlc(ticker, days=days).copy().dropna()
+    if len(df_full) < look + 20:
+        raise ValueError("Недостаточно данных для бэктеста.")
+
+    # параметры удержания
     hold_map = {"ST": 5, "MID": 20, "LT": 60}
     hz = _hz_tag(horizon)
     max_hold = hold_map.get(hz, 20)
     fill_window = 3
 
-    trades = []
-    equity = [0.0]
-    dates  = []
+    trades, equity, dates = [], [0.0], []
 
-    start_idx = max(look + 5, len(df_full) - int(months * 21))  # ~рабочие дни
-    for i in range(start_idx, len(df_full) - 1):
+    # старт так, чтобы хватало lookback; ориентир ~ N месяцев рабочих дней
+    start_idx = max(look + 5, len(df_full) - int(months * 21))
+    i = start_idx
+    N = len(df_full)
+
+    while i < N - 1:
         df_asof = df_full.iloc[:i+1]
         price_asof = float(df_asof["close"].iloc[-1])
 
         out = analyze_snapshot(df_asof, price_asof, horizon)
         rec = out["recommendation"]["action"]
-        if rec not in ("BUY", "SHORT"):
+        conf = float(out["recommendation"].get("confidence", 0.0))
+
+        # фильтр по действию и уверенности
+        if rec not in ("BUY", "SHORT") or conf < float(min_conf):
+            i += 1
             continue
 
-        lv = out["levels"]
+        lv   = out["levels"]
         entry = float(lv["entry"]); sl = float(lv["sl"])
-        tp1  = float(lv["tp1"]);   tp2 = float(lv["tp2"]);   tp3 = float(lv["tp3"])
-        side = 1 if rec == "BUY" else -1
-        risk = abs(entry - sl)
+        tp1   = float(lv["tp1"]);  tp2 = float(lv["tp2"]);  tp3 = float(lv["tp3"])
+        side  = 1 if rec == "BUY" else -1
+        risk  = abs(entry - sl)
         if risk <= 1e-9:
+            i += 1
             continue
 
-        # окно «касания» entry
+        # ищем исполнение входа в ближайшие fill_window дней
         fill_ix = None
-        for j in range(i+1, min(i+1+fill_window, len(df_full))):
+        j_end = min(i + 1 + fill_window, N)
+        for j in range(i+1, j_end):
             lo = float(df_full["low"].iloc[j]); hi = float(df_full["high"].iloc[j])
             if lo <= entry <= hi:
                 fill_ix = j
                 break
+
         if fill_ix is None:
+            # вход не задело — при no_overlap «перепрыгиваем» окно, иначе двигаемся на 1 день
+            i = j_end if no_overlap else i + 1
             continue
 
-        # после входа: частичный выход по целям
+        # --- после входа: частичные выходы ---
         remaining = 1.0
         r_accum   = 0.0
         hit1 = hit2 = hit3 = False
         cur_sl = sl
         exit_ix = fill_ix
         exit_reason = "timeout"
-        exit_price  = float(df_full["close"].iloc[min(fill_ix + max_hold, len(df_full)-1)])
+        exit_price  = float(df_full["close"].iloc[min(fill_ix + max_hold, N-1)])
 
         def add_r(weight, target):
             nonlocal r_accum, remaining
             r_accum += weight * (side * (target - entry) / risk)
             remaining -= weight
 
-        for k in range(fill_ix, min(fill_ix + max_hold, len(df_full))):
+        k_end = min(fill_ix + max_hold, N)
+        for k in range(fill_ix, k_end):
             lo = float(df_full["low"].iloc[k]); hi = float(df_full["high"].iloc[k])
 
             def sl_hit():  return (lo <= cur_sl) if side > 0 else (hi >= cur_sl)
@@ -607,7 +635,6 @@ def backtest_asset(
             def tp2_hit(): return (hi >= tp2)   if side > 0 else (lo <= tp2)
             def tp3_hit(): return (hi >= tp3)   if side > 0 else (lo <= tp3)
 
-            # приоритет SL в конфликтный день
             if sl_priority and sl_hit():
                 exit_reason = "SL"
                 exit_price  = cur_sl
@@ -639,7 +666,6 @@ def backtest_asset(
                 exit_ix = k
                 break
 
-            # неконсервативный вариант порядка: SL в конце
             if (not sl_priority) and sl_hit():
                 exit_reason = "SL"
                 exit_price  = cur_sl
@@ -653,7 +679,7 @@ def backtest_asset(
 
         # timeout
         if remaining > 1e-9:
-            k = min(fill_ix + max_hold, len(df_full)-1)
+            k = min(fill_ix + max_hold, N-1)
             exit_ix = k
             exit_reason = "timeout"
             exit_price = float(df_full["close"].iloc[k])
@@ -664,6 +690,7 @@ def backtest_asset(
             "date_entry": df_full.index[fill_ix].date(),
             "date_exit":  df_full.index[exit_ix].date(),
             "action": rec,
+            "confidence": round(conf, 2),
             "entry": entry, "sl": sl,
             "tp1": tp1, "tp2": tp2, "tp3": tp3,
             "exit": exit_price, "reason": exit_reason,
@@ -674,6 +701,12 @@ def backtest_asset(
 
         equity.append(equity[-1] + r_accum)
         dates.append(df_full.index[exit_ix])
+
+        # шаг индекса с учётом overlap/кулдауна
+        if no_overlap:
+            i = min(exit_ix + max(0, int(cooldown_days)), N - 1)
+        else:
+            i += 1
 
     # сводка
     if trades:
@@ -691,6 +724,6 @@ def backtest_asset(
             "n_trades": len(trades),
             "winrate_pct": round(winrate, 1),
             "total_R": round(total_R, 2),
-            "avg_R": round(avg_R, 3),  # мат. ожидание в R/сделку
+            "avg_R": round(avg_R, 3),
         }
     }
