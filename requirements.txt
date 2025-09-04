@@ -3,3 +3,6 @@ requests
 python-dotenv
 pandas
 numpy
+joblib
+scikit-learn
+lightgbm  
