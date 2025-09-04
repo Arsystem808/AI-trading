@@ -52,7 +52,7 @@ def _streak(closes: pd.Series) -> int:
 
 def _wick_profile(row):
     o, c, h, l = row["open"], row["close"], row["high"], row["low"]
-    body = abs(c - o)
+    body  = abs(c - o)
     upper = max(0.0, h - max(o, c))
     lower = max(0.0, min(o, c) - l)
     return body, upper, lower
@@ -72,6 +72,14 @@ def _hz_tag(text: str) -> str:
     if "Кратко" in text:  return "ST"
     if "Средне" in text:  return "MID"
     return "LT"
+
+# стабильная вариативность текста: меняется раз в N часов (по умолчанию 8)
+def _rotating_choice(options, salt: str, bucket_hours: int = 8):
+    if not options:
+        return ""
+    now_bucket = pd.Timestamp.utcnow().floor(f"{bucket_hours}H")
+    h = int(hashlib.sha1(f"{salt}|{now_bucket.isoformat()}".encode()).hexdigest(), 16)
+    return options[h % len(options)]
 
 # ---------- скрытые Fibonacci-pivots ----------
 def _last_period_hlc(df: pd.DataFrame, rule: str):
@@ -324,37 +332,62 @@ def analyze_asset(ticker: str, horizon: str):
     if long_upper: chips.append("тени сверху")
     if long_lower: chips.append("тени снизу")
 
-    # «живой» текст
-    seed = int(hashlib.sha1(f"{ticker}{df.index[-1].date()}".encode()).hexdigest(), 16) % (2**32)
-    rng = random.Random(seed)
+    # «живой» текст (вариативный, стабилен 8 часов)
+    buy_low_pool = [
+        "Спрос живой — работаю от опоры.",
+        "Поддержка рядом — вхожу после отката.",
+        "Отталкиваемся снизу — беру реакцию, без погони.",
+        "Опора держит — вхожу аккуратно на возврате.",
+        "Покупатели активны у уровня — план от реакции."
+    ]
+    buy_mid_pool = [
+        "Поддержка снизу — вход аккуратно, без погони.",
+        "Сценарий в пользу роста — берём после паузы.",
+        "Покупатели защищают уровень — работаю по ходу.",
+        "Выше опоры — без догоняния, только от отката.",
+        "Импульс держится — жду ретест и реакцию вверх."
+    ]
+    short_top_pool = [
+        "Сверху тяжело — ищу слабость у кромки.",
+        "Под потолком продавец — работаю от отказа.",
+        "Импульс выдыхается у верха — готовлю шорт.",
+        "Зона предложения рядом — план от отката вниз.",
+        "Под верхним краем — шорт по признакам слабости."
+    ]
+    wait_pool = [
+        "Без входа: жду пробой с ретестом или откат к опоре.",
+        "Под кромкой — даю цене определиться.",
+        "Сигнал сырой — план от подтверждения.",
+        "Пауза — нужен либо пробой, либо откат к уровню.",
+        "Жду ясной реакции от ключевой зоны."
+    ]
+
     if action == "BUY":
-        lead = rng.choice([
-            "Поддержка рядом — работаю по ходу, только после отката.",
-            "Опора держит — вход не догоняя, на возврате.",
-            "Спрос живой — беру реакцию от опоры.",
-        ]) if pos <= 0.6 else rng.choice([
-            "Поддержка снизу — вход аккуратно, без погони.",
-            "Отталкиваемся от опоры — беру после паузы.",
-        ])
+        pool = buy_low_pool if pos <= 0.6 else buy_mid_pool
     elif action == "SHORT":
-        lead = rng.choice([
-            "Сверху тяжело — ищу слабость у кромки.",
-            "Под потолком продавец — работаю от отказа.",
-            "Импульс выдыхается у верха — готовлю шорт.",
-        ])
+        pool = short_top_pool
     else:
-        lead = rng.choice([
-            "Без входа: жду пробой с ретестом или откат к опоре/центру.",
-            "Под кромкой — даю цене определиться.",
-            "Здесь не гонюсь — план от отката.",
-        ])
+        pool = wait_pool
+
+    lead = _rotating_choice(pool, salt=f"{ticker}|{scenario}|lead")
+
+    adds_candidates = []
+    if pos >= 0.8 and action != "BUY":
+        adds_candidates.append("Погоня сверху — не мой вход. Жду откат.")
+    if action == "BUY" and pos <= 0.4:
+        adds_candidates.append("Вход только после реакции, без рывка.")
+    if streak >= 4:
+        adds_candidates.append("Серия длинная — риски отката выше.")
 
     adds = []
-    if pos >= 0.8 and action != "BUY": adds.append("Погоня сверху — не мой вход. Жду откат.")
-    if action == "BUY" and pos <= 0.4:  adds.append("Вход только после реакции, без рывка.")
-    if streak >= 4:                      adds.append("Серия длинная — риски отката выше.")
+    if adds_candidates:
+        a1 = _rotating_choice(adds_candidates, salt=f"{ticker}|{scenario}|add1")
+        adds.append(a1)
+        rest = [x for x in adds_candidates if x != a1]
+        if rest:
+            adds.append(_rotating_choice(rest, salt=f"{ticker}|{scenario}|add2"))
 
-    note_html = f"<div style='margin-top:10px; opacity:0.95;'>{' '.join([lead] + adds[:2])}</div>"
+    note_html = f"<div style='margin-top:10px; opacity:0.95;'>{' '.join([lead] + adds)}</div>"
 
     return {
         "last_price": float(price),
