@@ -1,3 +1,4 @@
+# app.py
 import os
 import re
 import hashlib
@@ -6,19 +7,31 @@ import streamlit as st
 from dotenv import load_dotenv
 from core.strategy import analyze_asset
 
-load_dotenv()
+# =====================
+# Page config (ставим самым первым Streamlit-вызовом)
+# =====================
+st.set_page_config(
+    page_title="Arxora — трейд-ИИ (MVP)",
+    page_icon="assets/arxora_favicon_512.png",
+    layout="centered"
+)
+
+# =====================
+# Env: .env + Streamlit secrets -> os.environ
+# =====================
+load_dotenv()  # подхват из .env, если есть
+for k in ("POLYGON_API_KEY", "ARXORA_MODEL_DIR",
+          "ARXORA_AI_TH_LONG", "ARXORA_AI_TH_SHORT",
+          "ARXORA_AI_PSEUDO"):
+    if k in st.secrets:
+        os.environ[k] = str(st.secrets[k])
 
 # =====================
 # Arxora BRANDING
 # =====================
-st.set_page_config(page_title="Arxora — трейд-ИИ (MVP)",
-                   page_icon="assets/arxora_favicon_512.png",
-                   layout="centered")
-
 def render_arxora_header():
     hero_path = "assets/arxora_logo_hero.png"
     if os.path.exists(hero_path):
-        # fix: use_container_width (not deprecated use_column_width)
         st.image(hero_path, use_container_width=True)
     else:
         PURPLE = "#5B5BF7"; BLACK = "#0B0D0E"
@@ -169,16 +182,13 @@ def normalize_for_polygon(symbol: str) -> str:
       'AAPL'     -> 'AAPL' (акции/ETF)
     """
     s = (symbol or "").strip().upper().replace(" ", "")
-    # Уже с префиксом X:/C:/O: — просто нормализуем хвост
     if s.startswith(("X:", "C:", "O:")):
         head, tail = s.split(":", 1)
         tail = tail.replace("USDT", "USD").replace("USDC", "USD")
         return f"{head}:{tail}"
-    # Пары без префикса
     if re.match(r"^[A-Z]{2,10}USD(T|C)?$", s):
         s = s.replace("USDT", "USD").replace("USDC", "USD")
         return f"X:{s}"
-    # Иначе — акции/ETF/прочее без изменений
     return s
 
 # =====================
@@ -198,6 +208,18 @@ with col2:
         ["Краткосрок (1–5 дней)", "Среднесрок (1–4 недели)", "Долгосрок (1–6 месяцев)"],
         index=1
     )
+
+# --- AI mode badge ---
+hz = "ST" if "Кратко" in horizon else ("MID" if "Средне" in horizon else "LT")
+model_dir = os.getenv("ARXORA_MODEL_DIR", "models")
+model_path = os.path.join(model_dir, f"arxora_lgbm_{hz}.joblib")
+ai_has_model = os.path.exists(model_path)
+pseudo_on = str(os.getenv("ARXORA_AI_PSEUDO", "1")).lower() in ("1", "true", "yes")
+mode_label = "AI" if ai_has_model else ("AI (pseudo)" if pseudo_on else "Rules")
+st.markdown(
+    f"<div style='opacity:.75;font-size:.9rem;margin:.25rem 0'>Mode: <b>{mode_label}</b> · Horizon: {hz}</div>",
+    unsafe_allow_html=True
+)
 
 symbol_for_engine = normalize_for_polygon(ticker)
 run = st.button("Проанализировать", type="primary")
