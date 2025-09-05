@@ -1,24 +1,52 @@
 # app.py
 import os
 import re
-import io
 import hashlib
 import random
-import joblib
 import streamlit as st
 from dotenv import load_dotenv
 from core.strategy import analyze_asset
 
 load_dotenv()
 
+# ─────────────────────────────────────────────────────────
+# NEW: читаем секреты и пробрасываем в окружение
+# ─────────────────────────────────────────────────────────
+def _get_secret(key, default=None, cast=str):
+    try:
+        val = st.secrets.get(key, default)
+    except Exception:
+        val = default
+    if val is None:
+        return default
+    try:
+        return cast(val)
+    except Exception:
+        return default
+
+# ключ Polygon (если в .env нет — возьмём из secrets)
+os.environ["POLYGON_API_KEY"] = os.getenv("POLYGON_API_KEY") or str(_get_secret("POLYGON_API_KEY", ""))
+
+ARXORA_MODEL_DIR     = _get_secret("ARXORA_MODEL_DIR", "models", str)
+ARXORA_AI_TH_LONG    = _get_secret("ARXORA_AI_TH_LONG", 0.55, float)
+ARXORA_AI_TH_SHORT   = _get_secret("ARXORA_AI_TH_SHORT", 0.45, float)
+ARXORA_AI_PSEUDO     = bool(int(_get_secret("ARXORA_AI_PSEUDO", 1, float)))
+ARXORA_SHOW_TRAINERS = bool(int(_get_secret("ARXORA_SHOW_TRAINERS", 0, float)))
+ARXORA_TRAINER_PASS  = _get_secret("ARXORA_TRAINER_PASS", "admin", str)
+
+# чтобы core/strategy и core/ai_inference могли читать через os.getenv()
+os.environ["ARXORA_MODEL_DIR"]   = ARXORA_MODEL_DIR
+os.environ["ARXORA_AI_TH_LONG"]  = str(ARXORA_AI_TH_LONG)
+os.environ["ARXORA_AI_TH_SHORT"] = str(ARXORA_AI_TH_SHORT)
+os.environ["ARXORA_AI_PSEUDO"]   = "1" if ARXORA_AI_PSEUDO else "0"
+# ─────────────────────────────────────────────────────────
+
 # =====================
 # Arxora BRANDING
 # =====================
-st.set_page_config(
-    page_title="Arxora — трейд-ИИ (MVP)",
-    page_icon="assets/arxora_favicon_512.png",
-    layout="centered"
-)
+st.set_page_config(page_title="Arxora — трейд-ИИ (MVP)",
+                   page_icon="assets/arxora_favicon_512.png",
+                   layout="centered")
 
 def render_arxora_header():
     hero_path = "assets/arxora_logo_hero.png"
@@ -45,56 +73,47 @@ def render_arxora_header():
                 </div>
               </div>
             </div>
-            """,
-            unsafe_allow_html=True,
+            """, unsafe_allow_html=True,
         )
 
 render_arxora_header()
 
 # =====================
-# Полезные фразы
+# Текстовые блоки
 # =====================
 CUSTOM_PHRASES = {
-    "BUY": [
-        "Точка входа: покупка в диапазоне {range_low}–{range_high}{unit_suffix}. AI-анализ указывает на сильную поддержку в этой зоне."
-    ],
-    "SHORT": [
-        "Точка входа: продажа (short) в диапазоне {range_low}–{range_high}{unit_suffix}. AI-анализ указывает на сильное сопротивление в этой зоне."
-    ],
+    "BUY": ["Точка входа: покупка в диапазоне {range_low}–{range_high}{unit_suffix}. AI-анализ указывает на сильную поддержку в этой зоне."],
+    "SHORT": ["Точка входа: продажа (short) в диапазоне {range_low}–{range_high}{unit_suffix}. AI-анализ указывает на сильное сопротивление в этой зоне."],
     "WAIT": [
         "Пока не вижу для себя ясной картины, я бы не торопился.",
         "Я бы пока не торопился и подождал более точной картины. Возможные новости могут стать триггером и изменить динамику и волатильность.",
-        "Пока без позиции: жду более ясного сигнала. Новости могут сдвинуть рынок и поменять волатильность."
+        "Пока без позиции: жду более ясного сигнала. Новости могут сдвинуть рынок и поменять волатильность.",
     ],
     "CONTEXT": {
         "support": ["Анализ, проведённый ИИ, определяет эту зону как область сильной поддержки."],
         "resistance": ["Анализ, проведённый ИИ, определяет эту зону как область сильного сопротивления."],
-        "neutral": ["Рынок в балансе — действую только по подтверждённому сигналу."]
+        "neutral": ["Рынок в балансе — действую только по подтверждённому сигналу."],
     },
     "STOPLINE": [
         "Стоп-лосс: {sl}. Потенциальный риск ~{risk_pct}% от входа. Уровень определён алгоритмами анализа волатильности как критический."
     ],
-    "DISCLAIMER": "Данная информация является примером того, как AI может генерировать инвестиционные идеи и не является прямой инвестиционной рекомендацией. Торговля на финансовых рынках сопряжена с высоким риском."
+    "DISCLAIMER": "Данная информация является примером того, как AI может генерировать инвестиционные идеи и не является прямой инвестиционной рекомендацией. Торговля на финансовых рынках сопряжена с высоким риском.",
 }
 
 # =====================
-# Хелперы (формат/риск/юниты)
+# Хелперы форматирования
 # =====================
-import math
-
-def _fmt(x):
-    return f"{float(x):.2f}"
+def _fmt(x): return f"{float(x):.2f}"
 
 def compute_display_range(levels, widen_factor=0.25):
     entry = float(levels["entry"]); sl = float(levels["sl"])
-    risk = abs(entry - sl)
-    width = max(risk * widen_factor, 0.01)
+    risk = abs(entry - sl); width = max(risk * widen_factor, 0.01)
     low, high = entry - width, entry + width
     return _fmt(min(low, high)), _fmt(max(low, high))
 
 def compute_risk_pct(levels):
     entry = float(levels["entry"]); sl = float(levels["sl"])
-    return "—" if entry == 0 else f"{abs(entry - sl)/max(1e-9,abs(entry))*100.0:.1f}"
+    return "—" if entry == 0 else f"{abs(entry - sl)/abs(entry)*100.0:.1f}"
 
 UNIT_STYLE = {"equity":"za_akciyu","etf":"omit","crypto":"per_base","fx":"per_base","option":"per_contract"}
 ETF_HINTS = {"SPY","QQQ","IWM","DIA","EEM","EFA","XLK","XLF","XLE","XLY","XLI","XLV","XLP","XLU","VNQ","GLD","SLV"}
@@ -118,9 +137,9 @@ def parse_base_symbol(ticker: str):
 def unit_suffix(ticker: str) -> str:
     kind = detect_asset_class(ticker)
     style = UNIT_STYLE.get(kind, "omit")
-    if style == "za_akciyu":    return " за акцию"
-    if style == "per_base":      return f" за 1 {parse_base_symbol(ticker)}"
-    if style == "per_contract":  return " за контракт"
+    if style == "za_akciyu":   return " за акцию"
+    if style == "per_base":    return f" за 1 {parse_base_symbol(ticker)}"
+    if style == "per_contract":return " за контракт"
     return ""
 
 def rr_line(levels):
@@ -160,9 +179,6 @@ def card_html(title, value, sub=None, color=None):
         </div>
     """
 
-# =====================
-# Polygon нормализация
-# =====================
 def normalize_for_polygon(symbol: str) -> str:
     s = (symbol or "").strip().upper().replace(" ", "")
     if s.startswith(("X:", "C:", "O:")):
@@ -173,20 +189,6 @@ def normalize_for_polygon(symbol: str) -> str:
         s = s.replace("USDT", "USD").replace("USDC", "USD")
         return f"X:{s}"
     return s
-
-# =====================
-# Проверка наличия модели (бейдж Mode: AI)
-# =====================
-def horizon_tag(text: str) -> str:
-    if "Кратко" in text:  return "ST"
-    if "Средне" in text:  return "MID"
-    return "LT"
-
-def model_exists_for(hz: str, ticker: str) -> bool:
-    tk = (ticker or "").upper().replace(":", "").replace("/", "").replace("-", "")
-    per_ticker = os.path.join("models", f"arxora_lgbm_{hz}_{tk}.joblib")
-    common     = os.path.join("models", f"arxora_lgbm_{hz}.joblib")
-    return os.path.exists(per_ticker) or os.path.exists(common)
 
 # =====================
 # Inputs
@@ -206,9 +208,9 @@ with col2:
         index=1
     )
 
-hz = horizon_tag(horizon)
-mode_str = "AI" if model_exists_for(hz, normalize_for_polygon(ticker)) else "AI (pseudo)"
-st.caption(f"Mode: {mode_str} · Horizon: {hz}")
+# бейдж режима
+hz_tag = "ST" if "Кратко" in horizon else ("MID" if "Средне" in horizon else "LT")
+st.caption(f"Mode: {'AI (pseudo)' if ARXORA_AI_PSEUDO else 'AI'} · Horizon: {hz_tag}")
 
 symbol_for_engine = normalize_for_polygon(ticker)
 run = st.button("Проанализировать", type="primary")
@@ -281,207 +283,3 @@ if run:
         st.error(f"Ошибка анализа: {e}")
 else:
     st.info("Введите тикер и нажмите «Проанализировать».")
-
-# =========================================================
-# 🧠 ML · быстрый тренинг (ST)
-# =========================================================
-with st.expander("🧠 ML · быстрый тренинг (ST) прямо здесь"):
-    st.caption("Обучит краткосрочную модель (ST) по дневным данным из Polygon и сохранит её в models/.")
-
-    tickers_st = st.text_input("Тикеры (через запятую)", value="AAPL, X:BTCUSD")
-    months_st = st.slider("Месяцев истории", min_value=6, max_value=48, value=18, step=3)
-
-    if st.button("🚀 Обучить ST-модель сейчас", use_container_width=True):
-        try:
-            import numpy as np
-            from core.polygon_client import PolygonClient
-            cli = PolygonClient()
-
-            X_list, y_list, feats = [], [], None
-            n_forward = 3  # ~1 неделя
-
-            for tk in [t.strip().upper() for t in tickers_st.split(",") if t.strip()]:
-                df = cli.daily_ohlc(tk, days=int(months_st * 30))
-                if df is None or len(df) < 40:
-                    st.warning(f"Мало данных для {tk}")
-                    continue
-
-                df = df.copy()
-                df["ret1"] = df["close"].pct_change()
-                df["ret5"] = df["close"].pct_change(5)
-                df["ret20"] = df["close"].pct_change(20)
-                df["vol20"] = df["ret1"].rolling(20).std()
-                df["ma20"] = df["close"].rolling(20).mean()
-                df["ma50"] = df["close"].rolling(50).mean()
-                df["ma20_rel"] = df["close"] / df["ma20"] - 1.0
-                df["ma50_rel"] = df["close"] / df["ma50"] - 1.0
-
-                df["y"] = (df["close"].shift(-n_forward) / df["close"] - 1.0) > 0.0
-                df = df.dropna()
-
-                feats = ["ret1","ret5","ret20","vol20","ma20_rel","ma50_rel"]
-                X_list.append(df[feats].values.astype(float))
-                y_list.append(df["y"].astype(int).values)
-
-            if not X_list:
-                st.error("Не удалось собрать данные.")
-            else:
-                import numpy as np
-                X = np.vstack(X_list); y = np.concatenate(y_list)
-
-                try:
-                    from lightgbm import LGBMClassifier
-                    model = LGBMClassifier(
-                        n_estimators=300, learning_rate=0.06,
-                        subsample=0.9, colsample_bytree=0.9, random_state=42
-                    )
-                except Exception:
-                    from sklearn.linear_model import LogisticRegression
-                    model = LogisticRegression(max_iter=2000)
-
-                model.fit(X, y)
-
-                os.makedirs("models", exist_ok=True)
-                out_path = "models/arxora_lgbm_ST.joblib"
-                joblib.dump({"model": model, "features": feats, "horizon": "ST"}, out_path)
-
-                st.success(f"✅ Модель сохранена: {out_path}")
-                with open(out_path, "rb") as f:
-                    st.download_button("💾 Скачать модель (ST)", data=f.read(),
-                                       file_name="arxora_lgbm_ST.joblib", mime="application/octet-stream")
-        except Exception as e:
-            st.error(f"Ошибка обучения ST: {e}")
-
-# =========================================================
-# 🧠 ML · быстрый тренинг (MID)
-# =========================================================
-with st.expander("🧠 ML · быстрый тренинг (MID) прямо здесь"):
-    st.caption("Обучит среднесрочную модель (MID) по дневным данным и сохранит её в models/.")
-
-    tickers_mid = st.text_input("Тикеры (через запятую)", value="AAPL, TSLA")
-    months_mid = st.slider("Месяцев истории ", min_value=12, max_value=72, value=36, step=6)
-
-    if st.button("🚀 Обучить MID-модель сейчас", use_container_width=True):
-        try:
-            import numpy as np
-            from core.polygon_client import PolygonClient
-            cli = PolygonClient()
-
-            X_list, y_list, feats = [], [], None
-            n_forward = 10  # ~ 2 недели
-
-            for tk in [t.strip().upper() for t in tickers_mid.split(",") if t.strip()]:
-                df = cli.daily_ohlc(tk, days=int(months_mid * 30))
-                if df is None or len(df) < 60:
-                    st.warning(f"Мало данных для {tk}")
-                    continue
-
-                df = df.copy()
-                df["ret1"] = df["close"].pct_change()
-                df["ret5"] = df["close"].pct_change(5)
-                df["ret20"] = df["close"].pct_change(20)
-                df["vol20"] = df["ret1"].rolling(20).std()
-                df["ma20"] = df["close"].rolling(20).mean()
-                df["ma50"] = df["close"].rolling(50).mean()
-                df["ma20_rel"] = df["close"] / df["ma20"] - 1.0
-                df["ma50_rel"] = df["close"] / df["ma50"] - 1.0
-
-                df["y"] = (df["close"].shift(-n_forward) / df["close"] - 1.0) > 0.0
-                df = df.dropna()
-
-                feats = ["ret1","ret5","ret20","vol20","ma20_rel","ma50_rel"]
-                X_list.append(df[feats].values.astype(float))
-                y_list.append(df["y"].astype(int).values)
-
-            if not X_list:
-                st.error("Не удалось собрать данные.")
-            else:
-                X = np.vstack(X_list); y = np.concatenate(y_list)
-                try:
-                    from lightgbm import LGBMClassifier
-                    model = LGBMClassifier(
-                        n_estimators=350, learning_rate=0.05,
-                        subsample=0.85, colsample_bytree=0.85, random_state=42
-                    )
-                except Exception:
-                    from sklearn.linear_model import LogisticRegression
-                    model = LogisticRegression(max_iter=2000)
-
-                model.fit(X, y)
-                os.makedirs("models", exist_ok=True)
-                out_path = "models/arxora_lgbm_MID.joblib"
-                joblib.dump({"model": model, "features": feats, "horizon": "MID"}, out_path)
-
-                st.success(f"✅ Модель сохранена: {out_path}")
-                with open(out_path, "rb") as f:
-                    st.download_button("💾 Скачать модель (MID)", data=f.read(),
-                                       file_name="arxora_lgbm_MID.joblib", mime="application/octet-stream")
-        except Exception as e:
-            st.error(f"Ошибка обучения MID: {e}")
-
-# =========================================================
-# 🧠 ML · быстрый тренинг (LT)
-# =========================================================
-with st.expander("🧠 ML · быстрый тренинг (LT) прямо здесь"):
-    st.caption("Обучит долгосрочную модель (LT) по дневным данным и сохранит её в models/.")
-
-    tickers_lt = st.text_input("Тикеры (через запятую)", value="AAPL")
-    months_lt = st.slider("Месяцев истории", min_value=24, max_value=120, value=60, step=6)
-
-    if st.button("🚀 Обучить LT-модель сейчас", use_container_width=True):
-        try:
-            import numpy as np
-            from core.polygon_client import PolygonClient
-            cli = PolygonClient()
-
-            X_list, y_list, feats = [], [], None
-            n_forward = 20  # ~ 1 месяц
-
-            for tk in [t.strip().upper() for t in tickers_lt.split(",") if t.strip()]:
-                df = cli.daily_ohlc(tk, days=int(months_lt * 30))
-                if df is None or len(df) < 80:
-                    st.warning(f"Мало данных для {tk}")
-                    continue
-
-                df = df.copy()
-                df["ret1"] = df["close"].pct_change()
-                df["ret5"] = df["close"].pct_change(5)
-                df["ret20"] = df["close"].pct_change(20)
-                df["vol20"] = df["ret1"].rolling(20).std()
-                df["ma20"] = df["close"].rolling(20).mean()
-                df["ma50"] = df["close"].rolling(50).mean()
-                df["ma20_rel"] = df["close"] / df["ma20"] - 1.0
-                df["ma50_rel"] = df["close"] / df["ma50"] - 1.0
-
-                df["y"] = (df["close"].shift(-n_forward) / df["close"] - 1.0) > 0.0
-                df = df.dropna()
-
-                feats = ["ret1","ret5","ret20","vol20","ma20_rel","ma50_rel"]
-                X_list.append(df[feats].values.astype(float))
-                y_list.append(df["y"].astype(int).values)
-
-            if not X_list:
-                st.error("Не удалось собрать данные.")
-            else:
-                X = np.vstack(X_list); y = np.concatenate(y_list)
-                try:
-                    from lightgbm import LGBMClassifier
-                    model = LGBMClassifier(
-                        n_estimators=400, learning_rate=0.05,
-                        subsample=0.8, colsample_bytree=0.8, random_state=42
-                    )
-                except Exception:
-                    from sklearn.linear_model import LogisticRegression
-                    model = LogisticRegression(max_iter=2000)
-
-                model.fit(X, y)
-                os.makedirs("models", exist_ok=True)
-                out_path = "models/arxora_lgbm_LT.joblib"
-                joblib.dump({"model": model, "features": feats, "horizon": "LT"}, out_path)
-
-                st.success(f"✅ Модель сохранена: {out_path}")
-                with open(out_path, "rb") as f:
-                    st.download_button("💾 Скачать модель (LT)", data=f.read(),
-                                       file_name="arxora_lgbm_LT.joblib", mime="application/octet-stream")
-        except Exception as e:
-            st.error(f"Ошибка обучения LT: {e}")
