@@ -1,31 +1,34 @@
 # app.py
 import os
 import re
-import io
 import hashlib
 import random
 import streamlit as st
 from dotenv import load_dotenv
 
-# Аналитика уровней
 from core.strategy import analyze_asset
-# Быстрый тренинг моделей (должен быть файл core/ai_inference.py)
-from core.ai_inference import train_quick_st, train_quick_mid, train_quick_lt
+
+# --- безопасный импорт тренажёров ---
+try:
+    # основной вариант
+    from core.ai_inference import train_quick_st, train_quick_mid, train_quick_lt
+except Exception:
+    # попытка найти альтернативные имена, если файл назывался иначе
+    try:
+        from core.ai_inference import (
+            train_st_quick as train_quick_st,
+            train_mid_quick as train_quick_mid,
+            train_lt_quick  as train_quick_lt,
+        )
+    except Exception:
+        train_quick_st = train_quick_mid = train_quick_lt = None
 
 load_dotenv()
 
-# =====================
-# Базовые настройки страницы
-# =====================
-st.set_page_config(
-    page_title="Arxora — трейд-ИИ (MVP)",
-    page_icon="assets/arxora_favicon_512.png",
-    layout="centered"
-)
+st.set_page_config(page_title="Arxora — трейд-ИИ (MVP)",
+                   page_icon="assets/arxora_favicon_512.png",
+                   layout="centered")
 
-# =====================
-# Шапка/брендинг
-# =====================
 def render_arxora_header():
     hero_path = "assets/arxora_logo_hero.png"
     if os.path.exists(hero_path):
@@ -51,15 +54,11 @@ def render_arxora_header():
                 </div>
               </div>
             </div>
-            """,
-            unsafe_allow_html=True,
+            """, unsafe_allow_html=True,
         )
 
 render_arxora_header()
 
-# =====================
-# Полезные фразы (UI-тексты)
-# =====================
 CUSTOM_PHRASES = {
     "BUY": [
         "Точка входа: покупка в диапазоне {range_low}–{range_high}{unit_suffix}. AI-анализ указывает на сильную поддержку в этой зоне."
@@ -83,11 +82,7 @@ CUSTOM_PHRASES = {
     "DISCLAIMER": "Данная информация является примером того, как AI может генерировать инвестиционные идеи и не является прямой инвестиционной рекомендацией. Торговля на финансовых рынках сопряжена с высоким риском."
 }
 
-# =====================
-# Хелперы форматирования и риска
-# =====================
-def _fmt(x: float) -> str:
-    return f"{float(x):.2f}"
+def _fmt(x): return f"{float(x):.2f}"
 
 def compute_display_range(levels, widen_factor=0.25):
     entry = float(levels["entry"]); sl = float(levels["sl"])
@@ -96,7 +91,7 @@ def compute_display_range(levels, widen_factor=0.25):
     low, high = entry - width, entry + width
     return _fmt(min(low, high)), _fmt(max(low, high))
 
-def compute_risk_pct(levels) -> str:
+def compute_risk_pct(levels):
     entry = float(levels["entry"]); sl = float(levels["sl"])
     return "—" if entry == 0 else f"{abs(entry - sl)/max(1e-9,abs(entry))*100.0:.1f}"
 
@@ -117,7 +112,8 @@ def parse_base_symbol(ticker: str):
     for q in ("USDT","USDC","USD","EUR","JPY","GBP","BTC","ETH"):
         if t.endswith(q) and len(t) > len(q):
             return t[:-len(q)]
-    return re.split(r"[-:/]", ticker.upper())[0].replace("X:","").replace("C:","")
+    import re as _re
+    return _re.split(r"[-:/]", ticker.upper())[0].replace("X:","").replace("C:","")
 
 def unit_suffix(ticker: str) -> str:
     kind = detect_asset_class(ticker)
@@ -127,7 +123,7 @@ def unit_suffix(ticker: str) -> str:
     if style == "per_contract":  return " за контракт"
     return ""
 
-def rr_line(levels) -> str:
+def rr_line(levels):
     risk = abs(levels["entry"] - levels["sl"])
     if risk <= 1e-9: return ""
     rr1 = abs(levels["tp1"] - levels["entry"]) / risk
@@ -164,16 +160,14 @@ def card_html(title, value, sub=None, color=None):
         </div>
     """
 
-# =====================
-# Нормализация тикера под Polygon
-# =====================
 def normalize_for_polygon(symbol: str) -> str:
     s = (symbol or "").strip().upper().replace(" ", "")
+    import re as _re
     if s.startswith(("X:", "C:", "O:")):
         head, tail = s.split(":", 1)
         tail = tail.replace("USDT", "USD").replace("USDC", "USD")
         return f"{head}:{tail}"
-    if re.match(r"^[A-Z]{2,10}USD(T|C)?$", s):
+    if _re.match(r"^[A-Z]{2,10}USD(T|C)?$", s):
         s = s.replace("USDT", "USD").replace("USDC", "USD")
         return f"X:{s}"
     return s
@@ -189,23 +183,16 @@ def read_bool_env(name: str, default=False) -> bool:
     return str(val).strip().lower() in {"1","true","yes","y","on"}
 
 # =====================
-# ML-панели (тренажёры)
+# ML-панели (с учётом доступности функций)
 # =====================
 def render_trainers(default_ticker: str = ""):
-    """
-    Включается секретами:
-      ARXORA_SHOW_TRAINERS=1
-      ARXORA_TRAINER_PASS="admin" (опционально)
-      ARXORA_MODEL_DIR="models"
-    """
-    show = read_bool_env("ARXORA_SHOW_TRAINERS", False)
-    if not show:
+    if not read_bool_env("ARXORA_SHOW_TRAINERS", False):
         return
 
     model_dir = os.getenv("ARXORA_MODEL_DIR", "models").strip()
     pin_need  = os.getenv("ARXORA_TRAINER_PASS", "").strip()
 
-    # Гейтинг по PIN (если задан)
+    # PIN-гейтинг (если задан)
     opened = True
     if pin_need:
         with st.expander("🔐 Открыть ML-панели (PIN)", expanded=False):
@@ -219,6 +206,15 @@ def render_trainers(default_ticker: str = ""):
         opened = st.session_state.get("arxora_trainers_unlocked", False)
 
     if not opened:
+        return
+
+    # Если функций нет — не рушим UI
+    if any(fn is None for fn in (train_quick_st, train_quick_mid, train_quick_lt)):
+        with st.expander("🧠 ML · быстрый тренинг (ST/MID/LT) прямо здесь", expanded=True):
+            st.warning(
+                "Тренажёры недоступны: не найдены функции `train_quick_st/mid/lt` "
+                "в `core/ai_inference.py`. Обнови файл или используй готовые модели в `models/`."
+            )
         return
 
     def trainer_block(label: str, train_func):
@@ -237,17 +233,14 @@ def render_trainers(default_ticker: str = ""):
                     )
                     st.success(f"✅ Модель сохранена: {out_path}")
                     st.caption(f"Размер датасета: {shape} · доля y=1: {pos_share:.4f} · AUC: {auc:.3f}")
-
-                    # Кнопка скачивания
                     with open(out_path, "rb") as f:
-                        data = f.read()
-                    st.download_button(
-                        "⬇️ Скачать модель",
-                        data=data,
-                        file_name=os.path.basename(out_path),
-                        mime="application/octet-stream",
-                        key=f"dl_{label}"
-                    )
+                        st.download_button(
+                            "⬇️ Скачать модель",
+                            data=f.read(),
+                            file_name=os.path.basename(out_path),
+                            mime="application/octet-stream",
+                            key=f"dl_{label}"
+                        )
                 except Exception as ex:
                     st.error(f"Ошибка тренировки: {ex}")
 
@@ -260,11 +253,7 @@ def render_trainers(default_ticker: str = ""):
 # =====================
 col1, col2 = st.columns([2,1])
 with col1:
-    ticker_input = st.text_input(
-        "Тикер",
-        value="",
-        placeholder="Примеры: AAPL · TSLA · X:BTCUSD · BTCUSDT"
-    )
+    ticker_input = st.text_input("Тикер", value="", placeholder="Примеры: AAPL · TSLA · X:BTCUSD · BTCUSDT")
     user_ticker = ticker_input.strip().upper()
 with col2:
     horizon = st.selectbox(
@@ -273,7 +262,6 @@ with col2:
         index=1
     )
 
-# Mode label
 pseudo = read_bool_env("ARXORA_AI_PSEUDO", False)
 st.markdown(
     f"<div style='opacity:0.9;margin:4px 0 10px 0;'>Mode: {'AI (pseudo)' if pseudo else 'AI'} · Horizon: {horizon_tag(horizon)}</div>",
@@ -323,7 +311,7 @@ if run:
             with c1:
                 st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}", sub=f"Probability {int(round(out['probs']['tp2']*100))}%"), unsafe_allow_html=True)
             with c2:
-                st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}", sub=f"Probability {int(round(out['probs']['tp3']*100))}%"), unsafe_allow_html=True)
+                st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}", sub=f"Probability {int(round(out['probs']['tp3']*100))}%"), unsafe_allow_allow_html=True)
 
             rr = rr_line(lv)
             if rr:
@@ -352,6 +340,6 @@ if run:
 else:
     st.info("Введите тикер и нажмите «Проанализировать».")
 
-# Панели ML-обучения (внизу страницы)
+# В самом конце — панели тренировки
 render_trainers(user_ticker)
 
