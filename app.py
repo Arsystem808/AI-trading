@@ -1,11 +1,23 @@
-# app.py
 import os
 import re
 import hashlib
 import random
 import streamlit as st
 from dotenv import load_dotenv
-from core.strategy import analyze_asset  # стратегия (использует Polygon и, при наличии, ML)
+
+# базовая логика уровней (как у тебя было)
+from core.strategy import analyze_asset
+
+# AI: тренировка/инференс
+from core.ai_inference import (
+    train_quick_model,
+    predict_long_proba,
+    decide_side_from_proba,
+    load_model,
+)
+
+# для быстрого получения истории под инференс
+from core.polygon_client import PolygonClient
 
 load_dotenv()
 
@@ -15,7 +27,7 @@ load_dotenv()
 st.set_page_config(
     page_title="Arxora — трейд-ИИ (MVP)",
     page_icon="assets/arxora_favicon_512.png",
-    layout="centered"
+    layout="centered",
 )
 
 def render_arxora_header():
@@ -50,7 +62,7 @@ def render_arxora_header():
 render_arxora_header()
 
 # =====================
-# Полезные фразы (стилистика)
+# Полезные фразы (как у тебя)
 # =====================
 CUSTOM_PHRASES = {
     "BUY": [
@@ -76,10 +88,9 @@ CUSTOM_PHRASES = {
 }
 
 # =====================
-# Хелперы (формат/риск/юниты/нормализация)
+# Хелперы UI/формат
 # =====================
-def _fmt(x):
-    return f"{float(x):.2f}"
+def _fmt(x): return f"{float(x):.2f}"
 
 def compute_display_range(levels, widen_factor=0.25):
     entry = float(levels["entry"]); sl = float(levels["sl"])
@@ -92,13 +103,7 @@ def compute_risk_pct(levels):
     entry = float(levels["entry"]); sl = float(levels["sl"])
     return "—" if entry == 0 else f"{abs(entry - sl)/abs(entry)*100.0:.1f}"
 
-UNIT_STYLE = {
-    "equity": "za_akciyu",
-    "etf": "omit",
-    "crypto": "per_base",
-    "fx": "per_base",
-    "option": "per_contract",
-}
+UNIT_STYLE = {"equity":"za_akciyu","etf":"omit","crypto":"per_base","fx":"per_base","option":"per_contract"}
 ETF_HINTS = {"SPY","QQQ","IWM","DIA","EEM","EFA","XLK","XLF","XLE","XLY","XLI","XLV","XLP","XLU","VNQ","GLD","SLV"}
 
 def detect_asset_class(ticker: str):
@@ -162,11 +167,10 @@ def card_html(title, value, sub=None, color=None):
         </div>
     """
 
+# =====================
+# Polygon нормализация
+# =====================
 def normalize_for_polygon(symbol: str) -> str:
-    """
-    Приводим тикер к формату Polygon:
-      'X:btcusd' -> 'X:BTCUSD', 'BTCUSDT' -> 'X:BTCUSD', 'AAPL' -> 'AAPL'
-    """
     s = (symbol or "").strip().upper().replace(" ", "")
     if s.startswith(("X:", "C:", "O:")):
         head, tail = s.split(":", 1)
@@ -177,7 +181,7 @@ def normalize_for_polygon(symbol: str) -> str:
         return f"X:{s}"
     return s
 
-def _hz_short(h: str) -> str:
+def horizon_tag(h: str) -> str:
     if "Кратко" in h: return "ST"
     if "Средне" in h: return "MID"
     return "LT"
@@ -200,13 +204,14 @@ with col2:
         index=1
     )
 
-# бейдж режима (есть ли модель в каталоге)
-model_dir = os.getenv("ARXORA_MODEL_DIR", "models")
-model_path = os.path.join(model_dir, "arxora_lgbm_ST.joblib")
-mode_label = "AI" if os.path.exists(model_path) and not os.getenv("ARXORA_AI_PSEUDO") else "AI (pseudo)"
-st.caption(f"Mode: {mode_label} · Horizon: {_hz_short(horizon)}")
-
 symbol_for_engine = normalize_for_polygon(ticker)
+hz = horizon_tag(horizon)
+
+# бейдж «режим»
+has_ai = load_model(hz, ticker=symbol_for_engine) or load_model(hz, ticker=None)
+mode_txt = "Mode: AI" if has_ai else "Mode: Heuristic"
+st.caption(f"{mode_txt} · Horizon: {hz}")
+
 run = st.button("Проанализировать", type="primary")
 
 # =====================
@@ -214,8 +219,32 @@ run = st.button("Проанализировать", type="primary")
 # =====================
 if run:
     try:
+        # базовый расчёт уровней (как было)
         out = analyze_asset(ticker=symbol_for_engine, horizon=horizon)
 
+        # ====== AI-инференс: если есть модель для выбранного горизонта ======
+        p_long = None
+        try:
+            if has_ai:
+                # берём историю; глубину — по горизонту
+                days_by_hz = {"ST": 200, "MID": 400, "LT": 800}
+                df_hist = PolygonClient().daily_ohlc(symbol_for_engine, days=days_by_hz.get(hz, 360))
+                p_long = predict_long_proba(hz, symbol_for_engine, df_hist)
+        except Exception:
+            p_long = None  # не мешаем основному потоку
+
+        # если AI дал сигнал — аккуратно «усиливаем» рекомендацию
+        ai_badge = ""
+        if p_long is not None:
+            side = decide_side_from_proba(p_long)  # BUY / SHORT / HOLD
+            ai_badge = f" • AI p(long)={p_long:.2f}"
+            if side in ("BUY", "SHORT"):
+                out["recommendation"]["action"] = side
+                # подстраиваем уверенность на основе вероятности
+                raw_conf = p_long if side == "BUY" else (1.0 - p_long)
+                out["recommendation"]["confidence"] = float(max(0.55, min(0.90, raw_conf)))
+
+        # ====== UI ======
         st.markdown(
             f"<div style='font-size:3rem; font-weight:800; text-align:center; margin:6px 0 14px 0;'>${out['last_price']:.2f}</div>",
             unsafe_allow_html=True,
@@ -229,7 +258,7 @@ if run:
             f"""
             <div style="background:#0f1b2b; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:10px;">
                 <div style="font-size:1.15rem; font-weight:700;">{action_text}</div>
-                <div style="opacity:0.75; font-size:0.95rem; margin-top:2px;">{conf_pct} confidence</div>
+                <div style="opacity:0.75; font-size:0.95rem; margin-top:2px;">{conf_pct} confidence{ai_badge}</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -278,244 +307,51 @@ if run:
 else:
     st.info("Введите тикер и нажмите «Проанализировать».")
 
-# =====================
-# 🧠 ML: быстрый тренинг ST-модели прямо здесь
-# =====================
-def render_training_panel():
-    from pathlib import Path
-    import numpy as np
-    import pandas as pd
+# =========================================================
+# 👇 ML · быстрый тренинг (ST) — оставляем как было
+# =========================================================
+with st.expander("🧠 ML · быстрый тренинг (ST) прямо здесь", expanded=False):
+    st.write("Обучит краткосрочную модель (ST) по дневным данным из Polygon и сохранит её в `models/`.")
+    list_tickers_st = st.text_input("Тикеры (через запятую)", value="AAPL")
+    months_st = st.slider("Месяцев истории", 6, 60, 18)
 
-    with st.expander("🧠 ML · быстрый тренинг (ST) прямо здесь"):
-        st.caption("Обучит краткосрочную модель (ST) по дневным данным из Polygon и сохранит её в models/. Затем файл можно скачать и загрузить в репозиторий.")
-
-        tickers_text = st.text_input(
-            "Тикеры (через запятую)",
-            "SPY,QQQ,AAPL,MSFT,TSLA,X:BTCUSD,X:ETHUSD",
-            key="train_tickers"
-        )
-        months = st.slider("Месяцев истории", 3, 36, 12, key="train_months")
-        start_btn = st.button("🚀 Обучить ST-модель сейчас", key="train_start")
-
-        if not start_btn:
-            return
-
-        # зависимости
-        try:
-            import joblib
-            try:
-                from lightgbm import LGBMClassifier
-                use_lgbm = True
-            except Exception:
-                from sklearn.linear_model import LogisticRegression
-                use_lgbm = False
-        except Exception:
-            st.error("Нужно установить зависимости: `joblib scikit-learn lightgbm`")
-            return
-
-        # --- add to app.py (ниже ST-виджета) ---
-
-with st.expander("🧠 ML · быстрый тренинг (MID) прямо здесь"):
-    st.caption("Обучит среднесрочную модель (MID) по дневным данным из Polygon и сохранит её в папку models/. "
-               "Если указан ровно один тикер — файл будет персональным (с суффиксом тикера).")
-
-    tickers_mid = st.text_input("Тикеры (через запятую) для MID", value=(ticker or "AAPL"))
-    months_mid  = st.slider("Месяцев истории", min_value=12, max_value=60, value=24, key="months_mid")
-
-    if st.button("🚀 Обучить MID-модель сейчас"):
-        from core.ai_inference import train_quick_model
-        symbols = [t.strip() for t in tickers_mid.split(",") if t.strip()]
-        res = train_quick_model(hz_tag="MID", tickers=symbols, months=months_mid)
-
+    if st.button("🚀 Обучить ST-модель сейчас"):
+        tickers = [t.strip().upper() for t in list_tickers_st.split(",") if t.strip()]
+        res = train_quick_model("ST", tickers, months=months_st)
         if not res:
-            st.error("Не удалось собрать обучающий набор. Проверь тикер(ы) и историю.")
+            st.error("Не удалось обучить: нет данных или слишком короткая история.")
         else:
             for r in res:
-                st.success(f"✅ Модель сохранена: {r['path']}")
+                st.success(f"Модель сохранена: {r['path']}")
                 st.info(f"Размер датасета: {r['shape']}, доля y=1: {r['pos_rate']:.3f}, AUC (грубо): {r['auc']:.3f}")
+                # кнопка скачивания
                 try:
-                    with open(r["path"], "rb") as fh:
-                        st.download_button("⬇️ Скачать модель (MID)",
-                                           data=fh,
-                                           file_name=os.path.basename(r["path"]),
-                                           mime="application/octet-stream",
-                                           key=f"dl_mid_{r['path']}")
+                    data = open(r["path"], "rb").read()
+                    st.download_button("⬇️ Скачать модель (ST)", data=data, file_name=os.path.basename(r["path"]))
                 except Exception:
                     pass
-            st.warning("После обучения просто снова нажми «Проанализировать» — режим переключится на Mode: AI, если модель нашлась.")
+    st.caption("После обучения просто запусти анализ — бейдж переключится на Mode: AI для горизонта ST.")
 
-        
-        # хелперы/клиент из твоего кода
-        try:
-            from core.polygon_client import PolygonClient
-            from core.strategy import (
-                _horizon_cfg, _atr_like, _weekly_atr, _linreg_slope, _streak,
-                _last_period_hlc, _fib_pivots, _classify_band,
-                _apply_tp_floors, _order_targets, _hz_tag, _three_targets_from_pivots
-            )
-        except Exception as e:
-            st.error(f"Импорт модулей не удался: {e}")
-            return
+# =========================================================
+# 👇 ML · быстрый тренинг (MID) — НОВОЕ
+# =========================================================
+with st.expander("🧠 ML · быстрый тренинг (MID) прямо здесь", expanded=False):
+    st.write("Обучит **среднесрочную** модель (MID) и сохранит её в `models/`.")
+    list_tickers_mid = st.text_input("Тикеры (через запятую) для MID", value="AAPL, QQQ")
+    months_mid = st.slider("Месяцев истории (MID)", 6, 72, 24)
 
-        HORIZON = "Краткосрок (1–5 дней)"
-        cfg = _horizon_cfg(HORIZON)
-        look = cfg["look"]
-        HOLD_DAYS = 5
-        FILL_WINDOW = 3
-        FEATS = ["pos","slope_norm","atr_d_over_price","vol_ratio","streak","band","long_upper","long_lower"]
-
-        def compute_levels_asof(df_asof: pd.DataFrame):
-            price = float(df_asof["close"].iloc[-1])
-            atr_d  = float(_atr_like(df_asof, n=cfg["atr"]).iloc[-1])
-            atr_w  = _weekly_atr(df_asof) if cfg.get("use_weekly_atr") else atr_d
-            hlc = _last_period_hlc(df_asof, cfg["pivot_period"])
-            if not hlc:
-                hlc = (float(df_asof["high"].tail(60).max()),
-                       float(df_asof["low"].tail(60).min()),
-                       float(df_asof["close"].iloc[-1]))
-            H,L,C = hlc
-            piv = _fib_pivots(H,L,C)
-            P = piv["P"]; step_w = atr_w
-            if price < P:
-                entry = max(price, piv["S1"] + 0.15*step_w); sl = piv["S1"] - 0.60*step_w
-            else:
-                entry = max(price, P + 0.10*step_w); sl = P - 0.60*step_w
-            hz = _hz_tag(HORIZON)
-            tp1, tp2, tp3 = _three_targets_from_pivots(entry, "BUY", piv, step_w)
-            tp1, tp2, tp3 = _apply_tp_floors(entry, sl, tp1, tp2, tp3, "BUY", hz, price, step_w)
-            tp1, tp2, tp3 = _order_targets(entry, tp1, tp2, tp3, "BUY")
-            return entry, sl, tp1
-
-        def label_tp_before_sl(df: pd.DataFrame, start_ix: int, entry: float, sl: float, tp1: float, hold_days: int) -> int:
-            lo = df["low"].values; hi = df["high"].values
-            end = min(len(df), start_ix + hold_days)
-            for k in range(start_ix, end):
-                if lo[k] <= sl:  return 0
-                if hi[k] >= tp1: return 1
-            return 0
-
-        cli = PolygonClient()
-        rows = []
-        tickers = [t.strip() for t in tickers_text.split(",") if t.strip()]
-
-        prog = st.progress(0.0, text="Готовим датасет…")
-        total = max(1, len(tickers))
-
-        for idx, t in enumerate(tickers, 1):
-            try:
-                days = int(months*31) + look + 40
-                df = cli.daily_ohlc(t, days=days).dropna()
-                if len(df) < look + 30:
-                    st.write(f"⚠️ {t}: мало данных ({len(df)}) — пропускаю")
-                    prog.progress(min(idx/total, 1.0))
-                    continue
-
-                for i in range(look+5, len(df)-6):
-                    df_asof = df.iloc[:i+1]
-                    price = float(df_asof["close"].iloc[-1])
-
-                    tail = df_asof.tail(look)
-                    rng_low, rng_high = float(tail["low"].min()), float(tail["high"].max())
-                    rng_w = max(1e-9, rng_high - rng_low)
-                    pos = (price - rng_low) / rng_w
-
-                    atr_d = float(_atr_like(df_asof, n=cfg["atr"]).iloc[-1])
-                    atr2  = float(_atr_like(df_asof, n=cfg["atr"]*2).iloc[-1])
-                    vol_ratio = atr_d/max(1e-9, atr2)
-                    slope  = _linreg_slope(df_asof["close"].tail(cfg["trend"]).values)/max(1e-9, price)
-                    streak = _streak(df_asof["close"])
-
-                    hlc = _last_period_hlc(df_asof, cfg["pivot_period"])
-                    if not hlc:
-                        hlc = (float(df_asof["high"].tail(60).max()),
-                               float(df_asof["low"].tail(60).min()),
-                               float(df_asof["close"].iloc[-1]))
-                    piv = _fib_pivots(*hlc)
-                    band = _classify_band(price, piv, 0.25*(_weekly_atr(df_asof) if cfg.get("use_weekly_atr") else atr_d))
-
-                    lw_row = df_asof.iloc[-1]
-                    body  = abs(lw_row["close"] - lw_row["open"])
-                    upper = max(0.0, lw_row["high"] - max(lw_row["open"], lw_row["close"]))
-                    lower = max(0.0, min(lw_row["open"], lw_row["close"]) - lw_row["low"])
-                    long_upper = (upper > body*1.3) and (upper > lower*1.1)
-                    long_lower = (lower > body*1.3) and (lower > upper*1.1)
-
-                    entry, sl, tp1 = compute_levels_asof(df_asof)
-
-                    touch_ix = None
-                    j_end = min(i + 1 + FILL_WINDOW, len(df))
-                    for j in range(i+1, j_end):
-                        lo = float(df["low"].iloc[j]); hi = float(df["high"].iloc[j])
-                        if lo <= entry <= hi:
-                            touch_ix = j
-                            break
-                    if touch_ix is None:
-                        continue
-
-                    y = label_tp_before_sl(df, touch_ix, entry, sl, tp1, HOLD_DAYS)
-
-                    rows.append(dict(
-                        ticker=t, date=df_asof.index[-1].date(), y=int(y),
-                        pos=pos, slope_norm=slope, atr_d_over_price=atr_d/max(1e-9, price),
-                        vol_ratio=vol_ratio, streak=float(streak), band=float(band),
-                        long_upper=float(long_upper), long_lower=float(long_lower)
-                    ))
-
-            except Exception as e:
-                st.write(f"❌ {t}: {e}")
-            finally:
-                prog.progress(min(idx/total, 1.0))
-
-        if not rows:
-            st.error("Не удалось собрать датасет. Проверь ключ Polygon/тикеры/историю.")
-            return
-
-        dfX = pd.DataFrame(rows)
-        st.write("📊 Размер датасета:", dfX.shape, "доля y=1:", float(dfX["y"].mean()))
-
-        X = dfX[FEATS].astype(float); y = dfX["y"].astype(int)
-
-        if use_lgbm:
-            model = LGBMClassifier(
-                n_estimators=400, learning_rate=0.05,
-                num_leaves=63, subsample=0.8, colsample_bytree=0.8,
-                random_state=42
-            )
+    if st.button("🚀 Обучить MID-модель сейчас"):
+        tickers = [t.strip().upper() for t in list_tickers_mid.split(",") if t.strip()]
+        res = train_quick_model("MID", tickers, months=months_mid)
+        if not res:
+            st.error("Не удалось обучить MID: нет данных или слишком короткая история.")
         else:
-            model = LogisticRegression(max_iter=500, class_weight="balanced")
-
-        model.fit(X, y)
-
-        # метрика
-        from sklearn.metrics import roc_auc_score
-        try:
-            proba = model.predict_proba(X)[:,1]
-        except Exception:
-            proba = model.predict(X).astype(float)
-        auc = float(roc_auc_score(y, proba)) if len(np.unique(y))>1 else float("nan")
-
-        # --- сохранение модели и кнопка скачивания ---
-        models_dir = Path(os.getenv("ARXORA_MODEL_DIR", "models"))
-        models_dir.mkdir(parents=True, exist_ok=True)
-        out_path = models_dir / "arxora_lgbm_ST.joblib"
-
-        import joblib as _joblib
-        _joblib.dump({"model": model, "features": FEATS, "auc": auc}, out_path)
-
-        st.success(f"✅ Модель сохранена: {out_path}")
-        st.write(f"AUC по обучению (грубо): {auc:.3f}")
-
-        # читаем файл и отдаем на скачивание
-        with open(out_path, "rb") as fh:
-            binary = fh.read()
-
-        st.download_button(
-            label="⬇️ Скачать модель (ST)",
-            data=binary,
-            file_name="arxora_lgbm_ST.joblib",
-            mime="application/octet-stream",
-            key="dl_st_model"
-        )
-
-# вызов панели (вне любых if/with — чтобы не ловить отступы)
-render_training_panel()
+            for r in res:
+                st.success(f"Модель сохранена: {r['path']}")
+                st.info(f"Размер датасета: {r['shape']}, доля y=1: {r['pos_rate']:.3f}, AUC (грубо): {r['auc']:.3f}")
+                try:
+                    data = open(r["path"], "rb").read()
+                    st.download_button("⬇️ Скачать модель (MID)", data=data, file_name=os.path.basename(r["path"]))
+                except Exception:
+                    pass
+    st.caption("Горизонт вверху должен быть «Среднесрок» — тогда в режиме анализа будет использоваться эта модель.")
