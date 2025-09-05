@@ -313,6 +313,38 @@ def render_training_panel():
             st.error("Нужно установить зависимости: `joblib scikit-learn lightgbm`")
             return
 
+        # --- add to app.py (ниже ST-виджета) ---
+
+with st.expander("🧠 ML · быстрый тренинг (MID) прямо здесь"):
+    st.caption("Обучит среднесрочную модель (MID) по дневным данным из Polygon и сохранит её в папку models/. "
+               "Если указан ровно один тикер — файл будет персональным (с суффиксом тикера).")
+
+    tickers_mid = st.text_input("Тикеры (через запятую) для MID", value=(ticker or "AAPL"))
+    months_mid  = st.slider("Месяцев истории", min_value=12, max_value=60, value=24, key="months_mid")
+
+    if st.button("🚀 Обучить MID-модель сейчас"):
+        from core.ai_inference import train_quick_model
+        symbols = [t.strip() for t in tickers_mid.split(",") if t.strip()]
+        res = train_quick_model(hz_tag="MID", tickers=symbols, months=months_mid)
+
+        if not res:
+            st.error("Не удалось собрать обучающий набор. Проверь тикер(ы) и историю.")
+        else:
+            for r in res:
+                st.success(f"✅ Модель сохранена: {r['path']}")
+                st.info(f"Размер датасета: {r['shape']}, доля y=1: {r['pos_rate']:.3f}, AUC (грубо): {r['auc']:.3f}")
+                try:
+                    with open(r["path"], "rb") as fh:
+                        st.download_button("⬇️ Скачать модель (MID)",
+                                           data=fh,
+                                           file_name=os.path.basename(r["path"]),
+                                           mime="application/octet-stream",
+                                           key=f"dl_mid_{r['path']}")
+                except Exception:
+                    pass
+            st.warning("После обучения просто снова нажми «Проанализировать» — режим переключится на Mode: AI, если модель нашлась.")
+
+        
         # хелперы/клиент из твоего кода
         try:
             from core.polygon_client import PolygonClient
