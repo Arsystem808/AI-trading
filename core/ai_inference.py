@@ -1,76 +1,184 @@
 # core/ai_inference.py
+# -*- coding: utf-8 -*-
+"""
+Загрузка ML-моделей Arxora и инференс.
+
+Поддержка:
+- Файлы моделей: models/arxora_lgbm_{ST|MID|LT}.joblib
+  или тикер-специфично: models/arxora_lgbm_{ST|MID|LT}_{TICKER}.joblib
+- Формат joblib: либо сам estimator, либо {"model": estimator, "meta": {...}}
+- Пороги решений читаются из переменных окружения/секретов:
+    ARXORA_AI_TH_LONG  (по умолчанию 0.55)
+    ARXORA_AI_TH_SHORT (по умолчанию 0.45)
+- Совместимость со sklearn/LightGBM/XGBoost
+
+API:
+    load_model(horizon: str, ticker: str | None = None) -> (model, meta)
+    predict_proba(model, X_df) -> float   # вероятность класса 1
+    decide_action(proba: float,
+                  th_long: float = TH_LONG,
+                  th_short: float = TH_SHORT) -> str  # "BUY"/"SHORT"/"WAIT"
+    is_ai_available(horizon: str, ticker: str | None = None) -> bool
+    model_path(horizon: str, ticker: str | None = None) -> str
+"""
+
+from __future__ import annotations
+
 import os
-from typing import Any, Dict, Tuple
+import re
+from typing import Tuple, Dict, Any
+
+import joblib
 import numpy as np
+import pandas as pd
 
-try:
-    import joblib  # type: ignore
-except Exception as e:
-    raise RuntimeError("Не установлен joblib. Добавьте 'joblib' в requirements.txt") from e
 
-MODEL_FILENAMES = {
-    "ST": "arxora_lgbm_ST.joblib",
-    "MID": "arxora_lgbm_MID.joblib",
-    "LT": "arxora_lgbm_LT.joblib",
-}
+# ---- конфигурация из окружения/секретов -------------------------------------
 
-def _models_dir() -> str:
-    return os.getenv("ARXORA_MODEL_DIR", "models")
+MODEL_DIR = os.getenv("ARXORA_MODEL_DIR", "models").strip()
+TH_LONG = float(os.getenv("ARXORA_AI_TH_LONG", "0.55"))
+TH_SHORT = float(os.getenv("ARXORA_AI_TH_SHORT", "0.45"))
 
-def load_model_for_horizon(hz: str, models_dir: str | None = None) -> tuple[Any, Dict[str, Any], str]:
+
+# ---- утилиты -----------------------------------------------------------------
+
+def _hz_tag(text: str) -> str:
+    """Нормализует название горизонта в ST/MID/LT."""
+    t = (text or "").upper()
+    if "КРАТКО" in t or "ST" in t:
+        return "ST"
+    if "СРЕДНЕ" in t or "MID" in t:
+        return "MID"
+    return "LT"
+
+
+def _clean_symbol(sym: str) -> str:
+    """X:BTCUSD -> BTCUSD; AAPL -> AAPL (оставляем только A-Z0-9)."""
+    return re.sub(r"[^A-Z0-9]+", "", (sym or "").upper())
+
+
+def model_path(horizon: str, ticker: str | None = None) -> str:
     """
-    Возвращает (model, meta, path).
-    Если в .joblib лежит dict, извлекаем поле 'model', остальное отдаём как meta.
+    Возвращает путь к файлу модели. Приоритет:
+    1) модель по тикеру (если файл существует)
+    2) общая модель по горизонту
     """
-    models_dir = models_dir or _models_dir()
-    fname = MODEL_FILENAMES.get(hz, MODEL_FILENAMES["ST"])
-    path = os.path.join(models_dir, fname)
+    hz = _hz_tag(horizon)
+    if ticker:
+        t = _clean_symbol(ticker)
+        p_ticker = os.path.join(MODEL_DIR, f"arxora_lgbm_{hz}_{t}.joblib")
+        if os.path.exists(p_ticker):
+            return p_ticker
+    return os.path.join(MODEL_DIR, f"arxora_lgbm_{hz}.joblib")
+
+
+def is_ai_available(horizon: str, ticker: str | None = None) -> bool:
+    return os.path.exists(model_path(horizon, ticker))
+
+
+def _align_features(X: pd.DataFrame, meta: Dict[str, Any] | None) -> pd.DataFrame:
+    """
+    Если в meta есть список признаков, выровнять порядок/пропуски.
+    Лишние столбцы отбрасываются, недостающие — добавляются нулями.
+    """
+    if not isinstance(meta, dict):
+        return X
+    feats = meta.get("features")
+    if not feats:
+        return X
+    X = X.copy()
+    for f in feats:
+        if f not in X.columns:
+            X[f] = 0.0
+    X = X[feats]
+    return X
+
+
+# ---- загрузка модели ---------------------------------------------------------
+
+def load_model(horizon: str, ticker: str | None = None) -> Tuple[Any, Dict[str, Any]]:
+    """
+    Загружает модель и метаданные.
+    Поддерживает файлы-словари {"model": ..., "meta": {...}}.
+    """
+    path = model_path(horizon, ticker)
     if not os.path.exists(path):
-        return None, {}, path
+        raise FileNotFoundError(f"Модель не найдена: {path}")
 
     obj = joblib.load(path)
+    # Если файл — словарь
+    if isinstance(obj, dict):
+        model = obj.get("model", obj)
+        meta = obj.get("meta", {})
+        return model, meta
+    # Иначе это сам estimator
+    return obj, {}
 
-    if isinstance(obj, dict) and "model" in obj:
-        model = obj["model"]
-        meta = {k: v for k, v in obj.items() if k != "model"}
-    else:
-        model, meta = obj, {}
 
-    return model, meta, path
+# ---- инференс ----------------------------------------------------------------
 
-def apply_model(model: Any, meta: Dict[str, Any], X) -> Tuple[np.ndarray, Dict[str, Any]]:
+def _predict_proba_any(model: Any, X: pd.DataFrame) -> np.ndarray:
     """
-    Делает предсказание вероятности класса 1.
-    - Если есть meta['features'] — берём только эти признаки.
-    - Если есть meta['scaler'] — применяем его.
-    - Если у модели нет predict_proba, используем сигмоиду поверх predict.
+    Унифицированное получение вероятностей:
+    - sklearn/LightGBM/XGBoost (классификатор с predict_proba)
+    - Booster/модели без predict_proba -> fallback на predict/decision_function
+    Возвращает массив shape (n_samples,) с P(y=1).
     """
-    if model is None:
-        raise ValueError("Модель не загружена")
-
-    feats = meta.get("features")
-    if feats is not None:
-        X = X[feats].copy()
-
-    scaler = meta.get("scaler")
-    if scaler is not None:
-        X[feats] = scaler.transform(X[feats])
-
+    # 1) стандартный путь
     if hasattr(model, "predict_proba"):
-        proba = model.predict_proba(X)
-        # иногда возвращается (n_samples,) — приведём к (n,2) или (n,)
-        if isinstance(proba, (list, tuple)):
-            proba = np.asarray(proba)
-        if proba.ndim == 2 and proba.shape[1] > 1:
-            proba = proba[:, 1]
-        else:
-            proba = np.asarray(proba).reshape(-1)
-    else:
-        # регрессор/бинарный предикт без proba
-        yhat = model.predict(X)
-        yhat = np.asarray(yhat).reshape(-1)
-        # мягкая нормализация в 0..1
-        s = yhat.std() + 1e-9
-        proba = 1.0 / (1.0 + np.exp(-(yhat - yhat.mean()) / s))
+        p = model.predict_proba(X)
+        p = np.asarray(p)
+        if p.ndim == 1:
+            return p  # уже (n,)
+        # берём столбец класса 1
+        return p[:, 1]
 
-    return proba, meta
+    # 2) некоторые бустинги (raw predict)
+    try:
+        p = model.predict(X)
+        p = np.asarray(p)
+        # если это уже вероятности (0..1)
+        if p.ndim == 1:
+            # Иногда модели выдают логиты — попробуем привести к (0..1)
+            if p.min() < 0 or p.max() > 1:
+                p = 1 / (1 + np.exp(-p))
+            return p
+        # двумерный выход — берём столбец 1
+        return p[:, 1]
+    except Exception:
+        pass
+
+    # 3) decision_function -> логистическая сигмоида
+    if hasattr(model, "decision_function"):
+        s = np.asarray(model.decision_function(X))
+        return 1 / (1 + np.exp(-s))
+
+    raise RuntimeError("Не удалось получить вероятности от модели.")
+
+
+def predict_proba(model: Any, X_df: pd.DataFrame, meta: Dict[str, Any] | None = None) -> float:
+    """
+    Возвращает вероятность P(y=1) для последней строки X_df.
+    Выполняет выравнивание признаков при наличии списка в meta["features"].
+    """
+    if not isinstance(X_df, pd.DataFrame):
+        X_df = pd.DataFrame(X_df)
+    X = _align_features(X_df, meta)
+    proba = _predict_proba_any(model, X)
+    return float(np.asarray(proba).reshape(-1)[-1])
+
+
+def decide_action(proba: float,
+                  th_long: float = TH_LONG,
+                  th_short: float = TH_SHORT) -> str:
+    """
+    Простое правило:
+        proba >= th_long  -> "BUY"
+        proba <= th_short -> "SHORT"
+        иначе              "WAIT"
+    """
+    if proba >= th_long:
+        return "BUY"
+    if proba <= th_short:
+        return "SHORT"
+    return "WAIT"
