@@ -1,11 +1,15 @@
 # app.py
 import os
 import re
+import csv
 import hashlib
 import random
+from datetime import datetime
+
 import streamlit as st
 from dotenv import load_dotenv
-from core.strategy import analyze_asset  # стратегия (использует Polygon и, при наличии, ML)
+
+from core.strategy import analyze_asset
 
 load_dotenv()
 
@@ -15,7 +19,7 @@ load_dotenv()
 st.set_page_config(
     page_title="Arxora — трейд-ИИ (MVP)",
     page_icon="assets/arxora_favicon_512.png",
-    layout="centered"
+    layout="centered",
 )
 
 def render_arxora_header():
@@ -50,7 +54,7 @@ def render_arxora_header():
 render_arxora_header()
 
 # =====================
-# Полезные фразы (стилистика)
+# Тексты
 # =====================
 CUSTOM_PHRASES = {
     "BUY": [
@@ -76,10 +80,9 @@ CUSTOM_PHRASES = {
 }
 
 # =====================
-# Хелперы (формат/риск/юниты/нормализация)
+# Хелперы (формат/риск/юниты)
 # =====================
-def _fmt(x):
-    return f"{float(x):.2f}"
+def _fmt(x): return f"{float(x):.2f}"
 
 def compute_display_range(levels, widen_factor=0.25):
     entry = float(levels["entry"]); sl = float(levels["sl"])
@@ -92,13 +95,7 @@ def compute_risk_pct(levels):
     entry = float(levels["entry"]); sl = float(levels["sl"])
     return "—" if entry == 0 else f"{abs(entry - sl)/abs(entry)*100.0:.1f}"
 
-UNIT_STYLE = {
-    "equity": "za_akciyu",
-    "etf": "omit",
-    "crypto": "per_base",
-    "fx": "per_base",
-    "option": "per_contract",
-}
+UNIT_STYLE = {"equity":"za_akciyu","etf":"omit","crypto":"per_base","fx":"per_base","option":"per_contract"}
 ETF_HINTS = {"SPY","QQQ","IWM","DIA","EEM","EFA","XLK","XLF","XLE","XLY","XLI","XLV","XLP","XLU","VNQ","GLD","SLV"}
 
 def detect_asset_class(ticker: str):
@@ -121,8 +118,8 @@ def unit_suffix(ticker: str) -> str:
     kind = detect_asset_class(ticker)
     style = UNIT_STYLE.get(kind, "omit")
     if style == "za_akciyu":    return " за акцию"
-    if style == "per_base":      return f" за 1 {parse_base_symbol(ticker)}"
-    if style == "per_contract":  return " за контракт"
+    if style == "per_base":     return f" за 1 {parse_base_symbol(ticker)}"
+    if style == "per_contract": return " за контракт"
     return ""
 
 def rr_line(levels):
@@ -162,11 +159,10 @@ def card_html(title, value, sub=None, color=None):
         </div>
     """
 
+# =====================
+# Polygon нормализация
+# =====================
 def normalize_for_polygon(symbol: str) -> str:
-    """
-    Приводим тикер к формату Polygon:
-      'X:btcusd' -> 'X:BTCUSD', 'BTCUSDT' -> 'X:BTCUSD', 'AAPL' -> 'AAPL'
-    """
     s = (symbol or "").strip().upper().replace(" ", "")
     if s.startswith(("X:", "C:", "O:")):
         head, tail = s.split(":", 1)
@@ -177,15 +173,37 @@ def normalize_for_polygon(symbol: str) -> str:
         return f"X:{s}"
     return s
 
-def _hz_short(h: str) -> str:
-    if "Кратко" in h: return "ST"
-    if "Средне" in h: return "MID"
-    return "LT"
+# =====================
+# Логирование сигналов
+# =====================
+def log_signal(ticker, horizon, out):
+    os.makedirs("data", exist_ok=True)
+    lv = out.get("levels", {})
+    rec = out.get("recommendation", {})
+    row = {
+        "ts": datetime.utcnow().isoformat(timespec="seconds"),
+        "ticker": ticker,
+        "horizon": horizon,
+        "action": rec.get("action"),
+        "confidence": rec.get("confidence"),
+        "last_price": out.get("last_price"),
+        "entry": lv.get("entry"),
+        "sl": lv.get("sl"),
+        "tp1": lv.get("tp1"),
+        "tp2": lv.get("tp2"),
+        "tp3": lv.get("tp3"),
+    }
+    path = "data/signals.csv"
+    exists = os.path.exists(path)
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=list(row.keys()))
+        if not exists: w.writeheader()
+        w.writerow(row)
 
 # =====================
 # Inputs
 # =====================
-col1, col2 = st.columns([2,1])
+col1, col2, col3 = st.columns([2, 1, 1])
 with col1:
     ticker_input = st.text_input(
         "Тикер",
@@ -199,12 +217,8 @@ with col2:
         ["Краткосрок (1–5 дней)", "Среднесрок (1–4 недели)", "Долгосрок (1–6 месяцев)"],
         index=1
     )
-
-# бейдж режима (есть ли модель в каталоге)
-model_dir = os.getenv("ARXORA_MODEL_DIR", "models")
-model_path = os.path.join(model_dir, "arxora_lgbm_ST.joblib")
-mode_label = "AI" if os.path.exists(model_path) and not os.getenv("ARXORA_AI_PSEUDO") else "AI (pseudo)"
-st.caption(f"Mode: {mode_label} · Horizon: {_hz_short(horizon)}")
+with col3:
+    min_conf = st.slider("Мин. уверенность", 0.50, 0.90, 0.70, 0.01)
 
 symbol_for_engine = normalize_for_polygon(ticker)
 run = st.button("Проанализировать", type="primary")
@@ -213,17 +227,23 @@ run = st.button("Проанализировать", type="primary")
 # Main
 # =====================
 if run:
+    if not symbol_for_engine:
+        st.info("Введите тикер и нажмите «Проанализировать».")
+        st.stop()
+
     try:
         out = analyze_asset(ticker=symbol_for_engine, horizon=horizon)
 
+        # Цена
         st.markdown(
             f"<div style='font-size:3rem; font-weight:800; text-align:center; margin:6px 0 14px 0;'>${out['last_price']:.2f}</div>",
             unsafe_allow_html=True,
         )
 
+        # Баннер действия
         action = out["recommendation"]["action"]
-        conf = out["recommendation"].get("confidence", 0)
-        conf_pct = f"{int(round(float(conf)*100))}%"
+        conf = float(out["recommendation"].get("confidence", 0))
+        conf_pct = f"{int(round(conf * 100))}%"
         action_text = "Buy LONG" if action == "BUY" else ("Sell SHORT" if action == "SHORT" else "WAIT")
         st.markdown(
             f"""
@@ -235,6 +255,26 @@ if run:
             unsafe_allow_html=True,
         )
 
+        # Порог уверенности
+        if conf < min_conf:
+            st.warning(f"Сигнал ниже порога ({conf:.2f} < {min_conf:.2f}). Рассматривайте как ознакомительный.")
+
+        # Метаданные модели (если прокинуты из strategy/analyze_asset)
+        ai_meta = out.get("ai_meta") or out.get("meta") or {}
+        if ai_meta:
+            parts = []
+            if "auc" in ai_meta:
+                try: parts.append(f"AUC: {float(ai_meta['auc']):.3f}")
+                except Exception: pass
+            if "features" in ai_meta:
+                try: parts.append(f"features: {len(ai_meta['features'])}")
+                except Exception: pass
+            if "horizon" in ai_meta:
+                parts.append(f"model: {ai_meta['horizon']}")
+            if parts:
+                st.caption("Модель • " + " • ".join(parts))
+
+        # Карточки уровней
         lv = out["levels"]
         if action in ("BUY", "SHORT"):
             c1, c2, c3 = st.columns(3)
@@ -255,12 +295,11 @@ if run:
             if rr:
                 st.markdown(f"<div style='opacity:0.75; margin-top:4px'>{rr}</div>", unsafe_allow_html=True)
 
+        # План / контекст / стоп
         plan = render_plan_line(action, lv, ticker=ticker, seed_extra=horizon)
         st.markdown(f"<div style='margin-top:8px'>{plan}</div>", unsafe_allow_html=True)
 
-        ctx_key = "neutral"
-        if action == "BUY": ctx_key = "support"
-        elif action == "SHORT": ctx_key = "resistance"
+        ctx_key = "support" if action == "BUY" else ("resistance" if action == "SHORT" else "neutral")
         ctx = render_context_line(ctx_key)
         st.markdown(f"<div style='opacity:0.9'>{ctx}</div>", unsafe_allow_html=True)
 
@@ -269,221 +308,22 @@ if run:
             st.markdown(f"<div style='opacity:0.9; margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
 
         if out.get("alt"):
-            st.markdown(f"<div style='margin-top:6px;'><b>Если пойдёт против базового сценария:</b> {out['alt']}</div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div style='margin-top:6px;'><b>Если пойдёт против базового сценария:</b> {out['alt']}</div>",
+                unsafe_allow_html=True,
+            )
 
+        # Дисклеймер
         st.caption(CUSTOM_PHRASES["DISCLAIMER"])
+
+        # Лог
+        try:
+            log_signal(symbol_for_engine, horizon, out)
+            st.caption("Лог сохранён: data/signals.csv")
+        except Exception as ee:
+            st.caption(f"Лог не записан: {ee}")
 
     except Exception as e:
         st.error(f"Ошибка анализа: {e}")
 else:
     st.info("Введите тикер и нажмите «Проанализировать».")
-
-# =====================
-# 🧠 ML: быстрый тренинг ST-модели прямо здесь
-# =====================
-def render_training_panel():
-    from pathlib import Path
-    import numpy as np
-    import pandas as pd
-
-    with st.expander("🧠 ML · быстрый тренинг (ST) прямо здесь"):
-        st.caption("Обучит краткосрочную модель (ST) по дневным данным из Polygon и сохранит её в models/. Затем файл можно скачать и загрузить в репозиторий.")
-
-        tickers_text = st.text_input(
-            "Тикеры (через запятую)",
-            "SPY,QQQ,AAPL,MSFT,TSLA,X:BTCUSD,X:ETHUSD",
-            key="train_tickers"
-        )
-        months = st.slider("Месяцев истории", 3, 36, 12, key="train_months")
-        start_btn = st.button("🚀 Обучить ST-модель сейчас", key="train_start")
-
-        if not start_btn:
-            return
-
-        # зависимости
-        try:
-            import joblib
-            try:
-                from lightgbm import LGBMClassifier
-                use_lgbm = True
-            except Exception:
-                from sklearn.linear_model import LogisticRegression
-                use_lgbm = False
-        except Exception:
-            st.error("Нужно установить зависимости: `joblib scikit-learn lightgbm`")
-            return
-
-        # хелперы/клиент из твоего кода
-        try:
-            from core.polygon_client import PolygonClient
-            from core.strategy import (
-                _horizon_cfg, _atr_like, _weekly_atr, _linreg_slope, _streak,
-                _last_period_hlc, _fib_pivots, _classify_band,
-                _apply_tp_floors, _order_targets, _hz_tag, _three_targets_from_pivots
-            )
-        except Exception as e:
-            st.error(f"Импорт модулей не удался: {e}")
-            return
-
-        HORIZON = "Краткосрок (1–5 дней)"
-        cfg = _horizon_cfg(HORIZON)
-        look = cfg["look"]
-        HOLD_DAYS = 5
-        FILL_WINDOW = 3
-        FEATS = ["pos","slope_norm","atr_d_over_price","vol_ratio","streak","band","long_upper","long_lower"]
-
-        def compute_levels_asof(df_asof: pd.DataFrame):
-            price = float(df_asof["close"].iloc[-1])
-            atr_d  = float(_atr_like(df_asof, n=cfg["atr"]).iloc[-1])
-            atr_w  = _weekly_atr(df_asof) if cfg.get("use_weekly_atr") else atr_d
-            hlc = _last_period_hlc(df_asof, cfg["pivot_period"])
-            if not hlc:
-                hlc = (float(df_asof["high"].tail(60).max()),
-                       float(df_asof["low"].tail(60).min()),
-                       float(df_asof["close"].iloc[-1]))
-            H,L,C = hlc
-            piv = _fib_pivots(H,L,C)
-            P = piv["P"]; step_w = atr_w
-            if price < P:
-                entry = max(price, piv["S1"] + 0.15*step_w); sl = piv["S1"] - 0.60*step_w
-            else:
-                entry = max(price, P + 0.10*step_w); sl = P - 0.60*step_w
-            hz = _hz_tag(HORIZON)
-            tp1, tp2, tp3 = _three_targets_from_pivots(entry, "BUY", piv, step_w)
-            tp1, tp2, tp3 = _apply_tp_floors(entry, sl, tp1, tp2, tp3, "BUY", hz, price, step_w)
-            tp1, tp2, tp3 = _order_targets(entry, tp1, tp2, tp3, "BUY")
-            return entry, sl, tp1
-
-        def label_tp_before_sl(df: pd.DataFrame, start_ix: int, entry: float, sl: float, tp1: float, hold_days: int) -> int:
-            lo = df["low"].values; hi = df["high"].values
-            end = min(len(df), start_ix + hold_days)
-            for k in range(start_ix, end):
-                if lo[k] <= sl:  return 0
-                if hi[k] >= tp1: return 1
-            return 0
-
-        cli = PolygonClient()
-        rows = []
-        tickers = [t.strip() for t in tickers_text.split(",") if t.strip()]
-
-        prog = st.progress(0.0, text="Готовим датасет…")
-        total = max(1, len(tickers))
-
-        for idx, t in enumerate(tickers, 1):
-            try:
-                days = int(months*31) + look + 40
-                df = cli.daily_ohlc(t, days=days).dropna()
-                if len(df) < look + 30:
-                    st.write(f"⚠️ {t}: мало данных ({len(df)}) — пропускаю")
-                    prog.progress(min(idx/total, 1.0))
-                    continue
-
-                for i in range(look+5, len(df)-6):
-                    df_asof = df.iloc[:i+1]
-                    price = float(df_asof["close"].iloc[-1])
-
-                    tail = df_asof.tail(look)
-                    rng_low, rng_high = float(tail["low"].min()), float(tail["high"].max())
-                    rng_w = max(1e-9, rng_high - rng_low)
-                    pos = (price - rng_low) / rng_w
-
-                    atr_d = float(_atr_like(df_asof, n=cfg["atr"]).iloc[-1])
-                    atr2  = float(_atr_like(df_asof, n=cfg["atr"]*2).iloc[-1])
-                    vol_ratio = atr_d/max(1e-9, atr2)
-                    slope  = _linreg_slope(df_asof["close"].tail(cfg["trend"]).values)/max(1e-9, price)
-                    streak = _streak(df_asof["close"])
-
-                    hlc = _last_period_hlc(df_asof, cfg["pivot_period"])
-                    if not hlc:
-                        hlc = (float(df_asof["high"].tail(60).max()),
-                               float(df_asof["low"].tail(60).min()),
-                               float(df_asof["close"].iloc[-1]))
-                    piv = _fib_pivots(*hlc)
-                    band = _classify_band(price, piv, 0.25*(_weekly_atr(df_asof) if cfg.get("use_weekly_atr") else atr_d))
-
-                    lw_row = df_asof.iloc[-1]
-                    body  = abs(lw_row["close"] - lw_row["open"])
-                    upper = max(0.0, lw_row["high"] - max(lw_row["open"], lw_row["close"]))
-                    lower = max(0.0, min(lw_row["open"], lw_row["close"]) - lw_row["low"])
-                    long_upper = (upper > body*1.3) and (upper > lower*1.1)
-                    long_lower = (lower > body*1.3) and (lower > upper*1.1)
-
-                    entry, sl, tp1 = compute_levels_asof(df_asof)
-
-                    touch_ix = None
-                    j_end = min(i + 1 + FILL_WINDOW, len(df))
-                    for j in range(i+1, j_end):
-                        lo = float(df["low"].iloc[j]); hi = float(df["high"].iloc[j])
-                        if lo <= entry <= hi:
-                            touch_ix = j
-                            break
-                    if touch_ix is None:
-                        continue
-
-                    y = label_tp_before_sl(df, touch_ix, entry, sl, tp1, HOLD_DAYS)
-
-                    rows.append(dict(
-                        ticker=t, date=df_asof.index[-1].date(), y=int(y),
-                        pos=pos, slope_norm=slope, atr_d_over_price=atr_d/max(1e-9, price),
-                        vol_ratio=vol_ratio, streak=float(streak), band=float(band),
-                        long_upper=float(long_upper), long_lower=float(long_lower)
-                    ))
-
-            except Exception as e:
-                st.write(f"❌ {t}: {e}")
-            finally:
-                prog.progress(min(idx/total, 1.0))
-
-        if not rows:
-            st.error("Не удалось собрать датасет. Проверь ключ Polygon/тикеры/историю.")
-            return
-
-        dfX = pd.DataFrame(rows)
-        st.write("📊 Размер датасета:", dfX.shape, "доля y=1:", float(dfX["y"].mean()))
-
-        X = dfX[FEATS].astype(float); y = dfX["y"].astype(int)
-
-        if use_lgbm:
-            model = LGBMClassifier(
-                n_estimators=400, learning_rate=0.05,
-                num_leaves=63, subsample=0.8, colsample_bytree=0.8,
-                random_state=42
-            )
-        else:
-            model = LogisticRegression(max_iter=500, class_weight="balanced")
-
-        model.fit(X, y)
-
-        # метрика
-        from sklearn.metrics import roc_auc_score
-        try:
-            proba = model.predict_proba(X)[:,1]
-        except Exception:
-            proba = model.predict(X).astype(float)
-        auc = float(roc_auc_score(y, proba)) if len(np.unique(y))>1 else float("nan")
-
-        # --- сохранение модели и кнопка скачивания ---
-        models_dir = Path(os.getenv("ARXORA_MODEL_DIR", "models"))
-        models_dir.mkdir(parents=True, exist_ok=True)
-        out_path = models_dir / "arxora_lgbm_ST.joblib"
-
-        import joblib as _joblib
-        _joblib.dump({"model": model, "features": FEATS, "auc": auc}, out_path)
-
-        st.success(f"✅ Модель сохранена: {out_path}")
-        st.write(f"AUC по обучению (грубо): {auc:.3f}")
-
-        # читаем файл и отдаем на скачивание
-        with open(out_path, "rb") as fh:
-            binary = fh.read()
-
-        st.download_button(
-            label="⬇️ Скачать модель (ST)",
-            data=binary,
-            file_name="arxora_lgbm_ST.joblib",
-            mime="application/octet-stream",
-            key="dl_st_model"
-        )
-
-# вызов панели (вне любых if/with — чтобы не ловить отступы)
-render_training_panel()
