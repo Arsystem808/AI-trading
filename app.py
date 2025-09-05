@@ -355,3 +355,88 @@ with st.expander("🧠 ML · быстрый тренинг (MID) прямо зд
                 except Exception:
                     pass
     st.caption("Горизонт вверху должен быть «Среднесрок» — тогда в режиме анализа будет использоваться эта модель.")
+    # =====================
+# 🧠 ML · быстрый тренинг (LT) прямо здесь
+# =====================
+with st.expander("🧠 ML · быстрый тренинг (LT) прямо здесь"):
+    st.caption("Обучит долгосрочную модель (LT) по дневным данным из Polygon и сохранит её в models/. Затем файл можно скачать и загрузить в репозиторий.")
+
+    tickers_lt = st.text_input("Тикеры (через запятую)", value="AAPL")
+    months_lt = st.slider("Месяцев истории", min_value=24, max_value=120, value=60, step=6)
+
+    if st.button("🚀 Обучить LT-модель сейчас", use_container_width=True):
+        try:
+            import os, io, joblib
+            import numpy as np
+            import pandas as pd
+            from datetime import timedelta
+            from core.polygon_client import PolygonClient
+
+            cli = PolygonClient()
+
+            # Собираем датасет по всем тикерам
+            X_list, y_list = [], []
+            n_forward = 20  # горизонт цели для LT (≈ 1 мес. торговых дней)
+
+            for tk in [t.strip().upper() for t in tickers_lt.split(",") if t.strip()]:
+                df = cli.daily_ohlc(tk, days=int(months_lt * 30))
+                if df is None or len(df) < 60:
+                    st.warning(f"Мало данных для {tk}")
+                    continue
+
+                # простые признаки (то же ядро, что в ST-панели, если ты его уже делал)
+                df = df.copy()
+                df["ret1"] = df["close"].pct_change()
+                df["ret5"] = df["close"].pct_change(5)
+                df["ret20"] = df["close"].pct_change(20)
+                df["vol20"] = df["ret1"].rolling(20).std()
+                df["ma20"] = df["close"].rolling(20).mean()
+                df["ma50"] = df["close"].rolling(50).mean()
+                df["ma20_rel"] = df["close"] / df["ma20"] - 1.0
+                df["ma50_rel"] = df["close"] / df["ma50"] - 1.0
+
+                # цель: будет ли доходность за 20 дней > 0
+                df["y"] = (df["close"].shift(-n_forward) / df["close"] - 1.0) > 0.0
+                df = df.dropna()
+
+                feats = ["ret1","ret5","ret20","vol20","ma20_rel","ma50_rel"]
+                X_list.append(df[feats].values.astype(float))
+                y_list.append(df["y"].astype(int).values)
+
+            if not X_list:
+                st.error("Не удалось собрать данные ни по одному тикеру.")
+            else:
+                X = np.vstack(X_list); y = np.concatenate(y_list)
+
+                # простая LGBM-модель (или замени на то, что уже используешь)
+                try:
+                    from lightgbm import LGBMClassifier
+                    model = LGBMClassifier(
+                        n_estimators=400,
+                        learning_rate=0.05,
+                        max_depth=-1,
+                        subsample=0.8,
+                        colsample_bytree=0.8,
+                        random_state=42
+                    )
+                except Exception:
+                    # fallback на LogisticRegression, если LGBM недоступен
+                    from sklearn.linear_model import LogisticRegression
+                    model = LogisticRegression(max_iter=2000)
+
+                model.fit(X, y)
+
+                os.makedirs("models", exist_ok=True)
+                out_path = "models/arxora_lgbm_LT.joblib"
+                joblib.dump({"model": model, "features": feats, "horizon": "LT"}, out_path)
+
+                st.success(f"✅ Модель сохранена: {out_path}")
+
+                # кнопка скачать
+                with open(out_path, "rb") as f:
+                    st.download_button("💾 Скачать модель (LT)", data=f.read(), file_name="arxora_lgbm_LT.joblib", mime="application/octet-stream")
+
+                st.info("Перезапусти анализ (или приложение) — бэйнд автоматически переключится на Mode: AI при выборе горизонта LT.")
+        except Exception as e:
+            st.error(f"Ошибка обучения LT: {e}")
+
