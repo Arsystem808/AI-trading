@@ -9,37 +9,28 @@ from core.strategy import analyze_asset
 
 load_dotenv()
 
-# ─────────────────────────────────────────────────────────
-# NEW: читаем секреты и пробрасываем в окружение
-# ─────────────────────────────────────────────────────────
-def _get_secret(key, default=None, cast=str):
+# ---------- конфиги/секреты ----------
+def _get_conf(name, default=None):
+    """Безопасно читаем из st.secrets, потом из env."""
     try:
-        val = st.secrets.get(key, default)
+        if name in st.secrets:
+            return st.secrets.get(name)
     except Exception:
-        val = default
-    if val is None:
+        pass
+    return os.environ.get(name, default)
+
+def _to_bool(x, default=False):
+    if x is None:
         return default
-    try:
-        return cast(val)
-    except Exception:
-        return default
+    s = str(x).strip().lower()
+    return s in ("1", "true", "yes", "y", "on")
 
-# ключ Polygon (если в .env нет — возьмём из secrets)
-os.environ["POLYGON_API_KEY"] = os.getenv("POLYGON_API_KEY") or str(_get_secret("POLYGON_API_KEY", ""))
-
-ARXORA_MODEL_DIR     = _get_secret("ARXORA_MODEL_DIR", "models", str)
-ARXORA_AI_TH_LONG    = _get_secret("ARXORA_AI_TH_LONG", 0.55, float)
-ARXORA_AI_TH_SHORT   = _get_secret("ARXORA_AI_TH_SHORT", 0.45, float)
-ARXORA_AI_PSEUDO     = bool(int(_get_secret("ARXORA_AI_PSEUDO", 1, float)))
-ARXORA_SHOW_TRAINERS = bool(int(_get_secret("ARXORA_SHOW_TRAINERS", 0, float)))
-ARXORA_TRAINER_PASS  = _get_secret("ARXORA_TRAINER_PASS", "admin", str)
-
-# чтобы core/strategy и core/ai_inference могли читать через os.getenv()
-os.environ["ARXORA_MODEL_DIR"]   = ARXORA_MODEL_DIR
-os.environ["ARXORA_AI_TH_LONG"]  = str(ARXORA_AI_TH_LONG)
-os.environ["ARXORA_AI_TH_SHORT"] = str(ARXORA_AI_TH_SHORT)
-os.environ["ARXORA_AI_PSEUDO"]   = "1" if ARXORA_AI_PSEUDO else "0"
-# ─────────────────────────────────────────────────────────
+MODEL_DIR        = _get_conf("ARXORA_MODEL_DIR", "models")
+AI_PSEUDO        = _to_bool(_get_conf("ARXORA_AI_PSEUDO", "0"))
+TH_LONG          = float(str(_get_conf("ARXORA_AI_TH_LONG",  "0.60")))
+TH_SHORT         = float(str(_get_conf("ARXORA_AI_TH_SHORT", "0.60")))
+SHOW_TRAINERSCFG = _to_bool(_get_conf("ARXORA_SHOW_TRAINERS", "0"))
+TRAINER_PASS     = str(_get_conf("ARXORA_TRAINER_PASS", "admin"))
 
 # =====================
 # Arxora BRANDING
@@ -79,35 +70,40 @@ def render_arxora_header():
 render_arxora_header()
 
 # =====================
-# Текстовые блоки
+# Полезные фразы
 # =====================
 CUSTOM_PHRASES = {
-    "BUY": ["Точка входа: покупка в диапазоне {range_low}–{range_high}{unit_suffix}. AI-анализ указывает на сильную поддержку в этой зоне."],
-    "SHORT": ["Точка входа: продажа (short) в диапазоне {range_low}–{range_high}{unit_suffix}. AI-анализ указывает на сильное сопротивление в этой зоне."],
+    "BUY": [
+        "Точка входа: покупка в диапазоне {range_low}–{range_high}{unit_suffix}. AI-анализ указывает на сильную поддержку в этой зоне."
+    ],
+    "SHORT": [
+        "Точка входа: продажа (short) в диапазоне {range_low}–{range_high}{unit_suffix}. AI-анализ указывает на сильное сопротивление в этой зоне."
+    ],
     "WAIT": [
         "Пока не вижу для себя ясной картины, я бы не торопился.",
         "Я бы пока не торопился и подождал более точной картины. Возможные новости могут стать триггером и изменить динамику и волатильность.",
-        "Пока без позиции: жду более ясного сигнала. Новости могут сдвинуть рынок и поменять волатильность.",
+        "Пока без позиции: жду более ясного сигнала. Новости могут сдвинуть рынок и поменять волатильность."
     ],
     "CONTEXT": {
         "support": ["Анализ, проведённый ИИ, определяет эту зону как область сильной поддержки."],
         "resistance": ["Анализ, проведённый ИИ, определяет эту зону как область сильного сопротивления."],
-        "neutral": ["Рынок в балансе — действую только по подтверждённому сигналу."],
+        "neutral": ["Рынок в балансе — действую только по подтверждённому сигналу."]
     },
     "STOPLINE": [
         "Стоп-лосс: {sl}. Потенциальный риск ~{risk_pct}% от входа. Уровень определён алгоритмами анализа волатильности как критический."
     ],
-    "DISCLAIMER": "Данная информация является примером того, как AI может генерировать инвестиционные идеи и не является прямой инвестиционной рекомендацией. Торговля на финансовых рынках сопряжена с высоким риском.",
+    "DISCLAIMER": "Данная информация является примером того, как AI может генерировать инвестиционные идеи и не является прямой инвестиционной рекомендацией. Торговля на финансовых рынках сопряжена с высоким риском."
 }
 
 # =====================
-# Хелперы форматирования
+# Хелперы (формат/риск/юниты)
 # =====================
 def _fmt(x): return f"{float(x):.2f}"
 
 def compute_display_range(levels, widen_factor=0.25):
     entry = float(levels["entry"]); sl = float(levels["sl"])
-    risk = abs(entry - sl); width = max(risk * widen_factor, 0.01)
+    risk = abs(entry - sl)
+    width = max(risk * widen_factor, 0.01)
     low, high = entry - width, entry + width
     return _fmt(min(low, high)), _fmt(max(low, high))
 
@@ -137,9 +133,9 @@ def parse_base_symbol(ticker: str):
 def unit_suffix(ticker: str) -> str:
     kind = detect_asset_class(ticker)
     style = UNIT_STYLE.get(kind, "omit")
-    if style == "za_akciyu":   return " за акцию"
-    if style == "per_base":    return f" за 1 {parse_base_symbol(ticker)}"
-    if style == "per_contract":return " за контракт"
+    if style == "za_akciyu":    return " за акцию"
+    if style == "per_base":      return f" за 1 {parse_base_symbol(ticker)}"
+    if style == "per_contract":  return " за контракт"
     return ""
 
 def rr_line(levels):
@@ -179,6 +175,7 @@ def card_html(title, value, sub=None, color=None):
         </div>
     """
 
+# ---------- Polygon нормализация ----------
 def normalize_for_polygon(symbol: str) -> str:
     s = (symbol or "").strip().upper().replace(" ", "")
     if s.startswith(("X:", "C:", "O:")):
@@ -208,9 +205,9 @@ with col2:
         index=1
     )
 
-# бейдж режима
+# плашка режима
 hz_tag = "ST" if "Кратко" in horizon else ("MID" if "Средне" in horizon else "LT")
-st.caption(f"Mode: {'AI (pseudo)' if ARXORA_AI_PSEUDO else 'AI'} · Horizon: {hz_tag}")
+st.caption(f"Mode: {'AI (pseudo)' if AI_PSEUDO else 'AI'} · Horizon: {hz_tag}")
 
 symbol_for_engine = normalize_for_polygon(ticker)
 run = st.button("Проанализировать", type="primary")
@@ -244,18 +241,13 @@ if run:
         lv = out["levels"]
         if action in ("BUY", "SHORT"):
             c1, c2, c3 = st.columns(3)
-            with c1:
-                st.markdown(card_html("Entry", f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
-            with c2:
-                st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
-            with c3:
-                st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}", sub=f"Probability {int(round(out['probs']['tp1']*100))}%"), unsafe_allow_html=True)
+            with c1: st.markdown(card_html("Entry", f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
+            with c2: st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
+            with c3: st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}", sub=f"Probability {int(round(out['probs']['tp1']*100))}%"), unsafe_allow_html=True)
 
             c1, c2 = st.columns(2)
-            with c1:
-                st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}", sub=f"Probability {int(round(out['probs']['tp2']*100))}%"), unsafe_allow_html=True)
-            with c2:
-                st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}", sub=f"Probability {int(round(out['probs']['tp3']*100))}%"), unsafe_allow_html=True)
+            with c1: st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}", sub=f"Probability {int(round(out['probs']['tp2']*100))}%"), unsafe_allow_html=True)
+            with c2: st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}", sub=f"Probability {int(round(out['probs']['tp3']*100))}%"), unsafe_allow_html=True)
 
             rr = rr_line(lv)
             if rr:
@@ -284,3 +276,29 @@ if run:
 else:
     st.info("Введите тикер и нажмите «Проанализировать».")
 
+# =====================
+# ML панели (показ по флагу или по PIN)
+# =====================
+def _unlock_by_pin():
+    with st.expander("🔐 Открыть ML-панели (PIN)", expanded=False):
+        pin = st.text_input("PIN", type="password", placeholder="Введите PIN из ARXORA_TRAINER_PASS")
+        if st.button("Открыть"):
+            st.session_state["trainer_unlocked"] = (pin == TRAINER_PASS)
+            if st.session_state["trainer_unlocked"]:
+                st.success("Панели открыты до перезагрузки.")
+            else:
+                st.error("Неверный PIN.")
+
+allow_trainers = SHOW_TRAINERSCFG or st.session_state.get("trainer_unlocked", False)
+if not SHOW_TRAINERSCFG:
+    _unlock_by_pin()
+
+if allow_trainers:
+    # === ВСТАВЬ сюда свои уже существующие блоки с экспандерами тренинга ST/MID/LT ===
+    # Пример заглушек (чтобы файл был самодостаточным):
+    with st.expander("🧠 ML · быстрый тренинг (ST) прямо здесь", expanded=False):
+        st.caption("Панель активна. Оставь свой рабочий код тренировки ST здесь.")
+    with st.expander("🧠 ML · быстрый тренинг (MID) прямо здесь", expanded=False):
+        st.caption("Панель активна. Оставь свой рабочий код тренировки MID здесь.")
+    with st.expander("🧠 ML · быстрый тренинг (LT) прямо здесь", expanded=False):
+        st.caption("Панель активна. Оставь свой рабочий код тренировки LT здесь.")
