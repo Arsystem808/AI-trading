@@ -1,41 +1,34 @@
-# app.py
+# app.py  — Arxora (AI)
 import os
 import re
 import hashlib
 import random
-import importlib
 import streamlit as st
 from dotenv import load_dotenv
 
-# ====== core logic ======
+# Базовый движок сигналов
 from core.strategy import analyze_asset
+
+# ML-тренажёры (могут отсутствовать — обрабатываем мягко)
+try:
+    from core.ai_inference import (
+        train_quick_st,
+        train_quick_mid,
+        train_quick_lt,
+    )
+    TRAINERS_AVAILABLE = True
+except Exception:
+    train_quick_st = train_quick_mid = train_quick_lt = None
+    TRAINERS_AVAILABLE = False
 
 load_dotenv()
 
-# ---------------- Env toggles ----------------
-MODEL_DIR         = os.getenv("ARXORA_MODEL_DIR", "models")
-AI_PSEUDO         = os.getenv("ARXORA_AI_PSEUDO", "0") == "1"
-AI_TH_LONG        = float(os.getenv("ARXORA_AI_TH_LONG",  "0.60"))
-AI_TH_SHORT       = float(os.getenv("ARXORA_AI_TH_SHORT", "0.60"))
-SHOW_TRAINERS     = os.getenv("ARXORA_SHOW_TRAINERS", "0") == "1"
-TRAINER_PASS      = os.getenv("ARXORA_TRAINER_PASS", "admin")
-
-# ------------- try import trainers (optional) -------------
-HAVE_TRAINERS = False
-train_quick_st = train_quick_mid = train_quick_lt = None
-try:
-    ai_inf_mod = importlib.import_module("core.ai_inference")
-    train_quick_st  = getattr(ai_inf_mod, "train_quick_st",  None)
-    train_quick_mid = getattr(ai_inf_mod, "train_quick_mid", None)
-    train_quick_lt  = getattr(ai_inf_mod, "train_quick_lt",  None)
-    HAVE_TRAINERS = all([train_quick_st, train_quick_mid, train_quick_lt])
-except Exception:
-    HAVE_TRAINERS = False
-
-# ========== page config / branding ==========
-st.set_page_config(page_title="Arxora — трейд-ИИ (MVP)",
-                   page_icon="assets/arxora_favicon_512.png",
-                   layout="centered")
+# ===================== BRANDING =====================
+st.set_page_config(
+    page_title="Arxora — трейд-ИИ (MVP)",
+    page_icon="assets/arxora_favicon_512.png",
+    layout="centered",
+)
 
 def render_arxora_header():
     hero_path = "assets/arxora_logo_hero.png"
@@ -68,9 +61,7 @@ def render_arxora_header():
 
 render_arxora_header()
 
-# =====================
-# Полезные фразы
-# =====================
+# ===================== Вспом. утилиты UI =====================
 CUSTOM_PHRASES = {
     "BUY": [
         "Точка входа: покупка в диапазоне {range_low}–{range_high}{unit_suffix}. AI-анализ указывает на сильную поддержку в этой зоне."
@@ -94,9 +85,6 @@ CUSTOM_PHRASES = {
     "DISCLAIMER": "Данная информация является примером того, как AI может генерировать инвестиционные идеи и не является прямой инвестиционной рекомендацией. Торговля на финансовых рынках сопряжена с высоким риском."
 }
 
-# =====================
-# Хелперы (формат/риск/юниты)
-# =====================
 def _fmt(x): return f"{float(x):.2f}"
 
 def compute_display_range(levels, widen_factor=0.25):
@@ -145,23 +133,6 @@ def rr_line(levels):
     rr3 = abs(levels["tp3"] - levels["entry"]) / risk
     return f"RR ≈ 1:{rr1:.1f} (TP1) · 1:{rr2:.1f} (TP2) · 1:{rr3:.1f} (TP3)"
 
-def render_plan_line(action, levels, ticker="", seed_extra=""):
-    seed = int(hashlib.sha1(f"{ticker}{seed_extra}{levels['entry']}{levels['sl']}{action}".encode()).hexdigest(), 16) % (2**32)
-    rnd = random.Random(seed)
-    if action == "WAIT":
-        return rnd.choice(CUSTOM_PHRASES["WAIT"])
-    rng_low, rng_high = compute_display_range(levels)
-    us = unit_suffix(ticker)
-    tpl = CUSTOM_PHRASES[action][0]
-    return tpl.format(range_low=rng_low, range_high=rng_high, unit_suffix=us)
-
-def render_context_line(kind_key="neutral"):
-    return CUSTOM_PHRASES["CONTEXT"].get(kind_key, CUSTOM_PHRASES["CONTEXT"]["neutral"])[0]
-
-def render_stopline(levels):
-    line = CUSTOM_PHRASES["STOPLINE"][0]
-    return line.format(sl=_fmt(levels["sl"]), risk_pct=compute_risk_pct(levels))
-
 def card_html(title, value, sub=None, color=None):
     bg = "#141a20"
     if color == "green": bg = "#123b2a"
@@ -174,9 +145,6 @@ def card_html(title, value, sub=None, color=None):
         </div>
     """
 
-# =====================
-# Polygon нормализация
-# =====================
 def normalize_for_polygon(symbol: str) -> str:
     s = (symbol or "").strip().upper().replace(" ", "")
     if s.startswith(("X:", "C:", "O:")):
@@ -188,39 +156,34 @@ def normalize_for_polygon(symbol: str) -> str:
         return f"X:{s}"
     return s
 
-# =====================
-# Inputs
-# =====================
-HZ_LABELS = {
-    "Краткосрок (1–5 дней)": "ST",
-    "Среднесрок (1–4 недели)": "MID",
-    "Долгосрок (1–6 месяцев)": "LT",
-}
-
+# ===================== Inputs =====================
 col1, col2 = st.columns([2,1])
 with col1:
     ticker_input = st.text_input(
         "Тикер",
         value="",
-        placeholder="Примеры: AAPL · TSLA · X:BTCUSD · BTCUSDT"
+        placeholder="Примеры: AAPL · TSLA · X:BTCUSD · BTCUSDT",
+        key="main_ticker",
     )
     ticker = ticker_input.strip().upper()
 with col2:
     horizon = st.selectbox(
         "Горизонт",
-        list(HZ_LABELS.keys()),
-        index=1
+        ["Краткосрок (1–5 дней)", "Среднесрок (1–4 недели)", "Долгосрок (1–6 месяцев)"],
+        index=1,
+        key="main_horizon",
     )
 
-ai_mode_label = "AI (pseudo)" if AI_PSEUDO else "AI"
-st.markdown(f"<div style='opacity:0.9;'>Mode: <b>{ai_mode_label}</b> · Horizon: <b>{HZ_LABELS[horizon]}</b></div>", unsafe_allow_html=True)
-
 symbol_for_engine = normalize_for_polygon(ticker)
-run = st.button("Проанализировать", type="primary")
+run = st.button("Проанализировать", type="primary", key="main_analyze")
 
-# =====================
-# Main
-# =====================
+# Статус режима (AI/AI pseudo)
+AI_PSEUDO = str(os.getenv("ARXORA_AI_PSEUDO", "0")).strip() in ("1", "true", "True", "yes")
+mode_label = "AI (pseudo)" if AI_PSEUDO else "AI"
+hz_tag = "ST" if "Кратко" in horizon else ("MID" if "Средне" in horizon else "LT")
+st.write(f"Mode: {mode_label} · Horizon: {hz_tag}")
+
+# ===================== Main =====================
 if run:
     try:
         out = analyze_asset(ticker=symbol_for_engine, horizon=horizon)
@@ -231,7 +194,7 @@ if run:
         )
 
         action = out["recommendation"]["action"]
-        conf = out["recommendation"].get("confidence", 0.0)
+        conf = out["recommendation"].get("confidence", 0)
         conf_pct = f"{int(round(float(conf)*100))}%"
         action_text = "Buy LONG" if action == "BUY" else ("Sell SHORT" if action == "SHORT" else "WAIT")
         st.markdown(
@@ -253,45 +216,66 @@ if run:
                 st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
             with c3:
                 st.markdown(
-                    card_html("TP 1", f"{lv['tp1']:.2f}", sub=f"Probability {int(round(out['probs']['tp1']*100))}%"),
-                    unsafe_allow_html=True
+                    card_html("TP 1", f"{lv['tp1']:.2f}",
+                              sub=f"Probability {int(round(out['probs']['tp1']*100))}%"),
+                    unsafe_allow_html=True,
                 )
 
             c1, c2 = st.columns(2)
             with c1:
                 st.markdown(
-                    card_html("TP 2", f"{lv['tp2']:.2f}", sub=f"Probability {int(round(out['probs']['tp2']*100))}%"),
-                    unsafe_allow_html=True
+                    card_html("TP 2", f"{lv['tp2']:.2f}",
+                              sub=f"Probability {int(round(out['probs']['tp2']*100))}%"),
+                    unsafe_allow_html=True,
                 )
             with c2:
-                # <<< fixed the typo here: unsafe_allow_html >>>
                 st.markdown(
-                    card_html("TP 3", f"{lv['tp3']:.2f}", sub=f"Probability {int(round(out['probs']['tp3']*100))}%"),
-                    unsafe_allow_html=True
+                    card_html("TP 3", f"{lv['tp3']:.2f}",
+                              sub=f"Probability {int(round(out['probs']['tp3']*100))}%"),
+                    unsafe_allow_html=True,
                 )
 
             rr = rr_line(lv)
             if rr:
                 st.markdown(f"<div style='opacity:0.75; margin-top:4px'>{rr}</div>", unsafe_allow_html=True)
 
-        # Text plan & context
-        def _fmt_line(html): st.markdown(f"<div style='margin-top:8px'>{html}</div>", unsafe_allow_html=True)
+        # План и контекст
+        def compute_display_range(levels, widen_factor=0.25):
+            entry = float(levels["entry"]); sl = float(levels["sl"])
+            risk = abs(entry - sl)
+            width = max(risk * widen_factor, 0.01)
+            low, high = entry - width, entry + width
+            return _fmt(min(low, high)), _fmt(max(low, high))
+
+        def render_plan_line(action, levels, ticker="", seed_extra=""):
+            seed = int(hashlib.sha1(f"{ticker}{seed_extra}{levels['entry']}{levels['sl']}{action}".encode()).hexdigest(), 16) % (2**32)
+            rnd = random.Random(seed)
+            if action == "WAIT":
+                return rnd.choice(CUSTOM_PHRASES["WAIT"])
+            rng_low, rng_high = compute_display_range(levels)
+            us = unit_suffix(ticker)
+            tpl = CUSTOM_PHRASES[action][0]
+            return tpl.format(range_low=rng_low, range_high=rng_high, unit_suffix=us)
 
         plan = render_plan_line(action, lv, ticker=ticker, seed_extra=horizon)
-        _fmt_line(plan)
+        st.markdown(f"<div style='margin-top:8px'>{plan}</div>", unsafe_allow_html=True)
 
         ctx_key = "neutral"
         if action == "BUY": ctx_key = "support"
         elif action == "SHORT": ctx_key = "resistance"
-        ctx = render_context_line(ctx_key)
+        ctx = CUSTOM_PHRASES["CONTEXT"][ctx_key][0]
         st.markdown(f"<div style='opacity:0.9'>{ctx}</div>", unsafe_allow_html=True)
 
         if action in ("BUY","SHORT"):
-            stopline = render_stopline(lv)
+            line = CUSTOM_PHRASES["STOPLINE"][0]
+            stopline = line.format(sl=_fmt(lv["sl"]), risk_pct=compute_risk_pct(lv))
             st.markdown(f"<div style='opacity:0.9; margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
 
         if out.get("alt"):
-            st.markdown(f"<div style='margin-top:6px;'><b>Если пойдёт против базового сценария:</b> {out['alt']}</div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div style='margin-top:6px;'><b>Если пойдёт против базового сценария:</b> {out['alt']}</div>",
+                unsafe_allow_html=True,
+            )
 
         st.caption(CUSTOM_PHRASES["DISCLAIMER"])
 
@@ -300,46 +284,57 @@ if run:
 else:
     st.info("Введите тикер и нажмите «Проанализировать».")
 
-# =====================
-# ML панель (PIN + тренажёры)
-# =====================
-if "ml_unlocked" not in st.session_state:
-    st.session_state.ml_unlocked = False
+# ===================== ML тренажёры =====================
+SHOW_TRAINERS = str(os.getenv("ARXORA_SHOW_TRAINERS", "0")).strip() in ("1","true","True","yes")
+TRAINER_PASS  = os.getenv("ARXORA_TRAINER_PASS", "admin")
+MODEL_DIR     = os.getenv("ARXORA_MODEL_DIR", "models")
 
-def trainer_block(title, trainer_fn):
+def trainer_block(tag: str, title: str, trainer_func):
+    """Один блок тренажёра. Все ключи уникальны по тегу."""
     with st.expander(title, expanded=False):
-        if not HAVE_TRAINERS or trainer_fn is None:
-            st.warning("Тренажёры недоступны: не найдены функции train_quick_st/mid/lt в core/ai_inference.py. "
-                       "Используйте готовые модели в каталоге models/.", icon="⚠️")
+        if not TRAINERS_AVAILABLE or trainer_func is None:
+            st.warning("Тренажёры недоступны: не найдены функции train_quick_st/mid/lt в core/ai_inference.py. Используйте готовые модели в каталоге models/.")
             return
-        tickers = st.text_input("Тикеры (через запятую)", value="aapl")
-        months  = st.slider("Месяцев истории", min_value=6, max_value=48, value=18, step=1)
-        if st.button("🚀 Обучить модель сейчас"):
+
+        tickers = st.text_input("Тикеры (через запятую)",
+                                value="AAPL",
+                                key=f"{tag}_tickers")
+        months = st.slider("Месяцев истории", 6, 60, 18, key=f"{tag}_months")
+
+        # PIN-проверка: чтобы обучать, нужен правильный PIN
+        with st.popover("🔐 Открыть ML-панель (PIN)"):
+            pin_try = st.text_input("PIN", type="password", key=f"{tag}_pin")
+            st.caption("Установи ARXORA_TRAINER_PASS в .streamlit/secrets.toml")
+
+        train_clicked = st.button("🚀 Обучить модель сейчас", key=f"{tag}_train_btn")
+
+        if train_clicked:
+            if pin_try != TRAINER_PASS:
+                st.error("Неверный PIN.")
+                return
             try:
-                out_path, auc, shape, pos_share = trainer_fn(tickers, months, MODEL_DIR)
+                out_path, auc, shape, pos_share = trainer_func(tickers, months, MODEL_DIR)
                 st.success(f"✅ Модель сохранена: {out_path}")
+                st.markdown(f"**AUC (валидация, грубо):** {auc:.3f}")
                 st.markdown(f"**Размер датасета:** {shape} · **доля y=1:** {pos_share:.4f}")
-                st.markdown(f"AUC по обучению (грубо): **{auc:.3f}**")
-                # Если тренер возвращает bytes — можно дать скачать. Иначе пропускаем.
+
+                # Кнопка скачать
                 try:
-                    with open(out_path, "rb") as fh:
-                        st.download_button("⬇️ Скачать модель", data=fh, file_name=os.path.basename(out_path))
+                    with open(out_path, "rb") as f:
+                        st.download_button(
+                            "📥 Скачать модель",
+                            f,
+                            file_name=os.path.basename(out_path),
+                            mime="application/octet-stream",
+                            key=f"{tag}_dl",
+                        )
                 except Exception:
                     pass
-            except Exception as ex:
-                st.error(f"Ошибка обучения: {ex}")
+            except Exception as e:
+                st.error(f"Ошибка тренировки: {e}")
 
-if SHOW_TRAINERS or st.session_state.ml_unlocked:
-    trainer_block("🧠 ML · быстрый тренинг (ST) прямо здесь",  train_quick_st)
-    trainer_block("🧠 ML · быстрый тренинг (MID) прямо здесь", train_quick_mid)
-    trainer_block("🧠 ML · быстрый тренинг (LT) прямо здесь",  train_quick_lt)
-else:
-    with st.expander("🔐 Открыть ML-панели (PIN)", expanded=False):
-        pin = st.text_input("Введите PIN для доступа к ML-панелям", type="password")
-        if st.button("Открыть"):
-            if pin == TRAINER_PASS:
-                st.session_state.ml_unlocked = True
-                st.success("Доступ открыт. Прокрутите страницу — панели появились.")
-            else:
-                st.error("Неверный PIN.")
+if SHOW_TRAINERS:
+    trainer_block("ST",  "🧠 ML · быстрый тренинг (ST) прямо здесь",  train_quick_st)
+    trainer_block("MID", "🧠 ML · быстрый тренинг (MID) прямо здесь", train_quick_mid)
+    trainer_block("LT",  "🧠 ML · быстрый тренинг (LT) прямо здесь",  train_quick_lt)
 
