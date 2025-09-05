@@ -1,10 +1,8 @@
 # app.py
 import os
 import re
-import io
 import hashlib
 import random
-import joblib
 import streamlit as st
 from dotenv import load_dotenv
 from core.strategy import analyze_asset
@@ -285,3 +283,4 @@ if run:
         st.error(f"Ошибка анализа: {e}")
 else:
     st.info("Введите тикер и нажмите «Проанализировать».")
+
