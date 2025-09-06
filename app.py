@@ -1,21 +1,22 @@
+# app.py
 import os
 import re
 import hashlib
 import random
 from datetime import timedelta
-
+import numpy as np
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
-from core.strategy import analyze_asset
-from core.polygon_client import PolygonClient
+from core.strategy import analyze_asset           # ваш основной движок (AI + правила)
+from core.polygon_client import PolygonClient     # для бэктеста берём котировки
 
 load_dotenv()
 
-# =====================
-# Arxora BRANDING
-# =====================
+# =========================================================
+# BRANDING
+# =========================================================
 st.set_page_config(page_title="Arxora — трейд-ИИ (MVP)",
                    page_icon="assets/arxora_favicon_512.png",
                    layout="centered")
@@ -50,9 +51,9 @@ def render_arxora_header():
 
 render_arxora_header()
 
-# =====================
-# Полезные фразы
-# =====================
+# =========================================================
+# ТЕКСТЫ
+# =========================================================
 CUSTOM_PHRASES = {
     "BUY": [
         "Точка входа: покупка в диапазоне {range_low}–{range_high}{unit_suffix}. AI-анализ указывает на сильную поддержку в этой зоне."
@@ -76,15 +77,14 @@ CUSTOM_PHRASES = {
     "DISCLAIMER": "Данная информация является примером того, как AI может генерировать инвестиционные идеи и не является прямой инвестиционной рекомендацией. Торговля на финансовых рынках сопряжена с высоким риском."
 }
 
-# =====================
-# Хелперы (формат/риск/юниты)
-# =====================
+# =========================================================
+# HELPER'ы (formatter/юниты/карточки)
+# =========================================================
 def _fmt(x): return f"{float(x):.2f}"
 
 def compute_display_range(levels, widen_factor=0.25):
     entry = float(levels["entry"]); sl = float(levels["sl"])
-    risk = abs(entry - sl)
-    width = max(risk * widen_factor, 0.01)
+    risk = abs(entry - sl); width = max(risk * widen_factor, 0.01)
     low, high = entry - width, entry + width
     return _fmt(min(low, high)), _fmt(max(low, high))
 
@@ -107,8 +107,7 @@ def detect_asset_class(ticker: str):
 def parse_base_symbol(ticker: str):
     t = ticker.upper().replace("X:","").replace("C:","").replace(":","").replace("/","").replace("-","")
     for q in ("USDT","USDC","USD","EUR","JPY","GBP","BTC","ETH"):
-        if t.endswith(q) and len(t) > len(q):
-            return t[:-len(q)]
+        if t.endswith(q) and len(t) > len(q): return t[:-len(q)]
     return re.split(r"[-:/]", ticker.upper())[0].replace("X:","").replace("C:","")
 
 def unit_suffix(ticker: str) -> str:
@@ -156,9 +155,9 @@ def card_html(title, value, sub=None, color=None):
         </div>
     """
 
-# =====================
-# Polygon нормализация
-# =====================
+# =========================================================
+# Нормализация тикера под Polygon
+# =========================================================
 def normalize_for_polygon(symbol: str) -> str:
     s = (symbol or "").strip().upper().replace(" ", "")
     if s.startswith(("X:", "C:", "O:")):
@@ -170,41 +169,25 @@ def normalize_for_polygon(symbol: str) -> str:
         return f"X:{s}"
     return s
 
-# =====================
-# Inputs
-# =====================
+# =========================================================
+# INPUTS
+# =========================================================
 col1, col2 = st.columns([2,1])
 with col1:
-    ticker_input = st.text_input(
-        "Тикер",
-        value="",
-        placeholder="Примеры: AAPL · TSLA · X:BTCUSD · BTCUSDT"
-    )
+    ticker_input = st.text_input("Тикер", value="", placeholder="Примеры: AAPL · TSLA · X:BTCUSD · BTCUSDT")
     ticker = ticker_input.strip().upper()
 with col2:
-    horizon = st.selectbox(
-        "Горизонт",
-        ["Краткосрок (1–5 дней)", "Среднесрок (1–4 недели)", "Долгосрок (1–6 месяцев)"],
-        index=1
-    )
-
-mode_label = "AI"
-if os.getenv("ARXORA_AI_PSEUDO", "0").strip() in ("1", "true", "True"):
-    mode_label = "AI (pseudo)"
-
-st.markdown(
-    f"<div style='opacity:0.8;margin-bottom:4px;'>Mode: {mode_label} · Horizon: "
-    f"{'ST' if 'Кратко' in horizon else ('MID' if 'Средне' in horizon else 'LT')}</div>",
-    unsafe_allow_html=True
-)
+    horizon = st.selectbox("Горизонт",
+                           ["Краткосрок (1–5 дней)", "Среднесрок (1–4 недели)", "Долгосрок (1–6 месяцев)"],
+                           index=1)
 
 symbol_for_engine = normalize_for_polygon(ticker)
 run = st.button("Проанализировать", type="primary")
 
-# =====================
-# Main analysis
-# =====================
-if run:
+# =========================================================
+# MAIN: анализ одного актива
+# =========================================================
+if run and ticker:
     try:
         out = analyze_asset(ticker=symbol_for_engine, horizon=horizon)
 
@@ -230,22 +213,16 @@ if run:
         lv = out["levels"]
         if action in ("BUY", "SHORT"):
             c1, c2, c3 = st.columns(3)
-            with c1:
-                st.markdown(card_html("Entry", f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
-            with c2:
-                st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
-            with c3:
-                st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}", sub=f"Probability {int(round(out['probs']['tp1']*100))}%"), unsafe_allow_html=True)
+            with c1: st.markdown(card_html("Entry", f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
+            with c2: st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
+            with c3: st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}", sub=f"Probability {int(round(out['probs']['tp1']*100))}%"), unsafe_allow_html=True)
 
             c1, c2 = st.columns(2)
-            with c1:
-                st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}", sub=f"Probability {int(round(out['probs']['tp2']*100))}%"), unsafe_allow_html=True)
-            with c2:
-                st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}", sub=f"Probability {int(round(out['probs']['tp3']*100))}%"), unsafe_allow_html=True)
+            with c1: st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}", sub=f"Probability {int(round(out['probs']['tp2']*100))}%"), unsafe_allow_html=True)
+            with c2: st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}", sub=f"Probability {int(round(out['probs']['tp3']*100))}%"), unsafe_allow_html=True)
 
             rr = rr_line(lv)
-            if rr:
-                st.markdown(f"<div style='opacity:0.75; margin-top:4px'>{rr}</div>", unsafe_allow_html=True)
+            if rr: st.markdown(f"<div style='opacity:0.75; margin-top:4px'>{rr}</div>", unsafe_allow_html=True)
 
         plan = render_plan_line(action, lv, ticker=ticker, seed_extra=horizon)
         st.markdown(f"<div style='margin-top:8px'>{plan}</div>", unsafe_allow_html=True)
@@ -263,178 +240,477 @@ if run:
         if out.get("alt"):
             st.markdown(f"<div style='margin-top:6px;'><b>Если пойдёт против базового сценария:</b> {out['alt']}</div>", unsafe_allow_html=True)
 
-        if out.get("note_html"):
-            st.markdown(out["note_html"], unsafe_allow_html=True)
-
         st.caption(CUSTOM_PHRASES["DISCLAIMER"])
 
     except Exception as e:
         st.error(f"Ошибка анализа: {e}")
-else:
+elif not ticker:
     st.info("Введите тикер и нажмите «Проанализировать».")
 
-# ===========================================================
-# БЭКТЕСТ: Сканер сигналов без дублей + исход сделки
-# ===========================================================
-def _hz_tag_from_text(text: str) -> str:
-    if "Кратко" in text: return "ST"
-    if "Средне" in text: return "MID"
+# =========================================================
+# БЭКТЕСТ: без дублей + 3 политики выхода
+# =========================================================
+# --- тех. функции (ATR/линии, мини-логика для бэктеста) ---
+def _atr_like(df: pd.DataFrame, n: int = 14) -> pd.Series:
+    hl = df["high"] - df["low"]
+    hc = (df["high"] - df["close"].shift(1)).abs()
+    lc = (df["low"] - df["close"].shift(1)).abs()
+    tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
+    return tr.rolling(n, min_periods=1).mean()
+
+def _weekly_atr(df: pd.DataFrame, n_weeks: int = 8) -> float:
+    w = df.resample("W-FRI").agg({"high":"max","low":"min","close":"last"}).dropna()
+    if len(w) < 2: return float((df["high"] - df["low"]).tail(14).mean())
+    hl = w["high"] - w["low"]
+    hc = (w["high"] - w["close"].shift(1)).abs()
+    lc = (w["low"] - w["close"].shift(1)).abs()
+    tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
+    return float(tr.rolling(n_weeks, min_periods=1).mean().iloc[-1])
+
+def _linreg_slope(y: np.ndarray) -> float:
+    n = len(y); 
+    if n < 2: return 0.0
+    x = np.arange(n, dtype=float); xm, ym = x.mean(), y.mean()
+    denom = ((x - xm) ** 2).sum()
+    if denom == 0: return 0.0
+    beta = ((x - xm) * (y - ym)).sum() / denom
+    return float(beta)
+
+def _streak(closes: pd.Series) -> int:
+    s = 0
+    for i in range(len(closes)-1, 0, -1):
+        d = closes.iloc[i] - closes.iloc[i-1]
+        if d > 0:
+            if s < 0: break
+            s += 1
+        elif d < 0:
+            if s > 0: break
+            s -= 1
+        else:
+            break
+    return s
+
+def _wick_profile(row):
+    o, c, h, l = row["open"], row["close"], row["high"], row["low"]
+    body = abs(c - o)
+    upper = max(0.0, h - max(o, c))
+    lower = max(0.0, min(o, c) - l)
+    return body, upper, lower
+
+def _last_period_hlc(df: pd.DataFrame, rule: str):
+    g = df.resample(rule).agg({"high":"max","low":"min","close":"last"}).dropna()
+    if len(g) < 2: return None
+    row = g.iloc[-2]
+    return float(row["high"]), float(row["low"]), float(row["close"])
+
+def _fib_pivots(H: float, L: float, C: float):
+    P = (H + L + C) / 3.0
+    d = H - L
+    R1 = P + 0.382 * d; R2 = P + 0.618 * d; R3 = P + 1.000 * d
+    S1 = P - 0.382 * d; S2 = P - 0.618 * d; S3 = P - 1.000 * d
+    return {"P":P,"R1":R1,"R2":R2,"R3":R3,"S1":S1,"S2":S2,"S3":S3}
+
+def _classify_band(price: float, piv: dict, buf: float) -> int:
+    P, R1 = piv["P"], piv["R1"]
+    R2, R3, S1, S2 = piv.get("R2"), piv.get("R3"), piv["S1"], piv.get("S2")
+    neg_inf, pos_inf = -1e18, 1e18
+    levels = [S2 if S2 is not None else neg_inf, S1, P, R1,
+              R2 if R2 is not None else pos_inf, R3 if R3 is not None else pos_inf]
+    if price < levels[0] - buf: return -3
+    if price < levels[1] - buf: return -2
+    if price < levels[2] - buf: return -1
+    if price < levels[3] - buf: return 0
+    if R2 is None or price < levels[4] - buf: return +1
+    if price < levels[5] - buf: return +2
+    return +3
+
+def _three_targets_from_pivots(entry: float, direction: str, piv: dict, step: float):
+    ladder = sorted({p for p in [piv.get("S3"),piv.get("S2"),piv.get("S1"),piv["P"],piv["R1"],piv.get("R2"),piv.get("R3")] if p is not None})
+    eps = 0.10 * step
+    if direction == "BUY":
+        ups = [x for x in ladder if x > entry + eps]
+        while len(ups) < 3:
+            k = len(ups) + 1
+            ups.append(entry + (0.7 + 0.7*(k-1))*step)
+        return ups[0], ups[1], ups[2]
+    else:
+        dns = [x for x in ladder if x < entry - eps]
+        dns = list(sorted(dns, reverse=True))
+        while len(dns) < 3:
+            k = len(dns) + 1
+            dns.append(entry - (0.7 + 0.7*(k-1))*step)
+        return dns[0], dns[1], dns[2]
+
+def _apply_tp_floors(entry, sl, tp1, tp2, tp3, action, hz_tag, price, atr_val):
+    if action not in ("BUY","SHORT"): return tp1,tp2,tp3
+    risk = abs(entry - sl); 
+    if risk <= 1e-9: return tp1,tp2,tp3
+    side = 1 if action == "BUY" else -1
+    min_rr   = {"ST":0.80,"MID":1.00,"LT":1.25}
+    min_pct  = {"ST":0.006,"MID":0.012,"LT":0.020}
+    atr_mult = {"ST":0.50,"MID":0.80,"LT":1.20}
+    floor1 = max(min_rr[hz_tag]*risk, min_pct[hz_tag]*price, atr_mult[hz_tag]*atr_val)
+    if abs(tp1 - entry) < floor1: tp1 = entry + side*floor1
+    floor2 = max(1.6*floor1, (min_rr[hz_tag]*1.8)*risk)
+    if abs(tp2 - entry) < floor2: tp2 = entry + side*floor2
+    min_gap3 = max(0.8*floor1, 0.6*risk)
+    if abs(tp3 - tp2) < min_gap3: tp3 = tp2 + side*min_gap3
+    return tp1,tp2,tp3
+
+def _order_targets(entry, tp1, tp2, tp3, action, eps=1e-6):
+    side = 1 if action == "BUY" else -1
+    arr = sorted([float(tp1),float(tp2),float(tp3)], key=lambda x: side*(x-entry))
+    d0 = side*(arr[0]-entry); d1 = side*(arr[1]-entry); d2 = side*(arr[2]-entry)
+    if d1 - d0 < eps: arr[1] = entry + side*max(d0 + max(eps,0.1*abs(d0)), d1+eps)
+    if side*(arr[2]-entry) - side*(arr[1]-entry) < eps:
+        d1 = side*(arr[1]-entry)
+        arr[2] = entry + side*max(d1 + max(eps,0.1*abs(d1)), d2+eps)
+    return arr[0],arr[1],arr[2]
+
+def _hz_tag(text: str) -> str:
+    if "Кратко" in text:  return "ST"
+    if "Средне" in text:  return "MID"
     return "LT"
 
 def _max_hold_days(hz_text: str) -> int:
-    tag = _hz_tag_from_text(hz_text)
-    return {"ST": 7, "MID": 25, "LT": 120}[tag]
+    if "Кратко" in hz_text: return 10
+    if "Средне" in hz_text: return 30
+    return 90
+
+def _snapshot_decision(df_up_to: pd.DataFrame, horizon_text: str):
+    """Правила из strategy, но на 'прошлом' баре для бэктеста (без AI-override)."""
+    price = float(df_up_to["close"].iloc[-1])
+    cfg = dict(look=60, trend=14, atr=14, use_weekly_atr=False) \
+        if "Кратко" in horizon_text else \
+        (dict(look=120, trend=28, atr=14, use_weekly_atr=True) if "Средне" in horizon_text else
+         dict(look=240, trend=56, atr=14, use_weekly_atr=True))
+    hz = _hz_tag(horizon_text)
+
+    tail = df_up_to.tail(cfg["look"])
+    rng_low  = float(tail["low"].min())
+    rng_high = float(tail["high"].max())
+    rng_w    = max(1e-9, rng_high - rng_low)
+    pos = (price - rng_low)/rng_w
+
+    closes = df_up_to["close"]
+    slope = _linreg_slope(closes.tail(cfg["trend"]).values)
+    slope_norm = slope / max(1e-9, price)
+
+    atr_d = float(_atr_like(df_up_to, n=cfg["atr"]).iloc[-1])
+    atr_w = _weekly_atr(df_up_to) if cfg["use_weekly_atr"] else atr_d
+    vol_ratio = atr_d / max(1e-9, float(_atr_like(df_up_to, n=cfg["atr"]*2).iloc[-1]))
+    streak    = _streak(closes)
+
+    last_row = df_up_to.iloc[-1]
+    body, upper, lower = _wick_profile(last_row)
+    long_upper = upper > body*1.3 and upper > lower*1.1
+    long_lower = lower > body*1.3 and lower > upper*1.1
+
+    hlc = _last_period_hlc(df_up_to, "W-FRI")
+    if not hlc:
+        hlc = (float(df_up_to["high"].tail(60).max()),
+               float(df_up_to["low"].tail(60).min()),
+               float(df_up_to["close"].iloc[-1]))
+    H,L,C = hlc
+    piv = _fib_pivots(H,L,C)
+    P,R1,R2 = piv["P"],piv["R1"],piv.get("R2")
+
+    buf = 0.25*atr_w
+    band = _classify_band(price, piv, buf)
+
+    last_o, last_c = float(df_up_to["open"].iloc[-1]), float(df_up_to["close"].iloc[-1])
+    last_h = float(df_up_to["high"].iloc[-1])
+    upper_wick_d = max(0.0, last_h - max(last_o,last_c))
+    body_d = abs(last_c - last_o)
+    bearish_reject = (last_c < last_o) and (upper_wick_d > body_d)
+    very_high_pos = pos >= 0.80
+
+    if very_high_pos:
+        if (R2 is not None) and (price > R2 + 0.6*buf) and (slope_norm > 0):
+            action, scenario = "BUY","breakout_up"
+        else:
+            action, scenario = "SHORT","fade_top"
+    else:
+        if band >= +2:
+            action, scenario = ("BUY","breakout_up") if ((R2 is not None) and (price > R2 + 0.6*buf) and (slope_norm > 0)) else ("SHORT","fade_top")
+        elif band == +1:
+            action, scenario = ("WAIT","upper_wait") if (slope_norm > 0.0015 and not bearish_reject and not long_upper) else ("SHORT","fade_top")
+        elif band == 0:
+            action, scenario = ("BUY","trend_follow") if slope_norm >= 0 else ("WAIT","mid_range")
+        elif band == -1:
+            action, scenario = ("BUY","revert_from_bottom") if (streak <= -3 or long_lower) else ("BUY","trend_follow")
+        else:
+            action, scenario = ("BUY","revert_from_bottom") if band <= -2 else ("WAIT","upper_wait")
+
+    base = 0.55 + 0.12*min(1.0, abs(slope_norm)*1800) + 0.08*min(1.0, max(0.0,(vol_ratio-0.9)/0.6))
+    if action == "WAIT": base -= 0.07
+    if band >= +1 and action == "BUY": base -= 0.10
+    if band <= -1 and action == "BUY": base += 0.05
+    conf = float(max(0.55, min(0.90, base)))
+
+    step_d, step_w = atr_d, atr_w
+    if action == "BUY":
+        if scenario == "breakout_up":
+            base_ref = R2 if R2 is not None else R1
+            entry = max(price, base_ref + 0.10*step_w); sl = base_ref - 1.00*step_w
+            tp1,tp2,tp3 = _three_targets_from_pivots(entry,"BUY",piv,step_w)
+        elif price < P:
+            entry = max(price, piv["S1"] + 0.15*step_w); sl = piv["S1"] - 0.60*step_w
+            tp1,tp2,tp3 = _three_targets_from_pivots(entry,"BUY",piv,step_w)
+        else:
+            entry = max(price, P + 0.10*step_w); sl = P - 0.60*step_w
+            tp1,tp2,tp3 = _three_targets_from_pivots(entry,"BUY",piv,step_w)
+    elif action == "SHORT":
+        if price >= R1:
+            entry = min(price, R1 - 0.15*step_w); sl = R1 + 0.60*step_w
+        else:
+            entry = price + 0.15*step_d; sl = price + 1.00*step_d
+        tp1,tp2,tp3 = _three_targets_from_pivots(entry,"SHORT",piv,step_w)
+    else:
+        entry = price; sl = price - 0.90*step_d
+        tp1,tp2,tp3 = entry + 0.7*step_d, entry + 1.4*step_d, entry + 2.1*step_d
+
+    atr_for_floor = atr_w if hz != "ST" else atr_d
+    tp1,tp2,tp3 = _apply_tp_floors(entry,sl,tp1,tp2,tp3,action,hz,price,atr_for_floor)
+    tp1,tp2,tp3 = _order_targets(entry,tp1,tp2,tp3,action)
+
+    return dict(
+        action=action, confidence=conf,
+        entry=float(entry), sl=float(sl),
+        tp1=float(tp1), tp2=float(tp2), tp3=float(tp3)
+    )
 
 def _simulate_outcome(df_all: pd.DataFrame, start_idx: int, action: str,
                       entry: float, sl: float, tp1: float, tp2: float, tp3: float,
-                      horizon_text: str):
+                      horizon_text: str,
+                      exit_policy: str = "first_touch",   # "first_touch" | "best_tp_before_sl" | "partial_133"
+                      tie_rule: str = "SL_first"):         # "SL_first" | "TP_first"
     side = 1 if action == "BUY" else -1
     risk = abs(entry - sl) if entry else 0.0
     max_days = _max_hold_days(horizon_text)
 
+    # для "best_tp_before_sl"
+    best_tp_px, best_tp_lab, best_tp_ts = None, None, None
+
+    # для partial
+    realized_r = 0.0; realized_ret_pct = 0.0
+    realized_px_weight = 0.0; realized_frac = 0.0
+    last_fill_ts = df_all.index[start_idx]
+
+    def _apply_fill(px: float, frac: float, ts):
+        nonlocal realized_r, realized_ret_pct, realized_px_weight, realized_frac, last_fill_ts
+        if frac <= 0: return
+        r_part = (side * (px - entry) / risk) * frac if risk > 1e-9 else 0.0
+        pct_part = (100.0 * side * (px / entry - 1.0)) * frac if entry else 0.0
+        realized_r += r_part; realized_ret_pct += pct_part
+        realized_px_weight += px * frac; realized_frac += frac
+        last_fill_ts = ts
+
     for k in range(1, max_days + 1):
-        if start_idx + k >= len(df_all):
-            break
+        if start_idx + k >= len(df_all): break
         row = df_all.iloc[start_idx + k]
-        hi, lo = float(row["high"]), float(row["low"])
+        hi, lo, ts = float(row["high"]), float(row["low"]), row.name
 
         if action == "BUY":
-            if lo <= sl:         exit_px, outcome = sl,  "SL"
-            elif hi >= tp1:      exit_px, outcome = tp1, "TP1"
-            elif hi >= tp2:      exit_px, outcome = tp2, "TP2"
-            elif hi >= tp3:      exit_px, outcome = tp3, "TP3"
-            else:                continue
+            sl_hit = lo <= sl
+            tps = [("TP3", hi >= tp3, tp3), ("TP2", hi >= tp2, tp2), ("TP1", hi >= tp1, tp1)]
         else:
-            if hi >= sl:         exit_px, outcome = sl,  "SL"
-            elif lo <= tp1:      exit_px, outcome = tp1, "TP1"
-            elif lo <= tp2:      exit_px, outcome = tp2, "TP2"
-            elif lo <= tp3:      exit_px, outcome = tp3, "TP3"
-            else:                continue
+            sl_hit = hi >= sl
+            tps = [("TP3", lo <= tp3, tp3), ("TP2", lo <= tp2, tp2), ("TP1", lo <= tp1, tp1)]
 
-        r_mult = side * (exit_px - entry) / risk if risk > 1e-9 else 0.0
-        ret_pct = 100.0 * side * (exit_px / entry - 1.0) if entry else 0.0
-        return dict(exit_ts=row.name, exit_price=float(exit_px),
-                    outcome=outcome, r_mult=float(r_mult), ret_pct=float(ret_pct),
-                    days=int(k))
+        tps_today = [(lab, px) for (lab, hit, px) in tps if hit]  # уже в порядке TP3→TP1
 
-    # Timeout
-    last_row = df_all.iloc[min(start_idx + max_days, len(df_all) - 1)]
-    exit_px = float(last_row["close"])
-    r_mult = side * (exit_px - entry) / risk if risk > 1e-9 else 0.0
-    ret_pct = 100.0 * side * (exit_px / entry - 1.0) if entry else 0.0
-    return dict(exit_ts=last_row.name, exit_price=float(exit_px),
-                outcome="Timeout", r_mult=float(r_mult), ret_pct=float(ret_pct),
-                days=int(min(max_days, len(df_all) - 1 - start_idx)))
+        if exit_policy == "first_touch":
+            if sl_hit and tps_today:
+                if tie_rule == "SL_first":
+                    exit_px, outcome = sl, "SL"
+                else:
+                    exit_px, outcome = tps_today[0][1], tps_today[0][0]
+            elif sl_hit:
+                exit_px, outcome = sl, "SL"
+            elif tps_today:
+                exit_px, outcome = tps_today[0][1], tps_today[0][0]
+            else:
+                continue
 
-def scan_signals_no_dupes_with_results(ticker_norm: str, horizon_text: str, years: int = 2,
-                                       min_conf: float = 0.70, min_gap_days: int = 7) -> pd.DataFrame:
-    cli = PolygonClient()
-    days = max(90, int(years * 365))
-    df_all = cli.daily_ohlc(ticker_norm, days=days).sort_index()
+            r_mult = side * (exit_px - entry) / risk if risk > 1e-9 else 0.0
+            ret_pct = 100.0 * side * (exit_px / entry - 1.0) if entry else 0.0
+            return dict(exit_ts=ts, exit_price=float(exit_px),
+                        outcome=outcome, r_mult=float(r_mult), ret_pct=float(ret_pct),
+                        days=int(k))
 
-    rows = []
-    look = 60 if "Кратко" in horizon_text else (120 if "Средне" in horizon_text else 240)
+        elif exit_policy == "best_tp_before_sl":
+            if tps_today:
+                best_tp_px, best_tp_lab, best_tp_ts = tps_today[0][1], tps_today[0][0], ts
+            if sl_hit:
+                if tps_today and tie_rule == "TP_first":
+                    exit_px, outcome, ex_ts = tps_today[0][1], tps_today[0][0], ts
+                elif best_tp_px is not None:
+                    exit_px, outcome, ex_ts = best_tp_px, best_tp_lab, best_tp_ts
+                else:
+                    exit_px, outcome, ex_ts = sl, "SL", ts
+                r_mult = side * (exit_px - entry) / risk if risk > 1e-9 else 0.0
+                ret_pct = 100.0 * side * (exit_px / entry - 1.0) if entry else 0.0
+                return dict(exit_ts=ex_ts, exit_price=float(exit_px),
+                            outcome=outcome, r_mult=float(r_mult), ret_pct=float(ret_pct),
+                            days=int(k if ex_ts == ts else (ex_ts - df_all.index[start_idx]).days))
+            else:
+                continue
 
-    for i in range(max(look, 30), len(df_all)):
-        df_slice = df_all.iloc[:i+1]
-        ts_i = df_slice.index[-1]
-        price_i = float(df_slice["close"].iloc[-1])
+        else:  # partial_133
+            if sl_hit and tps_today and tie_rule == "SL_first":
+                _apply_fill(sl, 1.0 - realized_frac, ts)
+                avg_px = realized_px_weight / realized_frac if realized_frac > 0 else sl
+                outcome = "Partial" if realized_frac < 1.0 else "SL"
+                return dict(exit_ts=ts, exit_price=float(avg_px),
+                            outcome=outcome, r_mult=float(realized_r), ret_pct=float(realized_ret_pct),
+                            days=int(k))
 
-        try:
-            out = analyze_asset(
-                ticker=ticker_norm,
-                horizon=horizon_text,
-                df_override=df_slice,
-                price_override=price_i,
-                ts=ts_i,
-            )
-        except TypeError:
-            out = analyze_asset(ticker=ticker_norm, horizon=horizon_text)
+            # сначала TP (дальние → ближние)
+            for lab, px in tps_today:
+                if realized_frac >= 1.0: break
+                _apply_fill(px, min(1.0/3.0, 1.0 - realized_frac), ts)
 
-        act = out["recommendation"]["action"]
-        conf = float(out["recommendation"].get("confidence", 0))
-        if act == "WAIT" or conf < min_conf:
+            if realized_frac >= 1.0:
+                avg_px = realized_px_weight / realized_frac
+                return dict(exit_ts=ts, exit_price=float(avg_px),
+                            outcome="Partial", r_mult=float(realized_r), ret_pct=float(realized_ret_pct),
+                            days=int(k))
+
+            if sl_hit:
+                _apply_fill(sl, 1.0 - realized_frac, ts)
+                avg_px = realized_px_weight / realized_frac if realized_frac > 0 else sl
+                outcome = "Partial" if realized_frac < 1.0 else "SL"
+                return dict(exit_ts=ts, exit_price=float(avg_px),
+                            outcome=outcome, r_mult=float(realized_r), ret_pct=float(realized_ret_pct),
+                            days=int(k))
+
             continue
 
-        lv = out["levels"]
-        rows.append(dict(
-            ts=ts_i, action=act, confidence=conf,
-            entry=float(lv["entry"]), sl=float(lv["sl"]),
-            tp1=float(lv["tp1"]), tp2=float(lv["tp2"]), tp3=float(lv["tp3"]),
-            row_i=i  # <- без ведущего подчеркивания
+    # таймаут
+    last_row = df_all.iloc[min(start_idx + max_days, len(df_all) - 1)]
+    if exit_policy == "partial_133" and realized_frac > 0.0:
+        _apply_fill(float(last_row["close"]), 1.0 - realized_frac, last_row.name)
+        avg_px = realized_px_weight / realized_frac
+        return dict(exit_ts=last_fill_ts, exit_price=float(avg_px),
+                    outcome="Partial", r_mult=float(realized_r), ret_pct=float(realized_ret_pct),
+                    days=int((last_fill_ts - df_all.index[start_idx]).days))
+
+    exit_px, exit_ts = float(last_row["close"]), last_row.name
+    r_mult = side * (exit_px - entry) / risk if risk > 1e-9 else 0.0
+    ret_pct = 100.0 * side * (exit_px / entry - 1.0) if entry else 0.0
+    return dict(exit_ts=exit_ts, exit_price=float(exit_px),
+                outcome="Timeout", r_mult=float(r_mult), ret_pct=float(ret_pct),
+                days=int((exit_ts - df_all.index[start_idx]).days))
+
+def scan_signals_no_dupes_with_results(
+    ticker_norm: str, horizon_text: str, years: int = 2,
+    min_conf: float = 0.70, min_gap_days: int = 7,
+    exit_policy: str = "first_touch", tie_rule: str = "SL_first",
+):
+    cli = PolygonClient()
+    days = years * 365 + 300
+    df = cli.daily_ohlc(ticker_norm, days=days).copy()
+    df = df[~df.index.duplicated(keep="last")]  # на всякий случай
+    df = df.sort_index()
+
+    look_start = 260  # позволяем индикаторам прогреться
+    signals = []
+    last_used_ts = None
+    last_action = None
+
+    for i in range(look_start, len(df)-1):
+        df_up_to = df.iloc[:i+1]
+        snap = _snapshot_decision(df_up_to, horizon_text)
+        if snap["action"] == "WAIT": 
+            continue
+        if snap["confidence"] < float(min_conf):
+            continue
+
+        ts = df_up_to.index[-1]
+
+        # анти-дубликаты: разрыв по дням и по направлению
+        if last_used_ts is not None:
+            if (ts - last_used_ts).days < int(min_gap_days) and snap["action"] == last_action:
+                continue
+
+        signals.append(dict(
+            ts=ts, action=snap["action"], confidence=float(snap["confidence"]),
+            entry=snap["entry"], sl=snap["sl"],
+            tp1=snap["tp1"], tp2=snap["tp2"], tp3=snap["tp3"],
+            row_i=i
         ))
+        last_used_ts = ts
+        last_action = snap["action"]
 
-    if not rows:
-        return pd.DataFrame(columns=[
-            "ts","action","confidence","entry","sl","tp1","tp2","tp3",
-            "exit_ts","exit_price","outcome","r_mult","ret_pct","days"
-        ])
+    df_k = pd.DataFrame(signals)
+    if df_k.empty:
+        return df_k
 
-    df_sig = pd.DataFrame(rows).sort_values("ts").reset_index(drop=True)
-
-    # Анти-дубль по направлению
-    kept = []
-    last_kept_ts = {"BUY": None, "SHORT": None}
-    for r in df_sig.itertuples(index=False):
-        last_ts = last_kept_ts.get(r.action)
-        if last_ts is None or (r.ts - last_ts) >= timedelta(days=min_gap_days):
-            kept.append(r._asdict())
-            last_kept_ts[r.action] = r.ts
-    df_k = pd.DataFrame(kept).reset_index(drop=True)
-
-    # Эмуляция исхода
     res = []
     for r in df_k.itertuples(index=False):
-        sim = _simulate_outcome(df_all, r.row_i, r.action, r.entry, r.sl, r.tp1, r.tp2, r.tp3, horizon_text)
+        sim = _simulate_outcome(
+            df, r.row_i, r.action, r.entry, r.sl, r.tp1, r.tp2, r.tp3,
+            horizon_text, exit_policy=exit_policy, tie_rule=tie_rule
+        )
         res.append(sim)
-
     df_res = pd.DataFrame(res)
-    df_final = pd.concat([df_k.drop(columns=[]).reset_index(drop=True), df_res], axis=1)
-    return df_final.sort_values("ts").reset_index(drop=True)
+    out = pd.concat([df_k.reset_index(drop=True), df_res], axis=1)
+    return out
 
-with st.expander("🔎 Бэктест: выбор сигналов без дублей + исход сделки", expanded=False):
-    bt_ticker_raw = st.text_input("Тикер для бэктеста", value=ticker_input or "AAPL", key="bt_ticker")
-    bt_ticker = normalize_for_polygon(bt_ticker_raw.strip().upper()) if bt_ticker_raw else ""
+with st.expander("📊 Бэктест по сигналам (без дублей)"):
+    bt_ticker = st.text_input("Тикер для бэктеста", value=ticker or "QQQ", key="bt_ticker_input")
     colb1, colb2, colb3 = st.columns(3)
-    with colb1:
-        years = st.slider("Годов истории", 1, 5, 2)
-    with colb2:
-        min_conf = st.slider("Мин. уверенность", 0.55, 0.90, 0.70, step=0.01)
-    with colb3:
-        min_gap = st.slider("Мин. разрыв между похожими сигналами (дней)", 1, 30, 7)
+    years = colb1.slider("Годов истории", 1, 5, 2, key="bt_years")
+    min_conf = colb2.slider("Мин. уверенность", 0.50, 0.90, 0.62, 0.01, key="bt_min_conf")
+    min_gap = colb3.slider("Мин. разрыв между похожими сигналами (дней)", 1, 15, 5, key="bt_mingap")
 
-    run_bt = st.button("Запустить отбор сигналов", type="secondary")
-    if run_bt:
-        if not bt_ticker:
-            st.warning("Укажите тикер.")
-        else:
-            with st.spinner("Сканирую историю, убираю дубли и считаю исход сделок…"):
-                df_bt = scan_signals_no_dupes_with_results(bt_ticker, horizon, years, min_conf, min_gap)
+    colb4, colb5 = st.columns(2)
+    with colb4:
+        exit_mode_h = st.radio(
+            "Правило выхода",
+            ["Первое событие (консервативно)", "Лучший TP до SL (оптимистично)", "Частичная фиксация 1/3-1/3-1/3"],
+            index=0, key="bt_exit_policy_radio"
+        )
+        exit_policy = "first_touch" if exit_mode_h.startswith("Первое") else ("best_tp_before_sl" if exit_mode_h.startswith("Лучший") else "partial_133")
+    with colb5:
+        tie_h = st.radio("Если в одном баре и SL, и TP",
+                         ["SL приоритет", "TP приоритет"], index=0, key="bt_tie_rule_radio")
+        tie_rule = "SL_first" if tie_h.startswith("SL") else "TP_first"
 
+    if st.button("Запустить отбор сигналов", key="bt_run_btn"):
+        try:
+            sym_norm = normalize_for_polygon(bt_ticker)
+            df_bt = scan_signals_no_dupes_with_results(
+                sym_norm, horizon, years, float(min_conf), int(min_gap),
+                exit_policy=exit_policy, tie_rule=tie_rule
+            )
             st.success(f"Найдено сигналов: {len(df_bt)}")
 
-            if len(df_bt):
-                wins = (df_bt["outcome"].str.startswith("TP")).sum()
-                winrate = 100.0 * wins / len(df_bt)
-                total_r = df_bt["r_mult"].sum()
-                avg_r = df_bt["r_mult"].mean()
-                med_days = int(df_bt["days"].median())
+            avg_r = float(df_bt["r_mult"].mean()) if len(df_bt) else 0.0
+            wins = int((df_bt["r_mult"] > 0).sum())
+            winrate = (wins / len(df_bt) * 100.0) if len(df_bt) else 0.0
+            pf = (df_bt.loc[df_bt["r_mult"] > 0, "r_mult"].sum() /
+                  abs(df_bt.loc[df_bt["r_mult"] <= 0, "r_mult"].sum())
+                 ) if (len(df_bt) and (df_bt["r_mult"] <= 0).any()) else np.nan
 
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Win-rate", f"{winrate:.1f}%")
-                c2.metric("Σ R", f"{total_r:.2f}")
-                c3.metric("Avg R", f"{avg_r:.2f}")
-                c4.metric("Медиана дней", f"{med_days}")
+            c1,c2,c3,c4 = st.columns(4)
+            c1.metric("Сделок", f"{len(df_bt)}")
+            c2.metric("Win-rate", f"{winrate:.1f}%")
+            c3.metric("Avg R", f"{avg_r:.2f}")
+            c4.metric("Profit Factor", "-" if np.isnan(pf) else f"{pf:.2f}")
 
-                st.dataframe(
-                    df_bt[["ts","action","confidence","entry","sl","tp1","tp2","tp3",
-                           "exit_ts","exit_price","outcome","r_mult","ret_pct","days"]],
-                    use_container_width=True
-                )
+            show_cols = ["ts","action","confidence","entry","sl","tp1","tp2","tp3",
+                         "exit_ts","exit_price","outcome","r_mult","ret_pct","days"]
+            for c in show_cols:
+                if c not in df_bt.columns: df_bt[c] = np.nan
+            st.dataframe(df_bt[show_cols].sort_values("ts").reset_index(drop=True),
+                         use_container_width=True)
 
-                csv = df_bt.to_csv(index=False).encode("utf-8")
-                hz_tag = _hz_tag_from_text(horizon)
-                st.download_button("⬇️ Скачать CSV",
-                                   data=csv,
-                                   file_name=f"signals_{bt_ticker}_{hz_tag}.csv",
-                                   mime="text/csv")
+            csv = df_bt[show_cols].to_csv(index=False).encode("utf-8")
+            st.download_button("⬇️ Скачать CSV", data=csv,
+                               file_name=f"signals_{bt_ticker}_{exit_policy}.csv",
+                               mime="text/csv", key="bt_download_csv")
+
+        except Exception as e:
+            st.error(f"Ошибка бэктеста: {e}")
