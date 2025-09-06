@@ -3,3 +3,9 @@ base="dark"
 primaryColor="#0f09f5"
 backgroundColor="#000000"
 secondaryBackgroundColor="#55555a"
+[client]
+toolbarMode = "minimal"   # скрывает «три точки» и верхнюю панель
+
+[browser]
+gatherUsageStats = false
+
