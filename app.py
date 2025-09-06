@@ -79,8 +79,7 @@ CUSTOM_PHRASES = {
 # =====================
 # Хелперы (формат/риск/юниты)
 # =====================
-def _fmt(x):
-    return f"{float(x):.2f}"
+def _fmt(x): return f"{float(x):.2f}"
 
 def compute_display_range(levels, widen_factor=0.25):
     entry = float(levels["entry"]); sl = float(levels["sl"])
@@ -158,7 +157,7 @@ def card_html(title, value, sub=None, color=None):
     """
 
 # =====================
-# Polygon нормализация (всегда Polygon)
+# Polygon нормализация
 # =====================
 def normalize_for_polygon(symbol: str) -> str:
     s = (symbol or "").strip().upper().replace(" ", "")
@@ -193,7 +192,11 @@ mode_label = "AI"
 if os.getenv("ARXORA_AI_PSEUDO", "0").strip() in ("1", "true", "True"):
     mode_label = "AI (pseudo)"
 
-st.markdown(f"<div style='opacity:0.8;margin-bottom:4px;'>Mode: {mode_label} · Horizon: { 'ST' if 'Кратко' in horizon else ('MID' if 'Средне' in horizon else 'LT') }</div>", unsafe_allow_html=True)
+st.markdown(
+    f"<div style='opacity:0.8;margin-bottom:4px;'>Mode: {mode_label} · Horizon: "
+    f"{'ST' if 'Кратко' in horizon else ('MID' if 'Средне' in horizon else 'LT')}</div>",
+    unsafe_allow_html=True
+)
 
 symbol_for_engine = normalize_for_polygon(ticker)
 run = st.button("Проанализировать", type="primary")
@@ -271,7 +274,7 @@ else:
     st.info("Введите тикер и нажмите «Проанализировать».")
 
 # ===========================================================
-# БЭКТЕСТ: Сканер сигналов без дублей + исход сделки (TP/SL)
+# БЭКТЕСТ: Сканер сигналов без дублей + исход сделки
 # ===========================================================
 def _hz_tag_from_text(text: str) -> str:
     if "Кратко" in text: return "ST"
@@ -285,7 +288,6 @@ def _max_hold_days(hz_text: str) -> int:
 def _simulate_outcome(df_all: pd.DataFrame, start_idx: int, action: str,
                       entry: float, sl: float, tp1: float, tp2: float, tp3: float,
                       horizon_text: str):
-    """Консервативная симуляция: стоп имеет приоритет, дальше TP1→TP2→TP3, иначе Timeout."""
     side = 1 if action == "BUY" else -1
     risk = abs(entry - sl) if entry else 0.0
     max_days = _max_hold_days(horizon_text)
@@ -294,30 +296,20 @@ def _simulate_outcome(df_all: pd.DataFrame, start_idx: int, action: str,
         if start_idx + k >= len(df_all):
             break
         row = df_all.iloc[start_idx + k]
-        hi, lo, _ = float(row["high"]), float(row["low"]), float(row["close"])
+        hi, lo = float(row["high"]), float(row["low"])
 
         if action == "BUY":
-            if lo <= sl:
-                exit_px, outcome = sl, "SL"
-            elif hi >= tp1:
-                exit_px, outcome = tp1, "TP1"
-            elif hi >= tp2:
-                exit_px, outcome = tp2, "TP2"
-            elif hi >= tp3:
-                exit_px, outcome = tp3, "TP3"
-            else:
-                continue
+            if lo <= sl:         exit_px, outcome = sl,  "SL"
+            elif hi >= tp1:      exit_px, outcome = tp1, "TP1"
+            elif hi >= tp2:      exit_px, outcome = tp2, "TP2"
+            elif hi >= tp3:      exit_px, outcome = tp3, "TP3"
+            else:                continue
         else:
-            if hi >= sl:
-                exit_px, outcome = sl, "SL"
-            elif lo <= tp1:
-                exit_px, outcome = tp1, "TP1"
-            elif lo <= tp2:
-                exit_px, outcome = tp2, "TP2"
-            elif lo <= tp3:
-                exit_px, outcome = tp3, "TP3"
-            else:
-                continue
+            if hi >= sl:         exit_px, outcome = sl,  "SL"
+            elif lo <= tp1:      exit_px, outcome = tp1, "TP1"
+            elif lo <= tp2:      exit_px, outcome = tp2, "TP2"
+            elif lo <= tp3:      exit_px, outcome = tp3, "TP3"
+            else:                continue
 
         r_mult = side * (exit_px - entry) / risk if risk > 1e-9 else 0.0
         ret_pct = 100.0 * side * (exit_px / entry - 1.0) if entry else 0.0
@@ -325,7 +317,7 @@ def _simulate_outcome(df_all: pd.DataFrame, start_idx: int, action: str,
                     outcome=outcome, r_mult=float(r_mult), ret_pct=float(ret_pct),
                     days=int(k))
 
-    # Timeout — выходим по close последнего дня окна
+    # Timeout
     last_row = df_all.iloc[min(start_idx + max_days, len(df_all) - 1)]
     exit_px = float(last_row["close"])
     r_mult = side * (exit_px - entry) / risk if risk > 1e-9 else 0.0
@@ -343,13 +335,11 @@ def scan_signals_no_dupes_with_results(ticker_norm: str, horizon_text: str, year
     rows = []
     look = 60 if "Кратко" in horizon_text else (120 if "Средне" in horizon_text else 240)
 
-    # Сбор сигналов по истории (анализ до текущей даты i)
     for i in range(max(look, 30), len(df_all)):
         df_slice = df_all.iloc[:i+1]
         ts_i = df_slice.index[-1]
         price_i = float(df_slice["close"].iloc[-1])
 
-        # анализатор с поддержкой override (если твой strategy обновлён)
         try:
             out = analyze_asset(
                 ticker=ticker_norm,
@@ -359,7 +349,6 @@ def scan_signals_no_dupes_with_results(ticker_norm: str, horizon_text: str, year
                 ts=ts_i,
             )
         except TypeError:
-            # fallback (хуже, т.к. без «среза», но не ломает запуск)
             out = analyze_asset(ticker=ticker_norm, horizon=horizon_text)
 
         act = out["recommendation"]["action"]
@@ -372,7 +361,7 @@ def scan_signals_no_dupes_with_results(ticker_norm: str, horizon_text: str, year
             ts=ts_i, action=act, confidence=conf,
             entry=float(lv["entry"]), sl=float(lv["sl"]),
             tp1=float(lv["tp1"]), tp2=float(lv["tp2"]), tp3=float(lv["tp3"]),
-            _idx=i
+            row_i=i  # <- без ведущего подчеркивания
         ))
 
     if not rows:
@@ -389,18 +378,18 @@ def scan_signals_no_dupes_with_results(ticker_norm: str, horizon_text: str, year
     for r in df_sig.itertuples(index=False):
         last_ts = last_kept_ts.get(r.action)
         if last_ts is None or (r.ts - last_ts) >= timedelta(days=min_gap_days):
-            kept.append(r)
+            kept.append(r._asdict())
             last_kept_ts[r.action] = r.ts
     df_k = pd.DataFrame(kept).reset_index(drop=True)
 
     # Эмуляция исхода
     res = []
     for r in df_k.itertuples(index=False):
-        sim = _simulate_outcome(df_all, r._idx, r.action, r.entry, r.sl, r.tp1, r.tp2, r.tp3, horizon)
+        sim = _simulate_outcome(df_all, r.row_i, r.action, r.entry, r.sl, r.tp1, r.tp2, r.tp3, horizon_text)
         res.append(sim)
 
     df_res = pd.DataFrame(res)
-    df_final = pd.concat([df_k.drop(columns=["_idx"]).reset_index(drop=True), df_res], axis=1)
+    df_final = pd.concat([df_k.drop(columns=[]).reset_index(drop=True), df_res], axis=1)
     return df_final.sort_values("ts").reset_index(drop=True)
 
 with st.expander("🔎 Бэктест: выбор сигналов без дублей + исход сделки", expanded=False):
@@ -429,13 +418,13 @@ with st.expander("🔎 Бэктест: выбор сигналов без дуб
                 winrate = 100.0 * wins / len(df_bt)
                 total_r = df_bt["r_mult"].sum()
                 avg_r = df_bt["r_mult"].mean()
-                med_days = df_bt["days"].median()
+                med_days = int(df_bt["days"].median())
 
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Win-rate", f"{winrate:.1f}%")
                 c2.metric("Σ R", f"{total_r:.2f}")
                 c3.metric("Avg R", f"{avg_r:.2f}")
-                c4.metric("Медиана дней", f"{int(med_days)}")
+                c4.metric("Медиана дней", f"{med_days}")
 
                 st.dataframe(
                     df_bt[["ts","action","confidence","entry","sl","tp1","tp2","tp3",
