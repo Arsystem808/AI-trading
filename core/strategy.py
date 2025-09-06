@@ -188,16 +188,28 @@ def _order_targets(entry: float, tp1: float, tp2: float, tp3: float, action: str
 
     return arr[0], arr[1], arr[2]
 
-# ---------- основная логика ----------
-def analyze_asset(ticker: str, horizon: str):
+# ---------- основная логика (с поддержкой бэктеста) ----------
+def analyze_asset(ticker: str, horizon: str, df_override: pd.DataFrame | None = None,
+                  price_override: float | None = None, ts=None):
+    """
+    Онлайн: analyze_asset(ticker, horizon)
+    Бэктест: analyze_asset(ticker, horizon, df_override=df[:t], price_override=close_t, ts=t)
+    """
     cli = PolygonClient()
     cfg = _horizon_cfg(horizon)
     hz = _hz_tag(horizon)
 
     # данные
-    days = max(90, cfg["look"] * 2)
-    df = cli.daily_ohlc(ticker, days=days)      # index должен быть DatetimeIndex
-    price = cli.last_trade_price(ticker)
+    if df_override is not None:
+        df = df_override.copy()
+        if not isinstance(df.index, pd.DatetimeIndex):
+            raise ValueError("df_override.index должен быть DatetimeIndex")
+        df = df.sort_index()
+    else:
+        days = max(90, cfg["look"] * 2)
+        df = cli.daily_ohlc(ticker, days=days).sort_index()
+
+    price = float(price_override) if price_override is not None else float(cli.last_trade_price(ticker))
 
     # позиция в своём диапазоне
     tail = df.tail(cfg["look"])
@@ -363,6 +375,19 @@ def analyze_asset(ticker: str, horizon: str):
     if long_upper: chips.append("тени сверху")
     if long_lower: chips.append("тени снизу")
 
+    # фичи для бэктеста/персонализации
+    features = {
+        "pos": float(pos),
+        "slope_norm": float(slope_norm),
+        "atr_d": float(atr_d),
+        "atr_w": float(atr_w),
+        "vol_ratio": float(vol_ratio),
+        "streak": int(streak),
+        "long_upper": bool(long_upper),
+        "long_lower": bool(long_lower),
+        "band": int(band)
+    }
+
     # «живой» текст
     seed = int(hashlib.sha1(f"{ticker}{df.index[-1].date()}".encode()).hexdigest(), 16) % (2**32)
     rng = random.Random(seed)
@@ -392,14 +417,20 @@ def analyze_asset(ticker: str, horizon: str):
     if pos >= 0.8 and action != "BUY": adds.append("Погоня сверху — не мой вход. Жду откат.")
     if action == "BUY" and pos <= 0.4:  adds.append("Вход только после реакции, без рывка.")
     if streak >= 4:                      adds.append("Серия длинная — риски отката выше.")
-
     note_html = f"<div style='margin-top:10px; opacity:0.95;'>{' '.join([lead] + adds[:2])}</div>"
 
+    # ts/horizon для бэктеста/логов
+    ts_val = ts if ts is not None else (df.index[-1] if len(df) else None)
+    ts_iso = (ts_val.isoformat() if hasattr(ts_val, "isoformat") else str(ts_val)) if ts_val is not None else None
+
     return {
+        "ts": ts_iso,
+        "horizon": horizon,
         "last_price": float(price),
         "recommendation": {"action": action, "confidence": float(round(conf, 4))},
         "levels": {"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3)},
         "probs": {"tp1": float(p1), "tp2": float(p2), "tp3": float(p3)},
+        "features": features,
         "context": chips,
         "note_html": note_html,
         "alt": alt,
