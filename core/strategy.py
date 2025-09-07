@@ -1,10 +1,3 @@
-\
-"""
-Arxora core strategy (public interface).
-
-Outputs: action (BUY/SHORT/CLOSE/WAIT), entry, tp1, tp2, sl, confidence, comment.
-Internal logic uses price behavior and levels; UI should not reveal indicators.
-"""
 from __future__ import annotations
 import numpy as np
 import pandas as pd
