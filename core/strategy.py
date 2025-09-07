@@ -73,7 +73,7 @@ def _clip01(x: float) -> float:
 
 # ---------- horizon & pivots ----------
 def _horizon_cfg(text: str):
-    # ST: weekly pivots; MID/LT: monthly pivots; ATR: weekly for ST, monthly for MID/LT
+    # ST: weekly pivots; MID/LT: monthly pivots
     if "Кратко" in text:
         return dict(look=60,  trend=14, atr=14, pivot_period="W-FRI", use_weekly_atr=True,  use_monthly_atr=False)
     if "Средне" in text:
@@ -102,6 +102,41 @@ def _pivot_ladder(piv: dict) -> list[float]:
     keys = ["S3", "S2", "S1", "P", "R1", "R2", "R3"]
     return [float(piv[k]) for k in keys if piv.get(k) is not None]
 
+# (1) К какому «поясу» пивотов относится цена (-3..+3)
+def _classify_band(price: float, piv: dict, buf: float) -> int:
+    P, R1 = piv["P"], piv["R1"]
+    R2, R3, S1, S2 = piv.get("R2"), piv.get("R3"), piv["S1"], piv.get("S2")
+    neg_inf, pos_inf = -1e18, 1e18
+    levels = [
+        S2 if S2 is not None else neg_inf, S1, P, R1,
+        R2 if R2 is not None else pos_inf, R3 if R3 is not None else pos_inf
+    ]
+    if price < levels[0] - buf: return -3
+    if price < levels[1] - buf: return -2
+    if price < levels[2] - buf: return -1
+    if price < levels[3] - buf: return 0
+    if R2 is None or price < levels[4] - buf: return +1
+    if price < levels[5] - buf: return +2
+    return +3
+
+# (2) Три цели от лестницы пивотов с fallback на ATR-шаг
+def _three_targets_from_pivots(entry: float, direction: str, piv: dict, step: float):
+    ladder = sorted(set(_pivot_ladder(piv)))
+    eps = 0.10 * step
+    if direction == "BUY":
+        ups = [x for x in ladder if x > entry + eps]
+        while len(ups) < 3:
+            k = len(ups) + 1
+            ups.append(entry + (0.7 + 0.7 * (k - 1)) * step)
+        return ups[0], ups[1], ups[2]
+    else:
+        dns = [x for x in ladder if x < entry - eps]
+        dns = list(sorted(dns, reverse=True))
+        while len(dns) < 3:
+            k = len(dns) + 1
+            dns.append(entry - (0.7 + 0.7 * (k - 1)) * step)
+        return dns[0], dns[1], dns[2]
+
 # ---------- HA & MACD (лёгкие признаки) ----------
 def _ha_streak(df: pd.DataFrame) -> int:
     o, h, l, c = df["open"], df["high"], df["low"], df["close"]
@@ -128,10 +163,6 @@ def _macd_hist_streak(closes: pd.Series) -> int:
     macd = _ema(closes, 12) - _ema(closes, 26)
     sig  = _ema(macd, 9)
     hist = macd - sig
-    s = 0
-    for i in range(1, len(hist)):
-        pass
-    # streak по знаку
     s = 0
     for i in range(len(hist)-1, 0, -1):
         if hist.iloc[i] > 0:
@@ -197,7 +228,6 @@ def _cap_tp_tails(entry: float, sl: float, tp1: float, tp2: float, tp3: float,
     rr_cap_tp2 = {"ST": 1.6, "MID": 1.9, "LT": 2.1}[hz]
     rr_cap_tp3 = {"ST": 2.0, "MID": 2.3, "LT": 2.5}[hz]
 
-    # «трендовые рельсы»
     if action == "SHORT" and trend_score >= 1.0:  # сильный ап-тренд
         rr_cap_tp2 -= 0.2; rr_cap_tp3 -= 0.5
         s1 = piv.get("S1", piv["P"])
@@ -211,7 +241,6 @@ def _cap_tp_tails(entry: float, sl: float, tp1: float, tp2: float, tp3: float,
         tp3 = min(tp3, ceil3)
         tp2 = min(tp2, tp1 + 0.6*(ceil3 - tp1))
 
-    # RR-потолки
     if action == "BUY":
         tp2 = min(tp2, entry + rr_cap_tp2 * risk)
         tp3 = min(tp3, entry + rr_cap_tp3 * risk)
@@ -270,7 +299,7 @@ def analyze_asset(ticker: str, horizon: str):
     long_lower = lower > body * 1.3 and lower > upper * 1.1
 
     # HA & MACD признаки
-    ha_s   = _ha_streak(df.tail(120))   # локально по последним барам
+    ha_s   = _ha_streak(df.tail(120))
     mac_s  = _macd_hist_streak(closes)
 
     # пивоты (последний завершённый период)
@@ -357,7 +386,7 @@ def analyze_asset(ticker: str, horizon: str):
                 action = "WAIT";  conf = max(0.55, conf - 0.07)
     # ======== конец override ========
 
-    # уровни (для WAIT в UI мы их не рисуем, но считаем одинаково)
+    # уровни
     step_ref = atr_ref
     if action == "BUY":
         if scenario == "breakout_up":
