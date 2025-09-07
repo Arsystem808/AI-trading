@@ -1,158 +1,94 @@
 # core/ai_inference.py
-import os
-from typing import Tuple, List
+import os, math
 import numpy as np
-import pandas as pd
 
-# ML
 try:
-    from lightgbm import LGBMClassifier
-    _USE_LGBM = True
+    import joblib  # pip install joblib scikit-learn
 except Exception:
-    from sklearn.ensemble import GradientBoostingClassifier as LGBMClassifier  # fallback
-    _USE_LGBM = False
+    joblib = None
 
-from sklearn.metrics import roc_auc_score
-from sklearn.model_selection import train_test_split
-import joblib
+_MODEL_CACHE = {}
+_FEATURE_ORDER = [
+    "pos", "slope_norm", "atr_d_over_price", "vol_ratio", "band",
+    "ha_up_run", "ha_down_run", "macd_pos_run", "macd_neg_run",
+    "long_upper", "long_lower"
+]
 
-# data
-from .polygon_client import PolygonClient
+def _sigmoid(x: float) -> float:
+    return 1.0 / (1.0 + math.exp(-x))
 
+def _vectorize(feats: dict) -> np.ndarray:
+    vec = []
+    for k in _FEATURE_ORDER:
+        v = feats.get(k, 0.0)
+        if isinstance(v, bool):
+            v = 1.0 if v else 0.0
+        try:
+            vec.append(float(v))
+        except Exception:
+            vec.append(0.0)
+    return np.array(vec, dtype=float).reshape(1, -1)
 
-# ---------- small helpers ----------
-def _atr_like(df: pd.DataFrame, n: int = 14) -> pd.Series:
-    hl = df["high"] - df["low"]
-    hc = (df["high"] - df["close"].shift(1)).abs()
-    lc = (df["low"] - df["close"].shift(1)).abs()
-    tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
-    return tr.rolling(n, min_periods=1).mean()
+def _load_model(hz: str):
+    if hz in _MODEL_CACHE:
+        return _MODEL_CACHE[hz]
+    model_dir = os.getenv("ARXORA_MODEL_DIR", "models")
+    fname = {"ST": "ai_st.pkl", "MID": "ai_mid.pkl", "LT": "ai_lt.pkl"}.get(hz, "ai_mid.pkl")
+    path = os.path.join(model_dir, fname)
+    mdl = None
+    if joblib and os.path.exists(path):
+        try:
+            mdl = joblib.load(path)
+        except Exception:
+            mdl = None
+    _MODEL_CACHE[hz] = mdl
+    return mdl
 
-
-def _feat_eng(df: pd.DataFrame) -> pd.DataFrame:
-    """Быстрые табличные фичи по дневным OHLC."""
-    out = pd.DataFrame(index=df.index)
-    c = df["close"]
-
-    # доходности
-    out["ret1"]  = c.pct_change(1)
-    out["ret2"]  = c.pct_change(2)
-    out["ret5"]  = c.pct_change(5)
-    out["ret10"] = c.pct_change(10)
-
-    # скользящие статистики
-    out["ma5"]   = c.rolling(5).mean()   / c - 1.0
-    out["ma10"]  = c.rolling(10).mean()  / c - 1.0
-    out["ma20"]  = c.rolling(20).mean()  / c - 1.0
-    out["std5"]  = c.rolling(5).std()
-    out["std10"] = c.rolling(10).std()
-
-    # волатильность
-    out["atr14"] = _atr_like(df, 14)
-    out["rng"]   = (df["high"] - df["low"]).rolling(5).mean()
-
-    out = out.replace([np.inf, -np.inf], np.nan).dropna()
-    return out
-
-
-def _make_labels(close: pd.Series) -> pd.Series:
-    """Бинарная цель: 1 если завтра close выше сегодняшнего."""
-    y = (close.shift(-1) > close).astype(int)
-    return y.loc[y.index.isin(close.index)]
-
-
-def _fetch_and_build(cli: PolygonClient, ticker: str, months: int) -> pd.DataFrame:
-    # ~21 торговых дня в месяц + запас
-    days = int(months * 22 + 40)
-    df = cli.daily_ohlc(ticker, days=days)
-    if df is None or df.empty:
-        raise ValueError(f"Нет данных для {ticker}")
-    feats = _feat_eng(df)
-    y = _make_labels(df["close"]).reindex(feats.index)
-    feats["y"] = y
-    feats["ticker_id"] = hash(ticker) % 10_000_000  # простая идентификация тикера
-    feats = feats.dropna()
-    return feats
-
-
-def _train_quick(symbols: List[str], months: int, model_dir: str, tag: str) -> Tuple[str, float, tuple, float]:
+def score_signal(feats: dict, hz: str = "MID"):
     """
-    Общий тренер: сохраняет модель и возвращает:
-      (path, auc, X.shape, pos_share)
+    Возвращает словарь {"p_long": 0..1, "src": "model|pseudo"} или None, если
+    модели нет и псевдорежим выключен.
+    feats — тот же набор фич, который формирует strategy: pos, slope_norm,
+    atr_d_over_price, vol_ratio, band, ha_up_run, ha_down_run, macd_pos_run,
+    macd_neg_run, long_upper, long_lower (любые могут отсутствовать — будут 0).
     """
-    os.makedirs(model_dir, exist_ok=True)
-    cli = PolygonClient()
-
-    # сбор датасета
-    frames = []
-    for s in symbols:
-        s = s.strip()
-        if not s:
-            continue
-        frames.append(_fetch_and_build(cli, s, months))
-    if not frames:
-        raise ValueError("Пустой список тикеров.")
-
-    data = pd.concat(frames).sort_index()
-    y = data["y"].astype(int).values
-    X = data.drop(columns=["y"]).values
-
-    # train/valid split по времени (простой hold-out)
-    # используем индексы, чтобы не тасовать
-    idx = np.arange(len(X))
-    cut = int(len(idx) * 0.8)
-    X_train, X_valid = X[:cut], X[cut:]
-    y_train, y_valid = y[:cut], y[cut:]
-
-    # модель
-    if _USE_LGBM:
-        model = LGBMClassifier(
-            n_estimators=300,
-            max_depth=-1,
-            learning_rate=0.05,
-            subsample=0.9,
-            colsample_bytree=0.9,
-            random_state=42,
+    # 1) Псевдо-режим (быстрое эвристическое P(long))
+    if int(os.getenv("ARXORA_AI_PSEUDO", "0")) == 1:
+        x = feats
+        # Логика: ап-сигналы повышают p_long, перекупленность у "крыши" — понижает.
+        band = float(x.get("band", 0.0))
+        w = (
+            0.9 * float(x.get("slope_norm", 0.0)) +
+            0.3 * (float(x.get("pos", 0.5)) - 0.5) +
+            0.3 * (float(x.get("vol_ratio", 1.0)) - 1.0) +
+            0.2 * (float(x.get("ha_up_run", 0.0)) - float(x.get("ha_down_run", 0.0))) * 0.10 +
+            0.2 * (float(x.get("macd_pos_run", 0.0)) - float(x.get("macd_neg_run", 0.0))) * 0.07 -
+            0.25 * max(0.0, band - 1.5)  # штраф за верхние зоны
         )
-    else:
-        # fallback — помедленнее, но без внешних зависимостей
-        model = LGBMClassifier(random_state=42)
+        p_long = _sigmoid(6.0 * w)
+        return {"p_long": float(max(0.0, min(1.0, p_long))), "src": "pseudo"}
 
-    model.fit(X_train, y_train)
-    proba = model.predict_proba(X_valid)[:, 1] if hasattr(model, "predict_proba") else model.predict(X_valid)
+    # 2) Модель из файлов
+    mdl = _load_model(hz)
+    if mdl is None:
+        return None
+
+    x = _vectorize(feats)
     try:
-        auc = float(roc_auc_score(y_valid, proba))
+        if hasattr(mdl, "predict_proba"):
+            proba = mdl.predict_proba(x)[0]
+            if hasattr(mdl, "classes_") and 1 in list(mdl.classes_):
+                idx = list(mdl.classes_).index(1)
+            else:
+                idx = 1 if len(proba) > 1 else 0
+            p_long = float(proba[idx])
+        elif hasattr(mdl, "decision_function"):
+            score = float(mdl.decision_function(x))
+            p_long = float(max(0.0, min(1.0, _sigmoid(score))))
+        else:
+            # регрессор → преобразуем в [0,1]
+            score = float(mdl.predict(x))
+            p_long = float(max(0.0, min(1.0, _sigmoid(score))))
+        return {"p_long": p_long, "src": "model"}
     except Exception:
-        auc = float("nan")
-
-    pos_share = float(y.mean())
-    shape = X.shape
-
-    # имя файла — без двоеточий и слешей
-    clean_names = "_".join([s.replace(":", "").replace("/", "").upper() for s in symbols[:4]])
-    if len(symbols) > 4:
-        clean_names += f"+{len(symbols)-4}"
-    fname = f"arxora_lgbm_{tag}_{clean_names}.joblib"
-    fpath = os.path.join(model_dir, fname)
-    joblib.dump({"model": model, "feature_names": list(data.drop(columns=['y']).columns)}, fpath)
-
-    return fpath, auc, shape, pos_share
-
-
-# ---------- публичные функции, которые ждёт app.py ----------
-def train_quick_st(tickers_csv: str, months: int, model_dir: str) -> Tuple[str, float, tuple, float]:
-    symbols = [t.strip() for t in tickers_csv.split(",") if t.strip()]
-    return _train_quick(symbols, months, model_dir, tag="ST")
-
-
-def train_quick_mid(tickers_csv: str, months: int, model_dir: str) -> Tuple[str, float, tuple, float]:
-    symbols = [t.strip() for t in tickers_csv.split(",") if t.strip()]
-    return _train_quick(symbols, months, model_dir, tag="MID")
-
-
-def train_quick_lt(tickers_csv: str, months: int, model_dir: str) -> Tuple[str, float, tuple, float]:
-    symbols = [t.strip() for t in tickers_csv.split(",") if t.strip()]
-    # для LT возьмём больше истории автоматически
-    months = max(months, 24)
-    return _train_quick(symbols, months, model_dir, tag="LT")
-
+        return None
