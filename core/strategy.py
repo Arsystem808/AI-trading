@@ -336,7 +336,7 @@ def analyze_asset(ticker: str, horizon: str):
         else:
             entry = max(price, P + 0.10 * step_w); sl = P - 0.60 * step_w
             tp1, tp2, tp3 = _three_targets_from_pivots(entry, "BUY", piv, step_w)
-        alt = "Если продавят ниже и не вернут — не входим; ждём возврата сверху и подтверждения."
+        alt = "Если продавят ниже и не вернут — не лезем; ждём возврата сверху и подтверждения."
     elif action == "SHORT":
         if price >= R1:
             entry = min(price, R1 - 0.15 * step_w)
