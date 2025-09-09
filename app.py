@@ -163,11 +163,11 @@ def compute_entry_label(action: str, entry: float, last_price: float, risk: floa
     if action == "BUY":
         if entry > last_price + tol_now:   return "BUY STOP"
         if entry < last_price - tol_now:   return "BUY LIMIT"
-        return "BUY MARKET"
+        return "BUY NOW"
     if action == "SHORT":
         if entry < last_price - tol_now:   return "SELL STOP"
         if entry > last_price + tol_now:   return "SELL LIMIT"
-        return "SELL MARKET"
+        return "SELL NOW"
     return "—"
 
 def fix_targets_sanity(action: str, entry: float, sl: float, tp1: float, tp2: float, tp3: float, last_price: float):
