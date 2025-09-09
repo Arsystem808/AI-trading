@@ -3,34 +3,13 @@ import os
 import re
 import hashlib
 import random
-from datetime import datetime, timezone, timedelta
-
 import streamlit as st
 from dotenv import load_dotenv
 
-# Базовый движок сигналов
+# Базовый движок сигналов (AI + правила)
 from core.strategy import analyze_asset
 
-# ML-тренажёры (могут отсутствовать — обрабатываем мягко)
-try:
-    from core.ai_inference import (
-        train_quick_st,
-        train_quick_mid,
-        train_quick_lt,
-    )
-    TRAINERS_AVAILABLE = True
-except Exception:
-    train_quick_st = train_quick_mid = train_quick_lt = None
-    TRAINERS_AVAILABLE = False
-
 load_dotenv()
-
-# ===================== НАСТРОЙКИ =====================
-# порог «почти рыночной» цены (для подписи Market price), доля от текущей
-ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))  # 0.15%
-# анти-дубликаты: окно и близость входа
-DEDUP_GAP_DAYS   = int(os.getenv("ARXORA_DEDUP_GAP_DAYS", "5"))
-DEDUP_ENTRY_EPS  = float(os.getenv("ARXORA_DEDUP_ENTRY_EPS", "0.003"))    # 0.30%
 
 # ===================== BRANDING =====================
 st.set_page_config(
@@ -70,7 +49,13 @@ def render_arxora_header():
 
 render_arxora_header()
 
-# ===================== Вспом. утилиты UI =====================
+# ===================== НАСТРОЙКИ UI/логики =====================
+# Порог, чтобы отличить стоп-вход от рынка (по отношению к текущей цене)
+ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))  # 0.15%
+# Минимальный шаг для «починки» целей на стороне UI (в доле от цены входа)
+MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT", "0.0010"))   # 0.10%
+
+# ===================== ТЕКСТЫ =====================
 CUSTOM_PHRASES = {
     "BUY": [
         "Точка входа: покупка в диапазоне {range_low}–{range_high}{unit_suffix}. AI-анализ указывает на сильную поддержку в этой зоне."
@@ -94,6 +79,7 @@ CUSTOM_PHRASES = {
     "DISCLAIMER": "Данная информация является примером того, как AI может генерировать инвестиционные идеи и не является прямой инвестиционной рекомендацией. Торговля на финансовых рынках сопряжена с высоким риском."
 }
 
+# ===================== helper'ы (formatter/юниты/карточки) =====================
 def _fmt(x): return f"{float(x):.2f}"
 
 def compute_display_range(levels, widen_factor=0.25):
@@ -105,7 +91,7 @@ def compute_display_range(levels, widen_factor=0.25):
 
 def compute_risk_pct(levels):
     entry = float(levels["entry"]); sl = float(levels["sl"])
-    return "—" if entry == 0 else f"{abs(entry - sl)/abs(entry)*100.0:.1f}"
+    return "—" if entry == 0 else f"{abs(entry - sl)/max(1e-9,abs(entry))*100.0:.1f}"
 
 UNIT_STYLE = {"equity":"za_akciyu","etf":"omit","crypto":"per_base","fx":"per_base","option":"per_contract"}
 ETF_HINTS = {"SPY","QQQ","IWM","DIA","EEM","EFA","XLK","XLF","XLE","XLY","XLI","XLV","XLP","XLU","VNQ","GLD","SLV"}
@@ -122,8 +108,7 @@ def detect_asset_class(ticker: str):
 def parse_base_symbol(ticker: str):
     t = ticker.upper().replace("X:","").replace("C:","").replace(":","").replace("/","").replace("-","")
     for q in ("USDT","USDC","USD","EUR","JPY","GBP","BTC","ETH"):
-        if t.endswith(q) and len(t) > len(q):
-            return t[:-len(q)]
+        if t.endswith(q) and len(t) > len(q): return t[:-len(q)]
     return re.split(r"[-:/]", ticker.upper())[0].replace("X:","").replace("C:","")
 
 def unit_suffix(ticker: str) -> str:
@@ -165,20 +150,22 @@ def normalize_for_polygon(symbol: str) -> str:
         return f"X:{s}"
     return s
 
-# ===================== Классификация типа входа =====================
-def _entry_kind(action: str, last_price: float, entry: float,
-                eps_pct: float = ENTRY_MARKET_EPS) -> str:
-    """Возвращает строку: Market price | Buy/Sell Limit | Buy/Sell Stop"""
-    eps = eps_pct * max(1e-9, last_price)
+# --- «починка» целей на стороне UI (переставим, если пришли не по направлению сделки)
+def sanitize_targets(action: str, entry: float, tp1: float, tp2: float, tp3: float):
+    step = max(MIN_TP_STEP_PCT * max(1.0, abs(entry)), 1e-6 * max(1.0, abs(entry)))
     if action == "BUY":
-        if entry > last_price + eps:  return "Buy Stop"
-        if entry < last_price - eps:  return "Buy Limit"
-        return "Market price"
+        a = sorted([tp1, tp2, tp3])
+        a[0] = max(a[0], entry + step)
+        a[1] = max(a[1], a[0] + step)
+        a[2] = max(a[2], a[1] + step)
+        return a[0], a[1], a[2]
     if action == "SHORT":
-        if entry < last_price - eps:  return "Sell Stop"   # пробой вниз
-        if entry > last_price + eps:  return "Sell Limit"  # откат вверх
-        return "Market price"
-    return "—"
+        a = sorted([tp1, tp2, tp3], reverse=True)
+        a[0] = min(a[0], entry - step)
+        a[1] = min(a[1], a[0] - step)
+        a[2] = min(a[2], a[1] - step)
+        return a[0], a[1], a[2]
+    return tp1, tp2, tp3
 
 # ===================== Inputs =====================
 col1, col2 = st.columns([2,1])
@@ -211,92 +198,74 @@ if run and ticker:
     try:
         out = analyze_asset(ticker=symbol_for_engine, horizon=horizon)
 
-        last_price = float(out["last_price"])
+        last_price = float(out.get("last_price", 0.0))
         st.markdown(
             f"<div style='font-size:3rem; font-weight:800; text-align:center; margin:6px 0 14px 0;'>${last_price:.2f}</div>",
             unsafe_allow_html=True,
         )
 
-        action_raw = out["recommendation"]["action"]
+        action = out["recommendation"]["action"]
         conf = float(out["recommendation"].get("confidence", 0))
-        lv = out["levels"]
-
-        # ---------- анти-дубликаты: в этом же сеансе ----------
-        now = datetime.now(timezone.utc)
-        ss = st.session_state.setdefault("last_signals", {})
-        key = f"{symbol_for_engine}|{hz_tag}"
-        action_ui = action_raw  # может стать WAIT
-        dedup_hit = False
-        prev = ss.get(key)
-        if prev and action_raw in ("BUY", "SHORT"):
-            days = (now - prev["ts"]).days
-            close_by_entry = abs(prev["entry"] - float(lv["entry"])) / max(1e-9, last_price) <= DEDUP_ENTRY_EPS
-            same_dir = (prev["action"] == action_raw)
-            if same_dir and days <= DEDUP_GAP_DAYS and close_by_entry:
-                action_ui = "WAIT"
-                dedup_hit = True
-
-        # заголовок (Long•Buy Stop / Short•Sell Stop / Market price / WAIT)
-        if action_ui in ("BUY", "SHORT"):
-            order_kind = _entry_kind(action_ui, last_price, float(lv["entry"]))
-            header_line = ("Long • " if action_ui == "BUY" else "Short • ") + order_kind
-        else:
-            order_kind = "—"
-            header_line = "WAIT"
-
         conf_pct = f"{int(round(conf*100))}%"
+
+        # ---- готовим уровни + мягкая «починка» TP ----
+        lv = dict(out["levels"])
+        if action in ("BUY","SHORT"):
+            tp1,tp2,tp3 = sanitize_targets(action, lv["entry"], lv["tp1"], lv["tp2"], lv["tp3"])
+            lv["tp1"],lv["tp2"],lv["tp3"] = float(tp1),float(tp2),float(tp3)
+
+        # ---- шапка: Long • Buy STOP / Short • Sell STOP / Market price ----
+        if action == "BUY":
+            action_text = "Buy LONG"
+            is_buy_stop = lv["entry"] > last_price*(1+ENTRY_MARKET_EPS)
+            mode_suffix = " • Buy STOP" if is_buy_stop else " • Market price"
+            header_text = action_text + mode_suffix
+        elif action == "SHORT":
+            action_text = "Sell SHORT"
+            is_sell_stop = lv["entry"] < last_price*(1-ENTRY_MARKET_EPS)
+            mode_suffix = " • Sell STOP" if is_sell_stop else " • Market price"
+            header_text = action_text + mode_suffix
+        else:
+            header_text = "WAIT"
+
         st.markdown(
             f"""
             <div style="background:#0f1b2b; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:10px;">
-                <div style="font-size:1.15rem; font-weight:700;">{header_line}</div>
+                <div style="font-size:1.15rem; font-weight:700;">{header_text}</div>
                 <div style="opacity:0.75; font-size:0.95rem; margin-top:2px;">{conf_pct} confidence</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        # карточки уровней показываем только если не сработал анти-дубль → WAIT
-        if action_ui in ("BUY", "SHORT"):
+        # ---- карточки уровней ----
+        if action in ("BUY", "SHORT"):
+            # подпись заголовка Entry
+            entry_title = "Entry (Market)"
+            if action == "BUY" and lv["entry"] > last_price*(1+ENTRY_MARKET_EPS):
+                entry_title = "Entry (Buy STOP)"
+            elif action == "SHORT" and lv["entry"] < last_price*(1-ENTRY_MARKET_EPS):
+                entry_title = "Entry (Sell STOP)"
+
             c1, c2, c3 = st.columns(3)
-            with c1:
-                st.markdown(
-                    card_html(f"Entry ({order_kind})", f"{lv['entry']:.2f}", color="green"),
-                    unsafe_allow_html=True,
-                )
-            with c2:
-                st.markdown(
-                    card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"),
-                    unsafe_allow_html=True,
-                )
-            with c3:
-                st.markdown(
-                    card_html("TP 1", f"{lv['tp1']:.2f}",
-                              sub=f"Probability {int(round(out['probs']['tp1']*100))}%"),
-                    unsafe_allow_html=True,
-                )
+            with c1: st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
+            with c2: st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
+            with c3: st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}",
+                                           sub=f"Probability {int(round(out['probs']['tp1']*100))}%"),
+                                  unsafe_allow_html=True)
 
             c1, c2 = st.columns(2)
-            with c1:
-                st.markdown(
-                    card_html("TP 2", f"{lv['tp2']:.2f}",
-                              sub=f"Probability {int(round(out['probs']['tp2']*100))}%"),
-                    unsafe_allow_html=True,
-                )
-            with c2:
-                st.markdown(
-                    card_html("TP 3", f"{lv['tp3']:.2f}",
-                              sub=f"Probability {int(round(out['probs']['tp3']*100))}%"),
-                    unsafe_allow_html=True,
-                )
+            with c1: st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}",
+                                           sub=f"Probability {int(round(out['probs']['tp2']*100))}%"),
+                                  unsafe_allow_html=True)
+            with c2: st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}",
+                                           sub=f"Probability {int(round(out['probs']['tp3']*100))}%"),
+                                  unsafe_allow_html=True)
 
             rr = rr_line(lv)
-            if rr:
-                st.markdown(f"<div style='opacity:0.75; margin-top:4px'>{rr}</div>", unsafe_allow_html=True)
-        else:
-            if dedup_hit:
-                st.caption("⏸ Анти-дубль: недавний похожий сигнал — WAIT.")
+            if rr: st.markdown(f"<div style='opacity:0.75; margin-top:4px'>{rr}</div>", unsafe_allow_html=True)
 
-        # План и контекст
+        # ---- план/контекст/стоп-линия ----
         def render_plan_line(action, levels, ticker="", seed_extra=""):
             seed = int(hashlib.sha1(f"{ticker}{seed_extra}{levels['entry']}{levels['sl']}{action}".encode()).hexdigest(), 16) % (2**32)
             rnd = random.Random(seed)
@@ -307,18 +276,14 @@ if run and ticker:
             tpl = CUSTOM_PHRASES[action][0]
             return tpl.format(range_low=rng_low, range_high=rng_high, unit_suffix=us)
 
-        plan = render_plan_line(action_ui, lv, ticker=ticker, seed_extra=horizon)
+        plan = render_plan_line(action, lv, ticker=ticker, seed_extra=horizon)
         st.markdown(f"<div style='margin-top:8px'>{plan}</div>", unsafe_allow_html=True)
 
-        ctx_key = "neutral"
-        if action_ui == "BUY": ctx_key = "support"
-        elif action_ui == "SHORT": ctx_key = "resistance"
-        ctx = CUSTOM_PHRASES["CONTEXT"][ctx_key][0]
-        st.markdown(f"<div style='opacity:0.9'>{ctx}</div>", unsafe_allow_html=True)
+        ctx_key = "support" if action == "BUY" else ("resistance" if action == "SHORT" else "neutral")
+        st.markdown(f"<div style='opacity:0.9'>{CUSTOM_PHRASES['CONTEXT'][ctx_key][0]}</div>", unsafe_allow_html=True)
 
-        if action_ui in ("BUY","SHORT"):
-            line = CUSTOM_PHRASES["STOPLINE"][0]
-            stopline = line.format(sl=_fmt(lv["sl"]), risk_pct=compute_risk_pct(lv))
+        if action in ("BUY","SHORT"):
+            stopline = CUSTOM_PHRASES["STOPLINE"][0].format(sl=_fmt(lv["sl"]), risk_pct=compute_risk_pct(lv))
             st.markdown(f"<div style='opacity:0.9; margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
 
         if out.get("alt"):
@@ -329,65 +294,7 @@ if run and ticker:
 
         st.caption(CUSTOM_PHRASES["DISCLAIMER"])
 
-        # обновляем «последний сигнал» если не WAIT по анти-дублю
-        if action_ui in ("BUY", "SHORT"):
-            ss[key] = {"ts": now, "action": action_raw, "entry": float(lv["entry"])}
-
     except Exception as e:
         st.error(f"Ошибка анализа: {e}")
 elif not ticker:
     st.info("Введите тикер и нажмите «Проанализировать».")
-
-# ===================== ML тренажёры =====================
-SHOW_TRAINERS = str(os.getenv("ARXORA_SHOW_TRAINERS", "0")).strip() in ("1","true","True","yes")
-TRAINER_PASS  = os.getenv("ARXORA_TRAINER_PASS", "admin")
-MODEL_DIR     = os.getenv("ARXORA_MODEL_DIR", "models")
-
-def trainer_block(tag: str, title: str, trainer_func):
-    """Один блок тренажёра. Все ключи уникальны по тегу."""
-    with st.expander(title, expanded=False):
-        if not TRAINERS_AVAILABLE or trainer_func is None:
-            st.warning("Тренажёры недоступны: не найдены функции train_quick_st/mid/lt в core/ai_inference.py. Используйте готовые модели в каталоге models/.")
-            return
-
-        tickers = st.text_input("Тикеры (через запятую)",
-                                value="AAPL",
-                                key=f"{tag}_tickers")
-        months = st.slider("Месяцев истории", 6, 60, 18, key=f"{tag}_months")
-
-        # PIN-проверка: чтобы обучать, нужен правильный PIN
-        with st.popover("🔐 Открыть ML-панель (PIN)"):
-            pin_try = st.text_input("PIN", type="password", key=f"{tag}_pin")
-            st.caption("Установи ARXORA_TRAINER_PASS в .streamlit/secrets.toml")
-
-        train_clicked = st.button("🚀 Обучить модель сейчас", key=f"{tag}_train_btn")
-
-        if train_clicked:
-            if pin_try != TRAINER_PASS:
-                st.error("Неверный PIN.")
-                return
-            try:
-                out_path, auc, shape, pos_share = trainer_func(tickers, months, MODEL_DIR)
-                st.success(f"✅ Модель сохранена: {out_path}")
-                st.markdown(f"**AUC (валидация, грубо):** {auc:.3f}")
-                st.markdown(f"**Размер датасета:** {shape} · **доля y=1:** {pos_share:.4f}")
-
-                # Кнопка скачать
-                try:
-                    with open(out_path, "rb") as f:
-                        st.download_button(
-                            "📥 Скачать модель",
-                            f,
-                            file_name=os.path.basename(out_path),
-                            mime="application/octet-stream",
-                            key=f"{tag}_dl",
-                        )
-                except Exception:
-                    pass
-            except Exception as e:
-                st.error(f"Ошибка тренировки: {e}")
-
-if SHOW_TRAINERS:
-    trainer_block("ST",  "🧠 ML · быстрый тренинг (ST) прямо здесь",  train_quick_st)
-    trainer_block("MID", "🧠 ML · быстрый тренинг (MID) прямо здесь", train_quick_mid)
-    trainer_block("LT",  "🧠 ML · быстрый тренинг (LT) прямо здесь",  train_quick_lt)
