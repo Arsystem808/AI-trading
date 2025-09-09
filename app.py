@@ -155,7 +155,7 @@ def infer_entry_label(action: str, entry: float, price_now: float, eps_frac: flo
     BUY:
       entry > price → Buy STOP
       entry < price → Buy LIMIT
-      |entry - price| <= eps → Buy NOW
+      |entry - price| <= eps → Buy MARKET
     SHORT: зеркально (вход на пробой вниз — Sell STOP; выше цены — Sell LIMIT; рядом — Sell NOW)
     """
     if action not in ("BUY", "SHORT"):
@@ -164,11 +164,11 @@ def infer_entry_label(action: str, entry: float, price_now: float, eps_frac: flo
     if action == "BUY":
         if entry > price_now + eps:   return "Buy STOP"
         if entry < price_now - eps:   return "Buy LIMIT"
-        return "Buy NOW"
+        return "Buy MARKET"
     else:
         if entry < price_now - eps:   return "Sell STOP"
         if entry > price_now + eps:   return "Sell LIMIT"
-        return "Sell NOW"
+        return "Sell MARKET"
 
 def render_plan_line(action, levels, ticker="", seed_extra=""):
     seed = int(hashlib.sha1(f"{ticker}{seed_extra}{levels['entry']}{levels['sl']}{action}".encode()).hexdigest(), 16) % (2**32)
