@@ -161,18 +161,56 @@ def _clamp_tp_by_trend(action: str, hz: str,
     P, R1, S1 = piv["P"], piv["R1"], piv["S1"]
 
     if action == "SHORT" and bullish:
-        # Не уходим слишком глубоко вниз против сильного ап-тренда:
         limit = max(R1 - 1.2*step_w, (P + R1)/2.0)
         tp1 = max(tp1, limit - 0.2*step_w)
         tp2 = max(tp2, limit)
         tp3 = max(tp3, limit + 0.4*step_w)
     if action == "BUY" and bearish:
-        # Не уходим слишком высоко против сильного даун-тренда:
         limit = min(S1 + 1.2*step_w, (P + S1)/2.0)
         tp1 = min(tp1, limit + 0.2*step_w)
         tp2 = min(tp2, limit)
         tp3 = min(tp3, limit - 0.4*step_w)
     return tp1, tp2, tp3
+
+# -------- NEW: sanity входа + «buy-stop/sell-stop» ----------
+def _ensure_tp_side(entry: float, action: str,
+                    tp1: float, tp2: float, tp3: float,
+                    price: float):
+    """Гарантирует, что TP лежат в СТОРОНУ сделки относительно entry."""
+    if action not in ("BUY", "SHORT"):
+        return tp1, tp2, tp3
+    side = 1 if action == "BUY" else -1
+    eps = max(1e-6, 1e-4 * max(1.0, float(price)))
+    def fix(x):
+        if side * (x - entry) <= 0:
+            dist = max(eps, abs(x - entry))
+            return entry + side * dist
+        return x
+    return fix(tp1), fix(tp2), fix(tp3)
+
+def _entry_sanity(action: str, price: float, entry: float,
+                  step_d: float, step_w: float):
+    """
+    Возвращает (entry, entry_kind):
+      BUY:   entry > price -> 'buy-stop',  иначе 'market/limit'
+      SHORT: entry < price -> 'sell-stop', иначе 'limit-short'
+    Также ограничивает слишком «далёкие» входы (не дальше 3*ATR от цены).
+    """
+    eps = 1e-6
+    max_away = 3.0 * max(step_d, step_w)
+
+    if action == "BUY":
+        kind = "buy-stop" if entry > price + eps else "market/limit"
+    elif action == "SHORT":
+        kind = "sell-stop" if entry < price - eps else "limit-short"
+    else:
+        kind = None
+
+    if abs(entry - price) > max_away:
+        entry = price + (entry - price) / max(1e-9, abs(entry - price)) * max_away
+
+    return entry, kind
+# ------------------------------------------------------------
 
 # -------------------- main engine --------------------
 def analyze_asset(ticker: str, horizon: str):
@@ -314,8 +352,23 @@ def analyze_asset(ticker: str, horizon: str):
         tp1, tp2, tp3 = entry + 0.7*step_d, entry + 1.4*step_d, entry + 2.1*step_d
         alt = "Под кромкой — не догоняю; план на пробой/ретест или откат к опоре."
 
-    # трендовые «предохранители» целей (интуитивные)
-    tp1, tp2, tp3 = _clamp_tp_by_trend(action, hz, tp1, tp2, tp3, piv, step_w, slope_norm, macd_pos_run, macd_neg_run)
+    # sanity входа и тип ордера
+    entry, entry_kind = _entry_sanity(action, price, entry, step_d, step_w)
+
+    # трендовые «предохранители» целей
+    tp1, tp2, tp3 = _clamp_tp_by_trend(action, hz, tp1, tp2, tp3,
+                                       piv, step_w, slope_norm, macd_pos_run, macd_neg_run)
+
+    # цели всегда по правильную сторону от entry
+    tp1, tp2, tp3 = _ensure_tp_side(entry, action, tp1, tp2, tp3, price)
+
+    # «полы» и сортировка (dedup)
+    atr_for_floor = atr_w if hz != "ST" else atr_d
+    tp1, tp2, tp3 = _apply_tp_floors(entry, sl, tp1, tp2, tp3, action, hz, price, atr_for_floor)
+    tp1, tp2, tp3 = _order_targets(entry, tp1, tp2, tp3, action)
+
+    # финальная страховка сторон
+    tp1, tp2, tp3 = _ensure_tp_side(entry, action, tp1, tp2, tp3, price)
 
     # контекст-чипсы
     chips = []
@@ -323,11 +376,7 @@ def analyze_asset(ticker: str, horizon: str):
     if vol_ratio < 0.95: chips.append("волатильность сжимается")
     if (ha_up_run >= thr_ha):   chips.append(f"HA зелёных: {ha_up_run}")
     if (ha_down_run >= thr_ha): chips.append(f"HA красных: {ha_down_run}")
-
-    # TP fixes и порядок
-    atr_for_floor = atr_w if hz != "ST" else atr_d
-    tp1, tp2, tp3 = _apply_tp_floors(entry, sl, tp1, tp2, tp3, action, hz, price, atr_for_floor)
-    tp1, tp2, tp3 = _order_targets(entry, tp1, tp2, tp3, action)
+    if entry_kind in ("buy-stop", "sell-stop"): chips.append("стоп-вход")
 
     # вероятности
     p1 = _clip01(0.58 + 0.27*(conf - 0.55)/0.35)
@@ -351,6 +400,7 @@ def analyze_asset(ticker: str, horizon: str):
         "levels": {"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3)},
         "probs": {"tp1": float(p1), "tp2": float(p2), "tp3": float(p3)},
         "context": chips,
+        "entry_kind": entry_kind,  # 'buy-stop' / 'sell-stop' / 'market/limit' / 'limit-short' / None
         "note_html": note_html,
         "alt": alt,
     }
