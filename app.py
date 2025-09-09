@@ -50,9 +50,9 @@ def render_arxora_header():
 render_arxora_header()
 
 # ===================== НАСТРОЙКИ UI/логики =====================
-# Порог, чтобы отличить стоп-вход от рын.цены (в долях, 0.0015 = 0.15%)
+# Эпсилон для распознавания "рыночного" входа (в долях цены): 0.0015 ≈ 0.15%
 ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))
-# Минимальный шаг между TP при «починке» (в долях от entry)
+# Минимальный шаг для выравнивания целей (в долях от entry)
 MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT", "0.0010"))
 
 # ===================== ТЕКСТЫ =====================
@@ -79,7 +79,7 @@ CUSTOM_PHRASES = {
     "DISCLAIMER": "Данная информация является примером того, как AI может генерировать инвестиционные идеи и не является прямой инвестиционной рекомендацией. Торговля на финансовых рынках сопряжена с высоким риском."
 }
 
-# ===================== helper'ы (formatter/юниты/карточки) =====================
+# ===================== helper'ы =====================
 def _fmt(x): return f"{float(x):.2f}"
 
 def compute_display_range(levels, widen_factor=0.25):
@@ -150,7 +150,7 @@ def normalize_for_polygon(symbol: str) -> str:
         return f"X:{s}"
     return s
 
-# --- «починка» целей на стороне UI (обеспечим порядок и сторону)
+# Санити-правки целей (TP по направлению + по порядку)
 def sanitize_targets(action: str, entry: float, tp1: float, tp2: float, tp3: float):
     step = max(MIN_TP_STEP_PCT * max(1.0, abs(entry)), 1e-6 * max(1.0, abs(entry)))
     if action == "BUY":
@@ -166,6 +166,20 @@ def sanitize_targets(action: str, entry: float, tp1: float, tp2: float, tp3: flo
         a[2] = min(a[2], a[1] - step)
         return a[0], a[1], a[2]
     return tp1, tp2, tp3
+
+# Режим входа для шапки/карточки Entry:
+# BUY:  entry > price -> Buy Stop; entry < price -> Buy Limit; иначе Market
+# SHORT: entry < price -> Sell Stop; entry > price -> Sell Limit; иначе Market
+def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
+    if action not in ("BUY", "SHORT"):
+        return "WAIT", "Entry"
+    # “Практически рынок”
+    if abs(entry - last_price) <= eps * max(1.0, abs(last_price)):
+        return "Market price", "Entry (Market)"
+    if action == "BUY":
+        return ("Buy Stop", "Entry (Buy Stop)") if entry > last_price else ("Buy Limit", "Entry (Buy Limit)")
+    else:  # SHORT
+        return ("Sell Stop", "Entry (Sell Stop)") if entry < last_price else ("Sell Limit", "Entry (Sell Limit)")
 
 # ===================== Inputs =====================
 col1, col2 = st.columns([2,1])
@@ -208,21 +222,18 @@ if run and ticker:
         conf   = float(out["recommendation"].get("confidence", 0))
         conf_pct = f"{int(round(conf*100))}%"
 
-        # уровни + «санити» TP
         lv = dict(out["levels"])
         if action in ("BUY","SHORT"):
-            tp1,tp2,tp3 = sanitize_targets(action, lv["entry"], lv["tp1"], lv["tp2"], lv["tp3"])
-            lv["tp1"], lv["tp2"], lv["tp3"] = float(tp1), float(tp2), float(tp3)
+            t1,t2,t3 = sanitize_targets(action, lv["entry"], lv["tp1"], lv["tp2"], lv["tp3"])
+            lv["tp1"], lv["tp2"], lv["tp3"] = float(t1), float(t2), float(t3)
 
-        # ---- заголовок карточки: строго "Long • Buy Stop / Short • Sell Stop / Market price"
+        # --- шапка: Long/Short + Buy/Sell Stop/Limit/Market
+        mode_text, entry_title = entry_mode_labels(action, lv.get("entry", last_price), last_price, ENTRY_MARKET_EPS)
+        header_text = "WAIT"
         if action == "BUY":
-            is_buy_stop = lv["entry"] > last_price * (1 + ENTRY_MARKET_EPS)
-            header_text = "Long • Buy Stop" if is_buy_stop else "Long • Market price"
+            header_text = f"Long • {mode_text}"
         elif action == "SHORT":
-            is_sell_stop = lv["entry"] < last_price * (1 - ENTRY_MARKET_EPS)
-            header_text = "Short • Sell Stop" if is_sell_stop else "Short • Market price"
-        else:
-            header_text = "WAIT"
+            header_text = f"Short • {mode_text}"
 
         st.markdown(
             f"""
@@ -234,15 +245,8 @@ if run and ticker:
             unsafe_allow_html=True,
         )
 
-        # ---- карточки уровней ----
+        # --- карточки уровней
         if action in ("BUY", "SHORT"):
-            # подпись Entry
-            entry_title = "Entry (Market)"
-            if action == "BUY" and lv["entry"] > last_price*(1+ENTRY_MARKET_EPS):
-                entry_title = "Entry (Buy Stop)"
-            elif action == "SHORT" and lv["entry"] < last_price*(1-ENTRY_MARKET_EPS):
-                entry_title = "Entry (Sell Stop)"
-
             c1, c2, c3 = st.columns(3)
             with c1: st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
             with c2: st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
@@ -261,7 +265,7 @@ if run and ticker:
             rr = rr_line(lv)
             if rr: st.markdown(f"<div style='opacity:0.75; margin-top:4px'>{rr}</div>", unsafe_allow_html=True)
 
-        # ---- план/контекст/стоп-линия ----
+        # --- план/контекст/стоп-линия
         def render_plan_line(action, levels, ticker="", seed_extra=""):
             seed = int(hashlib.sha1(f"{ticker}{seed_extra}{levels['entry']}{levels['sl']}{action}".encode()).hexdigest(), 16) % (2**32)
             rnd = random.Random(seed)
