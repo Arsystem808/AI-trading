@@ -149,7 +149,7 @@ def card_html(title, value, sub=None, color=None):
         </div>
     """
 
-# -------- Entry label inference (STOP / LIMIT / NOW) --------
+# -------- Entry label inference (STOP / LIMIT / MARKET) --------
 def infer_entry_label(action: str, entry: float, price_now: float, eps_frac: float = 0.0025) -> str:
     """
     BUY:
