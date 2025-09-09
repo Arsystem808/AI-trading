@@ -85,11 +85,7 @@ CUSTOM_PHRASES = {
     "DISCLAIMER": "Данная информация является примером того, как AI может генерировать инвестиционные идеи и не является прямой инвестиционной рекомендацией. Торговля на финансовых рынках сопряжена с высоким риском."
 }
 
-def _fmt(x): 
-    try:
-        return f"{float(x):.2f}"
-    except Exception:
-        return "—"
+def _fmt(x): return f"{float(x):.2f}"
 
 def compute_display_range(levels, widen_factor=0.25):
     entry = float(levels["entry"]); sl = float(levels["sl"])
@@ -149,37 +145,6 @@ def card_html(title, value, sub=None, color=None):
         </div>
     """
 
-# -------- Entry label inference (STOP / LIMIT / NOW) --------
-def infer_entry_label(action: str, entry: float, price_now: float, eps_frac: float = 0.0025) -> str:
-    """
-    BUY:
-      entry > price → Buy STOP
-      entry < price → Buy LIMIT
-      |entry - price| <= eps → Buy NOW
-    SHORT: зеркально (вход на пробой вниз — Sell STOP; выше цены — Sell LIMIT; рядом — Sell NOW)
-    """
-    if action not in ("BUY", "SHORT"):
-        return ""
-    eps = max(0.001, eps_frac * max(price_now, 1.0))
-    if action == "BUY":
-        if entry > price_now + eps:   return "Buy STOP"
-        if entry < price_now - eps:   return "Buy LIMIT"
-        return "Buy NOW"
-    else:
-        if entry < price_now - eps:   return "Sell STOP"
-        if entry > price_now + eps:   return "Sell LIMIT"
-        return "Sell NOW"
-
-def render_plan_line(action, levels, ticker="", seed_extra=""):
-    seed = int(hashlib.sha1(f"{ticker}{seed_extra}{levels['entry']}{levels['sl']}{action}".encode()).hexdigest(), 16) % (2**32)
-    rnd = random.Random(seed)
-    if action == "WAIT":
-        return rnd.choice(CUSTOM_PHRASES["WAIT"])
-    rng_low, rng_high = compute_display_range(levels)
-    us = unit_suffix(ticker)
-    tpl = CUSTOM_PHRASES[action][0]
-    return tpl.format(range_low=rng_low, range_high=rng_high, unit_suffix=us)
-
 def normalize_for_polygon(symbol: str) -> str:
     s = (symbol or "").strip().upper().replace(" ", "")
     if s.startswith(("X:", "C:", "O:")):
@@ -190,6 +155,34 @@ def normalize_for_polygon(symbol: str) -> str:
         s = s.replace("USDT", "USD").replace("USDC", "USD")
         return f"X:{s}"
     return s
+
+# ======== sanity helpers (UI-уровень) ========
+def compute_entry_label(action: str, entry: float, last_price: float, risk: float) -> str:
+    # допуск "NOW" — 5% от риска сделки (если риск маленький — всё равно даёт порог)
+    tol_now = max(0.05 * max(risk, 1e-6), 1e-9)
+    if action == "BUY":
+        if entry > last_price + tol_now:   return "BUY STOP"
+        if entry < last_price - tol_now:   return "BUY LIMIT"
+        return "BUY MARKET"
+    if action == "SHORT":
+        if entry < last_price - tol_now:   return "SELL STOP"
+        if entry > last_price + tol_now:   return "SELL LIMIT"
+        return "SELL MARKET"
+    return "—"
+
+def fix_targets_sanity(action: str, entry: float, sl: float, tp1: float, tp2: float, tp3: float, last_price: float):
+    # минимальная дистанция до TP — завязываем на риск и чуть на цену
+    risk = abs(entry - sl)
+    min_step = max(0.35 * risk, 0.001 * max(last_price, 1.0))  # запас, чтобы TP1 не "лип"
+    if action == "BUY":
+        tp1 = max(tp1, entry + min_step)
+        tp2 = max(tp2, tp1 + 0.6 * min_step)
+        tp3 = max(tp3, tp2 + 0.6 * min_step)
+    elif action == "SHORT":
+        tp1 = min(tp1, entry - min_step)
+        tp2 = min(tp2, tp1 - 0.6 * min_step)
+        tp3 = min(tp3, tp2 - 0.6 * min_step)
+    return tp1, tp2, tp3
 
 # ===================== Inputs =====================
 col1, col2 = st.columns([2,1])
@@ -219,68 +212,92 @@ hz_tag = "ST" if "Кратко" in horizon else ("MID" if "Средне" in hori
 st.write(f"Mode: {mode_label} · Horizon: {hz_tag}")
 
 # ===================== Main =====================
-if run:
+if run and ticker:
     try:
         out = analyze_asset(ticker=symbol_for_engine, horizon=horizon)
 
-        price_now = float(out['last_price'])
+        # --------- anti-duplicate (session) ----------
+        key = (symbol_for_engine, hz_tag)
+        prev = st.session_state.get("last_sig", {}).get(key)
+        last_price = float(out.get("last_price", 0.0))
+        # «почти тот же» — та же сторона и меньше 1% сдвиг по цене
+        same_dir = prev and prev["action"] == out["recommendation"]["action"]
+        small_move = prev and (abs(last_price - prev["price"]) / max(prev["price"], 1e-9) < 0.01)
+
+        if same_dir and small_move:
+            st.info("Сигнал похож на предыдущий по этому тикеру и горизонту (изменение цены < 1%).")
+            if st.button("Показать всё равно", key="show_anyway"):
+                pass
+            else:
+                st.stop()  # мягко выходим, не показывая дубль
+
+        # сохраняем новый «последний сигнал»
+        st.session_state.setdefault("last_sig", {})[key] = {
+            "action": out["recommendation"]["action"],
+            "price": last_price,
+        }
+
+        # --------- заголовок с ценой ----------
         st.markdown(
-            f"<div style='font-size:3rem; font-weight:800; text-align:center; margin:6px 0 14px 0;'>${price_now:.2f}</div>",
+            f"<div style='font-size:3rem; font-weight:800; text-align:center; margin:6px 0 14px 0;'>${last_price:.2f}</div>",
             unsafe_allow_html=True,
         )
 
+        # --------- извлекаем уровни + sanity ----------
         action = out["recommendation"]["action"]
-        conf = out["recommendation"].get("confidence", 0)
-        conf_pct = f"{int(round(float(conf)*100))}%"
+        conf = float(out["recommendation"].get("confidence", 0))
+        lv = dict(out["levels"])  # копия, чтобы не мутировать исходный dict
 
-        lv = out.get("levels", {}) or {}
-        entry = float(lv.get("entry", price_now))
-        sl    = float(lv.get("sl", price_now))
-        tp1   = float(lv.get("tp1", price_now))
-        tp2   = float(lv.get("tp2", price_now))
-        tp3   = float(lv.get("tp3", price_now))
+        # sanity для TP/Entry на уровне UI
+        tp1, tp2, tp3 = fix_targets_sanity(
+            action,
+            float(lv["entry"]), float(lv["sl"]),
+            float(lv["tp1"]), float(lv["tp2"]), float(lv["tp3"]),
+            last_price
+        )
+        lv["tp1"], lv["tp2"], lv["tp3"] = tp1, tp2, tp3
 
-        # Тип входа: берём из стратегии, либо считаем
-        entry_label = out.get("entry_label") or infer_entry_label(action, entry, price_now)
+        # ярлык входа (NOW/LIMIT/STOP)
+        risk = abs(float(lv["entry"]) - float(lv["sl"]))
+        entry_label = compute_entry_label(action, float(lv["entry"]), last_price, risk)
 
-        action_text = "Buy LONG" if action == "BUY" else ("Sell SHORT" if action == "SHORT" else "WAIT")
-        if action in ("BUY", "SHORT") and entry_label:
-            action_text = f"{action_text} · {entry_label}"
-
+        # --------- карточка с action+label ----------
+        conf_pct = f"{int(round(conf*100))}%"
+        act_human = "Buy LONG" if action == "BUY" else ("Sell SHORT" if action == "SHORT" else "WAIT")
+        label_html = f"<span style='opacity:.8'> · {entry_label}</span>" if action in ("BUY","SHORT") else ""
         st.markdown(
             f"""
             <div style="background:#0f1b2b; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:10px;">
-                <div style="font-size:1.15rem; font-weight:700;">{action_text}</div>
+                <div style="font-size:1.15rem; font-weight:700;">{act_human}{label_html}</div>
                 <div style="opacity:0.75; font-size:0.95rem; margin-top:2px;">{conf_pct} confidence</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
+        # --------- карточки уровней ----------
         if action in ("BUY", "SHORT"):
             c1, c2, c3 = st.columns(3)
             with c1:
-                etitle = "Entry" if not entry_label else f"Entry ({entry_label})"
-                st.markdown(card_html(etitle, f"{entry:.2f}", color="green"), unsafe_allow_html=True)
+                st.markdown(card_html("Entry", f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
             with c2:
-                st.markdown(card_html("Stop Loss", f"{sl:.2f}", color="red"), unsafe_allow_html=True)
+                st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
             with c3:
                 st.markdown(
-                    card_html("TP 1", f"{tp1:.2f}",
+                    card_html("TP 1", f"{lv['tp1']:.2f}",
                               sub=f"Probability {int(round(out['probs']['tp1']*100))}%"),
                     unsafe_allow_html=True,
                 )
-
             c1, c2 = st.columns(2)
             with c1:
                 st.markdown(
-                    card_html("TP 2", f"{tp2:.2f}",
+                    card_html("TP 2", f"{lv['tp2']:.2f}",
                               sub=f"Probability {int(round(out['probs']['tp2']*100))}%"),
                     unsafe_allow_html=True,
                 )
             with c2:
                 st.markdown(
-                    card_html("TP 3", f"{tp3:.2f}",
+                    card_html("TP 3", f"{lv['tp3']:.2f}",
                               sub=f"Probability {int(round(out['probs']['tp3']*100))}%"),
                     unsafe_allow_html=True,
                 )
@@ -289,19 +306,17 @@ if run:
             if rr:
                 st.markdown(f"<div style='opacity:0.75; margin-top:4px'>{rr}</div>", unsafe_allow_html=True)
 
-            # --- sanity: TP должны быть на «правильной» стороне от Entry ---
-            tp_problem = False
-            if action == "BUY":
-                if not (tp1 > entry and tp2 > entry and tp3 > entry):
-                    tp_problem = True
-            elif action == "SHORT":
-                if not (tp1 < entry and tp2 < entry and tp3 < entry):
-                    tp_problem = True
-            if tp_problem:
-                st.warning("⚠️ Проверка целей: некоторые TP расположены не по ту сторону от Entry для текущего направления. "
-                           "Это сигнал пересчитать уровни в стратегии (или дождаться следующего бара).")
+        # --------- «живой» план и контекст ----------
+        def render_plan_line(action, levels, ticker="", seed_extra=""):
+            seed = int(hashlib.sha1(f"{ticker}{seed_extra}{levels['entry']}{levels['sl']}{action}".encode()).hexdigest(), 16) % (2**32)
+            rnd = random.Random(seed)
+            if action == "WAIT":
+                return rnd.choice(CUSTOM_PHRASES["WAIT"])
+            rng_low, rng_high = compute_display_range(levels)
+            us = unit_suffix(ticker)
+            tpl = CUSTOM_PHRASES[action][0]
+            return tpl.format(range_low=rng_low, range_high=rng_high, unit_suffix=us)
 
-        # План и контекст
         plan = render_plan_line(action, lv, ticker=ticker, seed_extra=horizon)
         st.markdown(f"<div style='margin-top:8px'>{plan}</div>", unsafe_allow_html=True)
 
@@ -313,7 +328,8 @@ if run:
 
         if action in ("BUY","SHORT"):
             line = CUSTOM_PHRASES["STOPLINE"][0]
-            stopline = line.format(sl=_fmt(sl), risk_pct=compute_risk_pct(lv))
+            # Пересчёт риска уже по «подправленным» уровням:
+            stopline = line.format(sl=_fmt(lv["sl"]), risk_pct=compute_risk_pct(lv))
             st.markdown(f"<div style='opacity:0.9; margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
 
         if out.get("alt"):
@@ -326,7 +342,7 @@ if run:
 
     except Exception as e:
         st.error(f"Ошибка анализа: {e}")
-else:
+elif not ticker:
     st.info("Введите тикер и нажмите «Проанализировать».")
 
 # ===================== ML тренажёры =====================
@@ -363,7 +379,6 @@ def trainer_block(tag: str, title: str, trainer_func):
                 st.markdown(f"**AUC (валидация, грубо):** {auc:.3f}")
                 st.markdown(f"**Размер датасета:** {shape} · **доля y=1:** {pos_share:.4f}")
 
-                # Кнопка скачать
                 try:
                     with open(out_path, "rb") as f:
                         st.download_button(
