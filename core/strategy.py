@@ -354,7 +354,7 @@ def analyze_asset(ticker: str, horizon: str):
         else:
             entry = max(price, P + 0.10*step_w);  sl = P - 0.60*step_w
         tp1 = entry + 0.9*step_w; tp2 = entry + 1.6*step_w; tp3 = entry + 2.3*step_w
-        alt = "Если продавят ниже и не вернут — не лезем; ждём возврата и подтверждения сверху."
+        alt = "Если продавят ниже и не вернут — не заходим; ждём возврата и подтверждения сверху."
     elif action == "SHORT":
         if price >= R1:
             entry = min(price, R1 - 0.15*step_w); sl = R1 + 0.60*step_w
