@@ -50,9 +50,7 @@ def render_arxora_header():
 render_arxora_header()
 
 # ===================== НАСТРОЙКИ UI/логики =====================
-# Эпсилон для распознавания "рыночного" входа (в долях цены): 0.0015 ≈ 0.15%
-ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))
-# Минимальный шаг для выравнивания целей (в долях от entry)
+ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))  # ~0.15%
 MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT", "0.0010"))
 
 # ===================== ТЕКСТЫ =====================
@@ -168,13 +166,10 @@ def sanitize_targets(action: str, entry: float, tp1: float, tp2: float, tp3: flo
         return a[0], a[1], a[2]
     return tp1, tp2, tp3
 
-# Режим входа для шапки/карточки Entry:
-# BUY:  entry > price -> Buy Stop; entry < price -> Buy Limit; иначе Market
-# SHORT: entry < price -> Sell Stop; entry > price -> Sell Limit; иначе Market
+# Режим входа для шапки/карточки Entry
 def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
     if action not in ("BUY", "SHORT"):
         return "WAIT", "Entry"
-    # “Практически рынок”
     if abs(entry - last_price) <= eps * max(1.0, abs(last_price)):
         return "Market price", "Entry (Market)"
     if action == "BUY":
@@ -264,7 +259,12 @@ if run and ticker:
                                   unsafe_allow_html=True)
 
             rr = rr_line(lv)
-            if rr: st.markdown(f"<div style='opacity:0.75; margin-top:4px'>{rr}</div>", unsafe_allow_html=True)
+            # ⬇️ СДЕЛАНО: RR теперь оранжевым
+            if rr:
+                st.markdown(
+                    f"<div style='margin-top:4px; color:#FFA94D; font-weight:600;'>{rr}</div>",
+                    unsafe_allow_html=True,
+                )
 
         # --- план/контекст/стоп-линия
         def render_plan_line(action, levels, ticker="", seed_extra=""):
