@@ -132,10 +132,10 @@ def card_html(title, value, sub=None, color=None):
     if color == "green": bg = "#123b2a"
     elif color == "red": bg = "#3b1f20"
     return f"""
-        <div style="color:#fff; background:{bg}; padding:12px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.06); margin:6px 0;">
-            <div style="font-size:0.9rem;">{title}</div>
+        <div style="background:{bg}; padding:12px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.06); margin:6px 0;">
+            <div style="font-size:0.9rem; opacity:0.85;">{title}</div>
             <div style="font-size:1.4rem; font-weight:700; margin-top:4px;">{value}</div>
-            {f"<div style='font-size:0.8rem; margin-top:2px;'>{sub}</div>" if sub else ""}
+            {f"<div style='font-size:0.8rem; opacity:0.7; margin-top:2px;'>{sub}</div>" if sub else ""}
         </div>
     """
 
