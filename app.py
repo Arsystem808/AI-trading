@@ -23,18 +23,25 @@ def render_arxora_header():
     if os.path.exists(hero_path):
         st.image(hero_path, use_container_width=True)
     else:
-        # Строгий fallback-хедер без ярких градиентов
+        PURPLE = "#5B5BF7"; BLACK = "#0B0D0E"
         st.markdown(
-            """
-            <div style="border-radius:10px; padding:18px 16px;
-                        background:#0b0d0e; border:1px solid rgba(255,255,255,.06);
-                        box-shadow:0 6px 26px rgba(0,0,0,.35);">
-              <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
-                          color:#ffffff; font-weight:800; letter-spacing:.4px;
-                          font-size:clamp(30px,6vw,58px); line-height:1.05;">
-                Arxora
+            f"""
+            <div style="border-radius:8px;overflow:hidden;
+                        box-shadow:0 0 0 1px rgba(0,0,0,.06),0 12px 32px rgba(0,0,0,.18);">
+              <div style="background:{PURPLE};padding:28px 16px;">
+                <div style="max-width:1120px;margin:0 auto;">
+                  <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
+                              color:#fff;font-weight:700;letter-spacing:.4px;
+                              font-size:clamp(36px,7vw,72px);line-height:1.05;">
+                    Arxora
+                  </div>
+                </div>
               </div>
-              <div style="color:#aab6c6; font-size:clamp(14px,2.1vw,22px); opacity:.92;">trade smarter.</div>
+              <div style="background:{BLACK};padding:12px 16px 16px 16px;">
+                <div style="max-width:1120px;margin:0 auto;">
+                  <div style="color:#fff;font-size:clamp(16px,2.4vw,28px);opacity:.92;">trade smarter.</div>
+                </div>
+              </div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -43,9 +50,7 @@ def render_arxora_header():
 render_arxora_header()
 
 # ===================== НАСТРОЙКИ UI/логики =====================
-# Эпсилон для распознавания "рыночного" входа (в долях цены): 0.0015 ≈ 0.15%
-ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))
-# Минимальный шаг для выравнивания целей (в долях от entry)
+ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))  # ~0.15%
 MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT", "0.0010"))
 
 # ===================== ТЕКСТЫ =====================
@@ -59,18 +64,18 @@ CUSTOM_PHRASES = {
     "WAIT": [
         "Пока не вижу для себя ясной картины и не тороплюсь с решениями.",
         "Пока не стоит спешить — лучше дождаться более ясной картины. Вероятно, новости могут спровоцировать изменения на рынке.",
-        "Пока без позиции — жду более чёткого сигнала. Новостной фон может сдвинуть рынок и повысить волатильность.",
+        "Пока без позиции — жду более чёткого сигнала. Новостной фон может сдвинуть рынок и повысить волатильность."
         "Пока нет ясности с картиной на текущем горизонте, и я не спешу с решениями."
     ],
     "CONTEXT": {
-        "support": ["Цена подошла к поддержке, и вероятность разворота здесь повышена. Оптимальный сценарий — аккуратный лонг с контролем риска. Закрепление ниже зоны будет сигналом к пересмотру сценария."],
-        "resistance": ["Цена подошла к сопротивлению, и вероятность коррекции здесь повышена. Оптимальный сценарий — работа от шорта со стопом. Пробой и удержание выше — повод пересмотреть сценарий."],
+        "support": ["Цена подошла к поддержке, и вероятность разворота здесь повышена. Оптимальный вариант — открывать длинную позицию с расчетом на рост. При этом важно контролировать риски: закрепление ниже этой зоны поддержки будет сигналом для пересмотра сценария. Торгуйте дисциплинированно. Строго соблюдайте уровни стоп-лосса."],
+        "resistance": ["Цена подошла к сопротивлению, и вероятность коррекции здесь повышена. Оптимальный вариант — открывать короткую позицию с расчетом на откат. При этом важно контролировать риски: закрепление выше зоны сопротивления будет сигналом для пересмотра сценария. Торгуйте дисциплинированно. Строго соблюдайте уровни стоп-лосса."],
         "neutral": ["Рынок пока в балансе — действую только по подтверждённому сигналу."]
     },
     "STOPLINE": [
         "Стоп-лосс: {sl}. Потенциальный риск ~{risk_pct}% от входа. Уровень определён алгоритмами анализа волатильности как критический для защиты капитала."
     ],
-    "DISCLAIMER": "Данная информация является примером того, как AI может генерировать инвестиционные идеи и не является прямой инвестиционной рекомендацией. Рыночная ситуация может быстро меняться; прошлые результаты не гарантируют будущих. Торговля на финансовых рынках сопряжена с высоким риском."
+    "DISCLAIMER": "Данная информация является примером того, как AI может генерировать инвестиционные идеи и не является прямой инвестиционной рекомендацией. Рыночная ситуация может быстро меняться; прошлые результаты не гарантируют будущих.  Торговля на финансовых рынках сопряжена с высоким риском."
 }
 
 # ===================== helper'ы =====================
@@ -121,41 +126,15 @@ def rr_line(levels):
     rr3 = abs(levels["tp3"] - levels["entry"]) / risk
     return f"RR ≈ 1:{rr1:.1f} (TP1) · 1:{rr2:.1f} (TP2) · 1:{rr3:.1f} (TP3)"
 
-# ----- Палитра плиток/шапки -----
-CLR_BLUE_1   = "#0ea5ff"   # cyan
-CLR_BLUE_2   = "#2563eb"   # blue
-CLR_ENTRY_BG = "#123e2a"   # зелёная плитка entry
-CLR_ENTRY_BR = "rgba(34,197,94,.45)"    # зелёная окантовка
-CLR_SL_BG    = "#3b1f20"   # красная плитка stop
-CLR_SL_BR    = "rgba(239,68,68,.45)"    # красная окантовка
-CLR_TP_BG    = "#1a2027"   # тёмная плитка TP
-CLR_TP_BR    = "rgba(255,255,255,.06)"
-CLR_NEU_TXT  = "rgba(255,255,255,.85)"
-
-# ----- карточки -----
-def card_html(title, value, sub=None, variant="neutral"):
-    if variant == "entry":
-        bg, br = CLR_ENTRY_BG, CLR_ENTRY_BR
-    elif variant == "sl":
-        bg, br = CLR_SL_BG, CLR_SL_BR
-    elif variant == "tp":
-        bg, br = CLR_TP_BG, CLR_TP_BR
-    else:
-        bg, br = "#141a20", "rgba(255,255,255,.06)"
-
+def card_html(title, value, sub=None, color=None):
+    bg = "#141a20"
+    if color == "green": bg = "#123b2a"
+    elif color == "red": bg = "#3b1f20"
     return f"""
-        <div style="
-            background:{bg};
-            padding:12px 16px;
-            border-radius:14px;
-            border:1px solid {br};
-            box-shadow:0 6px 22px rgba(0,0,0,.28);
-            margin:6px 0;">
-            <div style="font-size:0.9rem; color:{CLR_NEU_TXT};">{title}</div>
-            <div style="font-size:1.45rem; font-weight:700; margin-top:4px; color:#fff;">
-                {value}
-            </div>
-            {f"<div style='font-size:0.8rem; opacity:.75; margin-top:2px;'>{sub}</div>" if sub else ""}
+        <div style="background:{bg}; padding:12px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.06); margin:6px 0;">
+            <div style="font-size:0.9rem; opacity:0.85;">{title}</div>
+            <div style="font-size:1.4rem; font-weight:700; margin-top:4px;">{value}</div>
+            {f"<div style='font-size:0.8rem; opacity:0.7; margin-top:2px;'>{sub}</div>" if sub else ""}
         </div>
     """
 
@@ -187,13 +166,10 @@ def sanitize_targets(action: str, entry: float, tp1: float, tp2: float, tp3: flo
         return a[0], a[1], a[2]
     return tp1, tp2, tp3
 
-# Режим входа для шапки/карточки Entry:
-# BUY:  entry > price -> Buy Stop; entry < price -> Buy Limit; иначе Market
-# SHORT: entry < price -> Sell Stop; entry > price -> Sell Limit; иначе Market
+# Режим входа для шапки/карточки Entry
 def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
     if action not in ("BUY", "SHORT"):
         return "WAIT", "Entry"
-    # “Практически рынок”
     if abs(entry - last_price) <= eps * max(1.0, abs(last_price)):
         return "Market price", "Entry (Market)"
     if action == "BUY":
@@ -247,7 +223,7 @@ if run and ticker:
             t1,t2,t3 = sanitize_targets(action, lv["entry"], lv["tp1"], lv["tp2"], lv["tp3"])
             lv["tp1"], lv["tp2"], lv["tp3"] = float(t1), float(t2), float(t3)
 
-        # --- шапка: Long/Short + Buy/Sell Stop/Limit/Market (сине-голубая)
+        # --- шапка: Long/Short + Buy/Sell Stop/Limit/Market
         mode_text, entry_title = entry_mode_labels(action, lv.get("entry", last_price), last_price, ENTRY_MARKET_EPS)
         header_text = "WAIT"
         if action == "BUY":
@@ -257,46 +233,36 @@ if run and ticker:
 
         st.markdown(
             f"""
-            <div style="
-                background:linear-gradient(135deg, {CLR_BLUE_1}26 0%, {CLR_BLUE_2}26 100%);
-                border:1px solid rgba(14,165,233,.35);
-                padding:14px 16px;
-                border-radius:16px;
-                box-shadow:0 10px 30px rgba(0,0,0,.35);
-                margin-bottom:10px;">
-                <div style="font-size:1.15rem; font-weight:700; color:#e8f2ff;">{header_text}</div>
-                <div style="opacity:.80; font-size:0.95rem; margin-top:2px; color:#cfe6ff;">
-                    {conf_pct} confidence
-                </div>
+            <div style="background:#0f1b2b; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:10px;">
+                <div style="font-size:1.15rem; font-weight:700;">{header_text}</div>
+                <div style="opacity:0.75; font-size:0.95rem; margin-top:2px;">{conf_pct} confidence</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        # --- карточки уровней (Entry зелёный, Stop красный, TP тёмные)
+        # --- карточки уровней
         if action in ("BUY", "SHORT"):
             c1, c2, c3 = st.columns(3)
-            with c1: st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", variant="entry"), unsafe_allow_html=True)
-            with c2: st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", variant="sl"), unsafe_allow_html=True)
-            with c3: st.markdown(
-                card_html("TP 1", f"{lv['tp1']:.2f}",
-                          sub=f"Probability {int(round(out['probs']['tp1']*100))}%", variant="tp"),
-                unsafe_allow_html=True)
+            with c1: st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
+            with c2: st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
+            with c3: st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}",
+                                           sub=f"Probability {int(round(out['probs']['tp1']*100))}%"),
+                                  unsafe_allow_html=True)
 
             c1, c2 = st.columns(2)
-            with c1: st.markdown(
-                card_html("TP 2", f"{lv['tp2']:.2f}",
-                          sub=f"Probability {int(round(out['probs']['tp2']*100))}%", variant="tp"),
-                unsafe_allow_html=True)
-            with c2: st.markdown(
-                card_html("TP 3", f"{lv['tp3']:.2f}",
-                          sub=f"Probability {int(round(out['probs']['tp3']*100))}%", variant="tp"),
-                unsafe_allow_html=True)
+            with c1: st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}",
+                                           sub=f"Probability {int(round(out['probs']['tp2']*100))}%"),
+                                  unsafe_allow_html=True)
+            with c2: st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}",
+                                           sub=f"Probability {int(round(out['probs']['tp3']*100))}%"),
+                                  unsafe_allow_html=True)
 
             rr = rr_line(lv)
+            # ⬇️ СДЕЛАНО: RR теперь оранжевым
             if rr:
                 st.markdown(
-                    f"<div style='margin-top:4px; color:#ffb454; font-weight:600;'>{rr}</div>",
+                    f"<div style='margin-top:4px; color:#FFA94D; font-weight:600;'>{rr}</div>",
                     unsafe_allow_html=True,
                 )
 
