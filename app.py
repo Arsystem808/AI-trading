@@ -1,4 +1,4 @@
-# app.py — Arxora (AI) — Premium Glass UI (wow-версия)
+# app.py — Arxora (AI) • clean Bloomberg-like skin
 import os
 import re
 import hashlib
@@ -6,7 +6,6 @@ import random
 import streamlit as st
 from dotenv import load_dotenv
 
-# Движок сигналов
 from core.strategy import analyze_asset
 
 load_dotenv()
@@ -18,177 +17,113 @@ st.set_page_config(
     layout="centered",
 )
 
-# Глобальный стиль (стекло, градиенты, неон)
-st.markdown("""
+# ---- one-color, strict UI ----------------------------------------------------
+PRIMARY_BG   = "#0B0D0E"   # общий фон страницы (один цвет)
+PANEL_BG     = "#11161B"   # фон карточек
+BORDER_COLOR = "rgba(255,255,255,.08)"
+GREEN_BG     = "#113628"
+RED_BG       = "#3a1f20"
+TEXT_MAIN    = "#FFFFFF"
+TEXT_SOFT    = "rgba(255,255,255,.78)"
+TEXT_MUTE    = "rgba(255,255,255,.58)"
+ACCENT_ORANGE= "#FFA94D"
+
+st.markdown(f"""
 <style>
-/* ---- Фон: глубокий тёмный с мягким градиентом и «шумом» ---- */
-html, body, .block-container { background: #090B0E !important; }
-.block-container { padding-top: 14px; max-width: 1024px; }
-body::before{
-  content:""; position: fixed; inset: -20%;
-  background: radial-gradient(1200px 700px at 10% -10%, rgba(50,90,255,.22), transparent 60%),
-              radial-gradient(900px 700px at 110% 0%, rgba(130,40,180,.18), transparent 60%),
-              radial-gradient(800px 700px at 30% 120%, rgba(20,220,160,.10), transparent 60%);
-  filter: blur(40px); pointer-events:none; z-index: -1;
-}
-body::after{
-  content:""; position: fixed; inset:0;
-  background-image: url('data:image/svg+xml;utf8,\
-  <svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 32 32">\
-    <circle cx="1" cy="1" r="1" fill="rgba(255,255,255,0.03)"/>\
-  </svg>');
-  opacity:.6; pointer-events:none; z-index:-1;
-}
-
-/* ---- Белый текст повсюду ---- */
-*, .stMarkdown, .stText, .stCaption, .stSelectbox, .stRadio, label { color:#EDF1F5 !important; }
-
-/* ---- Инпуты / селекты ---- */
-.stTextInput>div>div>input, .stSelectbox div[data-baseweb="select"] input {
-  color:#EDF1F5 !important; background:rgba(255,255,255,0.03) !important;
-}
-.stTextInput>div>div, .stSelectbox>div>div {
-  border:1px solid rgba(255,255,255,0.12) !important; border-radius:12px !important;
-  backdrop-filter: blur(8px) saturate(140%);
-}
-
-/* ---- Кнопки ---- */
-button[kind="primary"]{
-  background: linear-gradient(90deg, #3B82F6, #8B5CF6, #22C55E);
-  color:#fff !important; border:0; border-radius:12px !important;
-  padding:.65rem 1.05rem !important; transition: transform .06s ease;
-}
-button[kind="primary"]:hover{ transform: translateY(-1px); filter: brightness(1.06); }
-
-/* ---- Стеклянные панели ---- */
-.glass {
-  background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(255,255,255,0.14);
-  border-radius: 16px; padding: 14px 16px;
-  box-shadow:
-    0 12px 28px rgba(0,0,0,.38),
-    inset 0 1px 0 rgba(255,255,255,.05);
-  backdrop-filter: blur(10px) saturate(160%);
-}
-
-/* ---- Хиро-карточка (логотип) ---- */
-.hero {
-  overflow:hidden;
-  background: linear-gradient(135deg, rgba(91,91,247,.25), rgba(9,11,14,.0));
-  border:1px solid rgba(91,91,247,.35);
-}
-
-/* ---- Цена (моно + неоновое кольцо) ---- */
-.arx-price-wrap{ display:flex; justify-content:center; margin: 8px 0 16px 0; }
-.arx-price-ring{
-  --c1: #4CC9F0; --c2:#F72585;
-  width: 220px; height: 220px; border-radius: 999px; padding: 14px;
-  background: conic-gradient(from 210deg, var(--c1), var(--c2), var(--c1));
-  filter: drop-shadow(0 10px 25px rgba(0,0,0,.5));
-  animation: spinHue 9s linear infinite;
-}
-@keyframes spinHue { 0%{filter:hue-rotate(0deg) drop-shadow(0 10px 25px rgba(0,0,0,.5));}
-                     100%{filter:hue-rotate(360deg) drop-shadow(0 10px 25px rgba(0,0,0,.5));} }
-.arx-price-inner{
-  background: rgba(9,11,14,.9);
-  border:1px solid rgba(255,255,255,.10);
-  backdrop-filter: blur(12px) saturate(140%);
-  width:100%; height:100%; border-radius: inherit;
-  display:flex; align-items:center; justify-content:center;
-}
-.arx-price{
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  font-size: 2.6rem; font-weight:800; letter-spacing: .5px; color:#EAF2FF;
-}
-
-/* ---- Риббон-статус (Long/Short/Wait) ---- */
-.ribbon { border-radius:16px; padding:14px 16px; }
-.ribbon.long  { background: linear-gradient(180deg, rgba(16,56,38,.85), rgba(10,31,23,.75)); border:1px solid rgba(34,197,94,.35); }
-.ribbon.short { background: linear-gradient(180deg, rgba(56,16,24,.85), rgba(31,10,14,.75)); border:1px solid rgba(244,63,94,.35); }
-.ribbon.wait  { background: linear-gradient(180deg, rgba(26,31,36,.85), rgba(18,22,26,.75)); border:1px solid rgba(255,255,255,.14); }
-.ribbon .h { font-size:1.08rem; font-weight:800; letter-spacing:.2px; }
-.ribbon .s { opacity:.82; font-size:.96rem; margin-top:2px; }
-
-/* ---- Пилюли (чипы) ---- */
-.pill{
-  display:inline-block; padding:.28rem .55rem; border-radius:999px;
-  background: rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.15);
-  margin-right:.35rem; font-size:.78rem; letter-spacing:.2px;
-}
-
-/* ---- Карточки уровней (стекло + цвет) ---- */
-.card {
-  border-radius: 14px; padding: 12px 14px; margin: 6px 0;
-  background: rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.14);
-  backdrop-filter: blur(8px) saturate(140%);
-}
-.card.green { background: linear-gradient(180deg, rgba(21,50,39,.7), rgba(16,36,28,.6)); border-color: rgba(34,197,94,.28); }
-.card.red   { background: linear-gradient(180deg, rgba(52,20,22,.7), rgba(37,14,16,.6)); border-color: rgba(244,63,94,.28); }
-.card .t { font-size:.9rem; opacity:.85; }
-.card .v { font-size:1.35rem; font-weight:800; margin-top:2px; color:#FAFAFC; text-shadow: 0 0 10px rgba(255,255,255,.04); }
-.card .s { font-size:.80rem; opacity:.75; margin-top:2px; }
-
-/* ---- RR — оранжевый, моно ---- */
-.arx-rr{
-  margin-top:6px; color:#FFB300; 
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  background: rgba(255,179,0,.08);
-  border: 1px solid rgba(255,179,0,.25);
-  border-radius: 10px; padding: 6px 10px; display:inline-block;
-}
-
-/* ---- Мелкие тексты ---- */
-.dim { opacity: .9; }
-.caption { opacity:.75; }
+html, body, [data-testid="stApp"] {{
+  background:{PRIMARY_BG} !important; color:{TEXT_MAIN} !important;
+}}
+.block-container {{
+  padding-top: 18px; max-width: 1020px;
+}}
+/* убираем стандартные теневые/контрастные элементы */
+.stButton>button {{
+  background: #1a2733; color: {TEXT_MAIN}; border: 1px solid {BORDER_COLOR};
+  border-radius: 10px; padding: 8px 14px; font-weight: 600;
+}}
+.stButton>button:hover {{ filter: brightness(1.08); }}
+/* инпуты */
+input, textarea, select, .stTextInput>div>div>input {{
+  background: #121820 !important; color: {TEXT_MAIN} !important;
+  border: 1px solid {BORDER_COLOR} !important; border-radius: 10px !important;
+}}
+/* убираем синие сообщения streamlit */
+.stAlert, .stInfo, .stSuccess, .stError, .stWarning {{
+  background: {PANEL_BG}; color:{TEXT_MAIN}; border:1px solid {BORDER_COLOR};
+}}
+/* RR — оранжевый */
+.rr-line {{ color: {ACCENT_ORANGE}; font-weight: 600; }}
+/* компактный заголовок */
+.app-hero {{
+  display:flex; gap:10px; align-items:flex-end; margin-bottom: 8px;
+}}
+.app-title {{ font-size: 28px; font-weight: 800; letter-spacing:.3px; }}
+.app-sub   {{ font-size: 14px; color:{TEXT_MUTE}; }}
+/* хедер с действием */
+.header-card {{
+  background:{PANEL_BG}; border:1px solid {BORDER_COLOR};
+  border-radius:14px; padding:14px 16px; margin: 10px 0 8px 0;
+}}
+.header-title {{ font-size: 18px; font-weight: 700; }}
+.header-sub   {{ font-size: 14px; color:{TEXT_SOFT}; margin-top:2px; }}
+/* карточки уровней */
+.card {{
+  background:{PANEL_BG}; border:1px solid {BORDER_COLOR};
+  border-radius:14px; padding:12px 16px; margin:6px 0;
+}}
+.card .t {{ font-size: 14px; color:{TEXT_SOFT}; }}
+.card .v {{ font-size: 20px; font-weight: 800; margin-top: 4px; }}
+.card.green {{ background:{GREEN_BG}; }}
+.card.red   {{ background:{RED_BG}; }}
+/* крупная цена по центру — без колец/градиентов */
+.big-price {{
+  font-size: 48px; font-weight: 900; text-align:center; margin: 10px 0 16px 0;
+}}
+/* обычный текст */
+.soft  {{ color:{TEXT_SOFT}; }}
+.mute  {{ color:{TEXT_MUTE}; }}
 </style>
 """, unsafe_allow_html=True)
 
-# ===================== Header =====================
-def render_arxora_header():
-    hero_path = "assets/arxora_logo_hero.png"
-    if os.path.exists(hero_path):
-        st.markdown('<div class="glass hero" style="padding:18px 16px; margin-bottom:12px;">', unsafe_allow_html=True)
-        st.image(hero_path, use_container_width=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-    else:
-        st.markdown(
-            """
-            <div class="glass hero" style="padding:18px 16px; margin-bottom:12px;">
-              <div style="font-weight:800; font-size: clamp(32px, 6vw, 54px); letter-spacing:.4px;">Arxora</div>
-              <div style="opacity:.92; font-size:clamp(14px,2.1vw,22px);">trade smarter.</div>
-            </div>
-            """, unsafe_allow_html=True
-        )
+# ===================== HEADER =====================
+def render_header():
+    st.markdown(
+        f"""
+        <div class="app-hero">
+          <div class="app-title">Arxora</div>
+          <div class="app-sub">trade smarter.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-render_arxora_header()
+render_header()
 
-# ===================== UI / LOGIC SETTINGS =====================
-ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))  # ≈0.15%
-MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT", "0.0010"))   # 0.10% от entry
+# ===================== SETTINGS =====================
+ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))
+MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT", "0.0010"))
 
 # ===================== TEXTS =====================
 CUSTOM_PHRASES = {
     "BUY": [
-        "Точка входа: покупка в диапазоне {range_low}–{range_high}{unit_suffix}. По результатам AI-анализа выделена зона поддержки на текущем горизонте."
+        "Точка входа: покупка в диапазоне {range_low}–{range_high}{unit_suffix}. По результатам AI-анализа выявлена зона поддержки на текущем горизонте."
     ],
     "SHORT": [
-        "Точка входа: продажа (short) в диапазоне {range_low}–{range_high}{unit_suffix}. AI-анализ указывает на зону сопротивления на текущем горизонте."
+        "Точка входа: продажа (short) в диапазоне {range_low}–{range_high}{unit_suffix}. AI-анализ выявил зону сопротивления на текущем горизонте."
     ],
     "WAIT": [
-        "Пока не вижу для себя ясной картины и не тороплюсь с решениями.",
-        "Пока не стоит спешить — лучше дождаться более ясной картины. Вероятные новости могут изменить волатильность.",
-        "Пока без позиции — жду более чёткого сигнала. Новостной фон может сдвинуть рынок и усилить импульс.",
-        "Пока нет ясности по текущему горизонту — подожду подтверждения."
+        "Пока без позиции — жду более чёткого сигнала.",
+        "Не тороплюсь: нужен более ясный сетап. Возможны новости — волатильность может измениться."
     ],
     "CONTEXT": {
-        "support": ["Цена у поддержки — вероятность разворота повышена. Длинная позиция уместна при соблюдении дисциплины риска; закрепление ниже зоны — повод пересмотреть сценарий."],
-        "resistance": ["Цена у сопротивления — вероятность коррекции повышена. Короткая позиция уместна при строгом контроле риска; закрепление выше зоны — сигнал к пересмотру сценария."],
-        "neutral": ["Рынок в балансе — действую только по подтверждённому сигналу."]
+        "support": ["Цена подошла к поддержке, вероятность разворота повышена. Действуем дисциплинированно, держим стоп."],
+        "resistance": ["Цена у сопротивления, вероятность коррекции выше. Действуем дисциплинированно, держим стоп."],
+        "neutral": ["Рынок в балансе — работаю только по подтверждённому сигналу."]
     },
     "STOPLINE": [
-        "Стоп-лосс: {sl}. Потенциальный риск ~{risk_pct}% от входа. Уровень выбран с учётом волатильности для защиты капитала."
+        "Стоп-лосс: {sl}. Потенциальный риск ~{risk_pct}% от входа. Уровень выбран по волатильности."
     ],
-    "DISCLAIMER": "Материал носит информационный характер и не является инвестрекомендацией. Рынок подвержен рискам; прошлые результаты не гарантируют будущих."
+    "DISCLAIMER": "Пример идеи от AI, не инвестиционная рекомендация. Рынок меняется быстро; прошлые результаты не гарантируют будущих."
 }
 
 # ===================== HELPERS =====================
@@ -196,8 +131,7 @@ def _fmt(x): return f"{float(x):.2f}"
 
 def compute_display_range(levels, widen_factor=0.25):
     entry = float(levels["entry"]); sl = float(levels["sl"])
-    risk = abs(entry - sl)
-    width = max(risk * widen_factor, 0.01)
+    risk = abs(entry - sl); width = max(risk * widen_factor, 0.01)
     low, high = entry - width, entry + width
     return _fmt(min(low, high)), _fmt(max(low, high))
 
@@ -240,15 +174,15 @@ def rr_line(levels):
     return f"RR ≈ 1:{rr1:.1f} (TP1) · 1:{rr2:.1f} (TP2) · 1:{rr3:.1f} (TP3)"
 
 def card_html(title, value, sub=None, color=None):
-    cls = "card"
-    if color == "green": cls += " green"
-    if color == "red":   cls += " red"
+    extra = ""
+    if color == "green": extra = " green"
+    elif color == "red": extra = " red"
     return f"""
-      <div class="{cls}">
-        <div class="t">{title}</div>
-        <div class="v">{value}</div>
-        {f'<div class="s">{sub}</div>' if sub else ""}
-      </div>
+        <div class="card{extra}">
+          <div class="t">{title}</div>
+          <div class="v">{value}</div>
+          {f"<div class='t' style='margin-top:2px'>{sub}</div>" if sub else ""}
+        </div>
     """
 
 def normalize_for_polygon(symbol: str) -> str:
@@ -262,7 +196,6 @@ def normalize_for_polygon(symbol: str) -> str:
         return f"X:{s}"
     return s
 
-# Санити-правки TP (по направлению + упорядочены + минимальный шаг)
 def sanitize_targets(action: str, entry: float, tp1: float, tp2: float, tp3: float):
     step = max(MIN_TP_STEP_PCT * max(1.0, abs(entry)), 1e-6 * max(1.0, abs(entry)))
     if action == "BUY":
@@ -279,9 +212,6 @@ def sanitize_targets(action: str, entry: float, tp1: float, tp2: float, tp3: flo
         return a[0], a[1], a[2]
     return tp1, tp2, tp3
 
-# Режим входа для шапки
-# BUY:   entry > price -> Buy Stop;  entry < price -> Buy Limit;  иначе Market
-# SHORT: entry < price -> Sell Stop; entry > price -> Sell Limit; иначе Market
 def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
     if action not in ("BUY", "SHORT"):
         return "WAIT", "Entry"
@@ -292,56 +222,30 @@ def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
     else:
         return ("Sell Stop", "Entry (Sell Stop)") if entry < last_price else ("Sell Limit", "Entry (Sell Limit)")
 
-# ===================== Inputs =====================
+# ===================== INPUTS =====================
 col1, col2 = st.columns([2,1])
 with col1:
-    ticker_input = st.text_input(
-        "Тикер",
-        value="",
-        placeholder="Примеры: AAPL · TSLA · X:BTCUSD · BTCUSDT",
-        key="main_ticker",
-    )
+    ticker_input = st.text_input("Тикер", value="", placeholder="Примеры: AAPL · TSLA · X:BTCUSD · BTCUSDT")
     ticker = ticker_input.strip().upper()
 with col2:
-    horizon = st.selectbox(
-        "Горизонт",
+    horizon = st.selectbox("Горизонт",
         ["Краткосрок (1–5 дней)", "Среднесрок (1–4 недели)", "Долгосрок (1–6 месяцев)"],
-        index=1,
-        key="main_horizon",
-    )
+        index=1)
 
 symbol_for_engine = normalize_for_polygon(ticker)
-run = st.button("Проанализировать", type="primary", key="main_analyze")
+run = st.button("Проанализировать", type="primary")
 
-# Режим (AI/pseudo)
-AI_PSEUDO = str(os.getenv("ARXORA_AI_PSEUDO", "0")).strip() in ("1", "true", "True", "yes")
+# статус строки — моно, без ярких акцентов
 hz_tag = "ST" if "Кратко" in horizon else ("MID" if "Средне" in horizon else "LT")
-st.markdown(
-    f'<div class="glass" style="display:flex;gap:.5rem;align-items:center;justify-content:space-between;margin:6px 0 10px 0;">'
-    f'<div><span class="pill">Mode: {"AI (pseudo)" if AI_PSEUDO else "AI"}</span>'
-    f'<span class="pill">Horizon: {hz_tag}</span></div>'
-    f'<div class="caption">ENTRY_MARKET_EPS={ENTRY_MARKET_EPS:.4f} · MIN_TP_STEP_PCT={MIN_TP_STEP_PCT:.4f}</div>'
-    f'</div>', unsafe_allow_html=True
-)
+st.markdown(f"<div class='mute'>Mode: AI · Horizon: {hz_tag}</div>", unsafe_allow_html=True)
 
-# ===================== Main =====================
+# ===================== MAIN =====================
 if run and ticker:
     try:
         out = analyze_asset(ticker=symbol_for_engine, horizon=horizon)
 
         last_price = float(out.get("last_price", 0.0))
-        st.markdown(
-            f"""
-            <div class="arx-price-wrap">
-              <div class="arx-price-ring">
-                <div class="arx-price-inner">
-                  <div class="arx-price">${last_price:.2f}</div>
-                </div>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        st.markdown(f"<div class='big-price'>${last_price:.2f}</div>", unsafe_allow_html=True)
 
         action = out["recommendation"]["action"]
         conf   = float(out["recommendation"].get("confidence", 0))
@@ -352,55 +256,34 @@ if run and ticker:
             t1,t2,t3 = sanitize_targets(action, lv["entry"], lv["tp1"], lv["tp2"], lv["tp3"])
             lv["tp1"], lv["tp2"], lv["tp3"] = float(t1), float(t2), float(t3)
 
-        # Риббон
         mode_text, entry_title = entry_mode_labels(action, lv.get("entry", last_price), last_price, ENTRY_MARKET_EPS)
-        if action == "BUY":
-            rib_cls, head_text = "ribbon long",  f"Long • {mode_text}"
-        elif action == "SHORT":
-            rib_cls, head_text = "ribbon short", f"Short • {mode_text}"
-        else:
-            rib_cls, head_text = "ribbon wait",  "WAIT"
+        header_text = "WAIT"
+        if action == "BUY":   header_text = f"Long • {mode_text}"
+        elif action == "SHORT": header_text = f"Short • {mode_text}"
 
         st.markdown(
             f"""
-            <div class="{rib_cls}">
-              <div class="h">{head_text}</div>
-              <div class="s">{conf_pct} confidence</div>
+            <div class="header-card">
+                <div class="header-title">{header_text}</div>
+                <div class="header-sub">{conf_pct} confidence</div>
             </div>
-            """,
-            unsafe_allow_html=True,
+            """, unsafe_allow_html=True
         )
 
-        # Карточки уровней
         if action in ("BUY", "SHORT"):
             c1, c2, c3 = st.columns(3)
-            with c1:
-                st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
-            with c2:
-                st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
-            with c3:
-                st.markdown(
-                    card_html("TP 1", f"{lv['tp1']:.2f}", sub=f"Probability {int(round(out['probs']['tp1']*100))}%"),
-                    unsafe_allow_html=True
-                )
+            with c1: st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
+            with c2: st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
+            with c3: st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}", sub=f"Probability {int(round(out['probs']['tp1']*100))}%"), unsafe_allow_html=True)
 
             c1, c2 = st.columns(2)
-            with c1:
-                st.markdown(
-                    card_html("TP 2", f"{lv['tp2']:.2f}", sub=f"Probability {int(round(out['probs']['tp2']*100))}%"),
-                    unsafe_allow_html=True
-                )
-            with c2:
-                st.markdown(
-                    card_html("TP 3", f"{lv['tp3']:.2f}", sub=f"Probability {int(round(out['probs']['tp3']*100))}%"),
-                    unsafe_allow_html=True
-                )
+            with c1: st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}", sub=f"Probability {int(round(out['probs']['tp2']*100))}%"), unsafe_allow_html=True)
+            with c2: st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}", sub=f"Probability {int(round(out['probs']['tp3']*100))}%"), unsafe_allow_html=True)
 
             rr = rr_line(lv)
-            if rr:
-                st.markdown(f"<div class='arx-rr'>{rr}</div>", unsafe_allow_html=True)
+            if rr: st.markdown(f"<div class='rr-line' style='margin-top:4px'>{rr}</div>", unsafe_allow_html=True)
 
-        # План / контекст / стоп-линия
+        # план / контекст / стоп
         def render_plan_line(action, levels, ticker="", seed_extra=""):
             seed = int(hashlib.sha1(f"{ticker}{seed_extra}{levels['entry']}{levels['sl']}{action}".encode()).hexdigest(), 16) % (2**32)
             rnd = random.Random(seed)
@@ -411,23 +294,19 @@ if run and ticker:
             tpl = CUSTOM_PHRASES[action][0]
             return tpl.format(range_low=rng_low, range_high=rng_high, unit_suffix=us)
 
-        # стеклянный контейнер под текстовые блоки
-        st.markdown('<div class="glass" style="margin-top:10px">', unsafe_allow_html=True)
-
         plan = render_plan_line(action, lv, ticker=ticker, seed_extra=horizon)
-        st.markdown(f"<div>{plan}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='soft' style='margin-top:8px'>{plan}</div>", unsafe_allow_html=True)
 
         ctx_key = "support" if action == "BUY" else ("resistance" if action == "SHORT" else "neutral")
-        st.markdown(f"<div class='dim' style='margin-top:6px'>{CUSTOM_PHRASES['CONTEXT'][ctx_key][0]}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='soft'>{CUSTOM_PHRASES['CONTEXT'][ctx_key][0]}</div>", unsafe_allow_html=True)
 
         if action in ("BUY","SHORT"):
             stopline = CUSTOM_PHRASES["STOPLINE"][0].format(sl=_fmt(lv["sl"]), risk_pct=compute_risk_pct(lv))
-            st.markdown(f"<div class='dim' style='margin-top:6px'>{stopline}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='soft' style='margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
 
         if out.get("alt"):
-            st.markdown(f"<div style='margin-top:8px'><b>Если пойдёт против базового сценария:</b> {out['alt']}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='margin-top:6px'><b>Если пойдёт против базового сценария:</b> {out['alt']}</div>", unsafe_allow_html=True)
 
-        st.markdown('</div>', unsafe_allow_html=True)
         st.caption(CUSTOM_PHRASES["DISCLAIMER"])
 
     except Exception as e:
