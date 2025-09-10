@@ -365,7 +365,7 @@ def analyze_asset(ticker: str, horizon: str):
     else:  # WAIT
         entry, sl = price, price - 0.90*step_d
         tp1, tp2, tp3 = entry + 0.7*step_d, entry + 1.4*step_d, entry + 2.1*step_d
-        alt = "Под кромкой — не догоняю; план на пробой/ретест или откат к опоре."
+        alt = "Ниже уровня — не пытаюсь догонять; стратегия — ждать пробоя, ретеста или отката к поддержке."
 
     # трендовые «предохранители» целей (интуитивные)
     tp1, tp2, tp3 = _clamp_tp_by_trend(action, hz, tp1, tp2, tp3, piv, step_w, slope_norm, macd_pos_run, macd_neg_run)
