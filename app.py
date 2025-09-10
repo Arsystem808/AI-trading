@@ -264,11 +264,7 @@ if run and ticker:
                                   unsafe_allow_html=True)
 
             rr = rr_line(lv)
-            if rr:
-            st.markdown(
-            f"<div style='margin-top:4px; color:#FFA93B; font-weight:600; opacity:0.95'>{rr}</div>",
-            unsafe_allow_html=True
-        )
+            if rr: st.markdown(f"<div style='opacity:0.75; margin-top:4px'>{rr}</div>", unsafe_allow_html=True)
 
         # --- план/контекст/стоп-линия
         def render_plan_line(action, levels, ticker="", seed_extra=""):
