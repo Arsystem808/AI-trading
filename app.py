@@ -11,42 +11,77 @@ from core.strategy import analyze_asset
 
 load_dotenv()
 
-# ===================== BRANDING =====================
+# ===================== BRANDING / THEME =====================
 st.set_page_config(
     page_title="Arxora — трейд-ИИ (MVP)",
     page_icon="assets/arxora_favicon_512.png",
     layout="centered",
 )
 
+# Глобальные стили (единый фон, белый текст, строгая подача)
+st.markdown(
+    """
+    <style>
+      :root{
+        --bg:#0b1117;
+        --panel:#0f1621;
+        --card:#111a24;
+        --text:#e6edf3;
+        --muted:#9aa4b2;
+        --green:#22c55e;
+        --red:#ef4444;
+        --blue:#3b82f6;
+        --blue2:#0ea5e9;
+        --orange:#f59e0b;
+        --border:rgba(255,255,255,.06);
+      }
+      html, body, [data-testid="stApp"]{
+        background:var(--bg)!important;
+        color:var(--text)!important;
+      }
+      [data-testid="stHeader"]{background:transparent!important}
+      .stButton>button{
+        background:linear-gradient(90deg, var(--blue2), var(--blue));
+        border:0;
+        color:#fff;
+        font-weight:700;
+        border-radius:12px;
+      }
+      .arxora-pill{
+        background:linear-gradient(90deg, rgba(14,165,233,.28), rgba(59,130,246,.28));
+        border:1px solid var(--border);
+        padding:14px 16px;
+        border-radius:14px;
+      }
+      .arxora-h-num{
+        font-size:3rem; font-weight:800; text-align:center; margin:6px 0 14px 0;
+      }
+      .arxora-card{
+        background:var(--card); padding:12px 16px;
+        border-radius:14px; border:1px solid var(--border); margin:6px 0;
+      }
+      .arxora-card .t{font-size:.92rem; opacity:.9}
+      .arxora-card .v{font-size:1.4rem; font-weight:700; margin-top:4px}
+      .arxora-card .s{font-size:.82rem; opacity:.72; margin-top:2px}
+      .entry{box-shadow:0 0 0 1px rgba(34,197,94,.15) inset}
+      .entry .v{color:var(--green)}
+      .sl{box-shadow:0 0 0 1px rgba(239,68,68,.18) inset}
+      .sl .v{color:var(--red)}
+      .tp{box-shadow:0 0 0 1px rgba(59,130,246,.14) inset}
+      .muted{opacity:.9}
+      .rr-line{margin-top:4px; color:var(--orange); font-weight:600}
+      .note, .ctx, .disc{opacity:.9}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 def render_arxora_header():
     hero_path = "assets/arxora_logo_hero.png"
-    if os.path.exists(hero_path):
+    if os.getenv("ARXORA_SHOW_HERO", "0").strip() in ("1", "true", "True", "yes") and os.path.exists(hero_path):
         st.image(hero_path, use_container_width=True)
-    else:
-        PURPLE = "#5B5BF7"; BLACK = "#0B0D0E"
-        st.markdown(
-            f"""
-            <div style="border-radius:8px;overflow:hidden;
-                        box-shadow:0 0 0 1px rgba(0,0,0,.06),0 12px 32px rgba(0,0,0,.18);">
-              <div style="background:{PURPLE};padding:28px 16px;">
-                <div style="max-width:1120px;margin:0 auto;">
-                  <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
-                              color:#fff;font-weight:700;letter-spacing:.4px;
-                              font-size:clamp(36px,7vw,72px);line-height:1.05;">
-                    Arxora
-                  </div>
-                </div>
-              </div>
-              <div style="background:{BLACK};padding:12px 16px 16px 16px;">
-                <div style="max-width:1120px;margin:0 auto;">
-                  <div style="color:#fff;font-size:clamp(16px,2.4vw,28px);opacity:.92;">trade smarter.</div>
-                </div>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
 
+# По умолчанию — без яркого баннера
 render_arxora_header()
 
 # ===================== НАСТРОЙКИ UI/логики =====================
@@ -64,18 +99,18 @@ CUSTOM_PHRASES = {
     "WAIT": [
         "Пока не вижу для себя ясной картины и не тороплюсь с решениями.",
         "Пока не стоит спешить — лучше дождаться более ясной картины. Вероятно, новости могут спровоцировать изменения на рынке.",
-        "Пока без позиции — жду более чёткого сигнала. Новостной фон может сдвинуть рынок и повысить волатильность."
+        "Пока без позиции — жду более чёткого сигнала. Новостной фон может сдвинуть рынок и повысить волатильность.",
         "Пока нет ясности с картиной на текущем горизонте, и я не спешу с решениями."
     ],
     "CONTEXT": {
-        "support": ["Цена подошла к поддержке, и вероятность разворота здесь повышена. Оптимальный вариант — открывать длинную позицию с расчетом на рост. При этом важно контролировать риски: закрепление ниже этой зоны поддержки будет сигналом для пересмотра сценария. Торгуйте дисциплинированно. Строго соблюдайте уровни стоп-лосса."],
-        "resistance": ["Цена подошла к сопротивлению, и вероятность коррекции здесь повышена. Оптимальный вариант — открывать короткую позицию с расчетом на откат. При этом важно контролировать риски: закрепление выше зоны сопротивления будет сигналом для пересмотра сценария. Торгуйте дисциплинированно. Строго соблюдайте уровни стоп-лосса."],
-        "neutral": ["Рынок пока в балансе — действую только по подтверждённому сигналу."]
+        "support": ["Цена подошла к поддержке, и вероятность разворота здесь повышена. Оптимальный вариант — длинная позиция с расчётом на рост. Закрепление ниже зоны — сигнал пересмотра сценария. Дисциплина и стоп-лосс обязательны."],
+        "resistance": ["Цена у сопротивления — риск отката выше. Оптимально — короткая позиция со стопом над зоной. При пробое и закреплении — сценарий пересмотреть. Дисциплина и стоп-лосс обязательны."],
+        "neutral": ["Рынок в балансе — действую только по подтверждённому сигналу."]
     },
     "STOPLINE": [
-        "Стоп-лосс: {sl}. Потенциальный риск ~{risk_pct}% от входа. Уровень определён алгоритмами анализа волатильности как критический для защиты капитала."
+        "Стоп-лосс: {sl}. Потенциальный риск ~{risk_pct}% от входа. Уровень выбран по волатильности для защиты капитала."
     ],
-    "DISCLAIMER": "Данная информация является примером того, как AI может генерировать инвестиционные идеи и не является прямой инвестиционной рекомендацией. Рыночная ситуация может быстро меняться; прошлые результаты не гарантируют будущих.  Торговля на финансовых рынках сопряжена с высоким риском."
+    "DISCLAIMER": "Это иллюстрация ИИ-идеи, а не инвестиционная рекомендация. Ситуация и волатильность могут резко меняться; прошлые результаты не гарантируют будущих. Торги сопряжены с высоким риском."
 }
 
 # ===================== helper'ы =====================
@@ -127,14 +162,16 @@ def rr_line(levels):
     return f"RR ≈ 1:{rr1:.1f} (TP1) · 1:{rr2:.1f} (TP2) · 1:{rr3:.1f} (TP3)"
 
 def card_html(title, value, sub=None, color=None):
-    bg = "#141a20"
-    if color == "green": bg = "#123b2a"
-    elif color == "red": bg = "#3b1f20"
+    # цветовые акценты управляются через CSS-классы
+    cls = "arxora-card"
+    if color == "green": cls += " entry"
+    elif color == "red": cls += " sl"
+    else: cls += " tp"
     return f"""
-        <div style="background:{bg}; padding:12px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.06); margin:6px 0;">
-            <div style="font-size:0.9rem; opacity:0.85;">{title}</div>
-            <div style="font-size:1.4rem; font-weight:700; margin-top:4px;">{value}</div>
-            {f"<div style='font-size:0.8rem; opacity:0.7; margin-top:2px;'>{sub}</div>" if sub else ""}
+        <div class="{cls}">
+            <div class="t">{title}</div>
+            <div class="v">{value}</div>
+            {f"<div class='s'>{sub}</div>" if sub else ""}
         </div>
     """
 
@@ -166,7 +203,7 @@ def sanitize_targets(action: str, entry: float, tp1: float, tp2: float, tp3: flo
         return a[0], a[1], a[2]
     return tp1, tp2, tp3
 
-# Режим входа для шапки/карточки Entry
+# Режим входа для шапки/карточки Entry (локальный fallback)
 def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
     if action not in ("BUY", "SHORT"):
         return "WAIT", "Entry"
@@ -209,13 +246,10 @@ if run and ticker:
         out = analyze_asset(ticker=symbol_for_engine, horizon=horizon)
 
         last_price = float(out.get("last_price", 0.0))
-        st.markdown(
-            f"<div style='font-size:3rem; font-weight:800; text-align:center; margin:6px 0 14px 0;'>${last_price:.2f}</div>",
-            unsafe_allow_html=True,
-        )
+        st.markdown(f"<div class='arxora-h-num'>${last_price:.2f}</div>", unsafe_allow_html=True)
 
-        action = out["recommendation"]["action"]
-        conf   = float(out["recommendation"].get("confidence", 0))
+        action   = out["recommendation"]["action"]
+        conf     = float(out["recommendation"].get("confidence", 0))
         conf_pct = f"{int(round(conf*100))}%"
 
         lv = dict(out["levels"])
@@ -224,7 +258,21 @@ if run and ticker:
             lv["tp1"], lv["tp2"], lv["tp3"] = float(t1), float(t2), float(t3)
 
         # --- шапка: Long/Short + Buy/Sell Stop/Limit/Market
-        mode_text, entry_title = entry_mode_labels(action, lv.get("entry", last_price), last_price, ENTRY_MARKET_EPS)
+        # Предпочтительно используем стратегию: entry_label / entry_kind
+        mode_text = None
+        if "entry_label" in out:
+            # Нормализуем «NOW/STOP/LIMIT» в читабельный вид
+            label = str(out["entry_label"])
+            label = (label
+                     .replace("NOW", "Market price")
+                     .replace("STOP", "Stop")
+                     .replace("LIMIT", "Limit"))
+            mode_text = label.replace("Buy ", "Buy ").replace("Sell ", "Sell ")
+        if not mode_text:
+            mode_text, _entry_title_fallback = entry_mode_labels(
+                action, lv.get("entry", last_price), last_price, ENTRY_MARKET_EPS
+            )
+
         header_text = "WAIT"
         if action == "BUY":
             header_text = f"Long • {mode_text}"
@@ -233,9 +281,9 @@ if run and ticker:
 
         st.markdown(
             f"""
-            <div style="background:#0f1b2b; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:10px;">
+            <div class="arxora-pill">
                 <div style="font-size:1.15rem; font-weight:700;">{header_text}</div>
-                <div style="opacity:0.75; font-size:0.95rem; margin-top:2px;">{conf_pct} confidence</div>
+                <div style="opacity:0.8; font-size:0.95rem; margin-top:2px;">{conf_pct} confidence</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -243,28 +291,41 @@ if run and ticker:
 
         # --- карточки уровней
         if action in ("BUY", "SHORT"):
+            # Заголовок для Entry — берем из entry_label, если есть; иначе из fallback
+            if "entry_label" in out:
+                entry_title = out["entry_label"].replace("NOW","Market").replace("STOP","Stop").replace("LIMIT","Limit")
+            else:
+                _, entry_title = entry_mode_labels(action, lv.get("entry", last_price), last_price, ENTRY_MARKET_EPS)
+
             c1, c2, c3 = st.columns(3)
-            with c1: st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
-            with c2: st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
-            with c3: st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}",
-                                           sub=f"Probability {int(round(out['probs']['tp1']*100))}%"),
-                                  unsafe_allow_html=True)
-
-            c1, c2 = st.columns(2)
-            with c1: st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}",
-                                           sub=f"Probability {int(round(out['probs']['tp2']*100))}%"),
-                                  unsafe_allow_html=True)
-            with c2: st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}",
-                                           sub=f"Probability {int(round(out['probs']['tp3']*100))}%"),
-                                  unsafe_allow_html=True)
-
-            rr = rr_line(lv)
-            # ⬇️ СДЕЛАНО: RR теперь оранжевым
-            if rr:
+            with c1:
+                st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
+            with c2:
+                st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
+            with c3:
                 st.markdown(
-                    f"<div style='margin-top:4px; color:#FFA94D; font-weight:600;'>{rr}</div>",
+                    card_html("TP 1", f"{lv['tp1']:.2f}",
+                              sub=f"Probability {int(round(out['probs']['tp1']*100))}%"),
                     unsafe_allow_html=True,
                 )
+
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown(
+                    card_html("TP 2", f"{lv['tp2']:.2f}",
+                              sub=f"Probability {int(round(out['probs']['tp2']*100))}%"),
+                    unsafe_allow_html=True,
+                )
+            with c2:
+                st.markdown(
+                    card_html("TP 3", f"{lv['tp3']:.2f}",
+                              sub=f"Probability {int(round(out['probs']['tp3']*100))}%"),
+                    unsafe_allow_html=True,
+                )
+
+            rr = rr_line(lv)
+            if rr:
+                st.markdown(f"<div class='rr-line'>{rr}</div>", unsafe_allow_html=True)
 
         # --- план/контекст/стоп-линия
         def render_plan_line(action, levels, ticker="", seed_extra=""):
@@ -278,22 +339,22 @@ if run and ticker:
             return tpl.format(range_low=rng_low, range_high=rng_high, unit_suffix=us)
 
         plan = render_plan_line(action, lv, ticker=ticker, seed_extra=horizon)
-        st.markdown(f"<div style='margin-top:8px'>{plan}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='note' style='margin-top:8px'>{plan}</div>", unsafe_allow_html=True)
 
         ctx_key = "support" if action == "BUY" else ("resistance" if action == "SHORT" else "neutral")
-        st.markdown(f"<div style='opacity:0.9'>{CUSTOM_PHRASES['CONTEXT'][ctx_key][0]}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='ctx'>{CUSTOM_PHRASES['CONTEXT'][ctx_key][0]}</div>", unsafe_allow_html=True)
 
         if action in ("BUY","SHORT"):
             stopline = CUSTOM_PHRASES["STOPLINE"][0].format(sl=_fmt(lv["sl"]), risk_pct=compute_risk_pct(lv))
-            st.markdown(f"<div style='opacity:0.9; margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='note' style='margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
 
         if out.get("alt"):
             st.markdown(
-                f"<div style='margin-top:6px;'><b>Если пойдёт против базового сценария:</b> {out['alt']}</div>",
+                f"<div class='note' style='margin-top:6px;'><b>Если пойдёт против базового сценария:</b> {out['alt']}</div>",
                 unsafe_allow_html=True,
             )
 
-        st.caption(CUSTOM_PHRASES["DISCLAIMER"])
+        st.caption(f"<span class='disc'>{CUSTOM_PHRASES['DISCLAIMER']}</span>", unsafe_allow_html=True)
 
     except Exception as e:
         st.error(f"Ошибка анализа: {e}")
