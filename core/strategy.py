@@ -111,9 +111,17 @@ def _classify_band(price: float, piv: dict, buf: float) -> int:
     if price < levels[5] - buf: return +2
     return +3
 
+# -------------------- wick profile (для AI/псевдо) --------------------
+def _wick_profile(row: pd.Series):
+    o, c, h, l = float(row["open"]), float(row["close"]), float(row["high"]), float(row["low"])
+    body = max(1e-9, abs(c - o))
+    up_wick = max(0.0, h - max(o, c))
+    dn_wick = max(0.0, min(o, c) - l)
+    return body, up_wick, dn_wick
+
 # -------------------- Order kind (STOP/LIMIT/NOW) --------------------
 def _entry_kind(action: str, entry: float, price: float, step_d: float) -> str:
-    tol = max(0.0015 * price, 0.15 * step_d)  # копеечный допуск
+    tol = max(0.0015 * max(1.0, price), 0.15 * step_d)  # копеечный допуск (без нулевой цены)
     if action == "BUY":
         if entry > price + tol:  return "buy-stop"
         if entry < price - tol:  return "buy-limit"
@@ -134,7 +142,6 @@ def _apply_tp_floors(entry: float, sl: float, tp1: float, tp2: float, tp3: float
     if risk <= 1e-9:
         return tp1, tp2, tp3
     side = 1 if action == "BUY" else -1
-    # базовые полы
     min_rr   = {"ST":0.80,"MID":1.00,"LT":1.20}
     min_pct  = {"ST":0.006,"MID":0.012,"LT":0.018}
     atr_mult = {"ST":0.50,"MID":0.80,"LT":1.20}
@@ -260,6 +267,12 @@ def analyze_asset(ticker: str, horizon: str):
     macd_pos_run = _streak_by_sign(hist, True)
     macd_neg_run = _streak_by_sign(hist, False)
 
+    # текущая свеча: тени (для AI/псевдо)
+    last_row = df.iloc[-1]
+    body, up_wick, dn_wick = _wick_profile(last_row)
+    long_upper = (up_wick > body * 1.3) and (up_wick > dn_wick * 1.1)
+    long_lower = (dn_wick > body * 1.3) and (dn_wick > up_wick * 1.1)
+
     # pivots (ST weekly, MID/LT monthly) — last completed period
     hlc = _last_period_hlc(df, cfg["pivot_rule"])
     if not hlc:
@@ -306,7 +319,7 @@ def analyze_asset(ticker: str, horizon: str):
             elif band == 0:
                 action, scenario = ("BUY","trend_follow") if slope_norm >= 0 else ("WAIT","mid_range")
             elif band == -1:
-                action, scenario = "BUY", "revert_from_bottom"
+                action, scenario = "BUY","revert_from_bottom"
             else:
                 action, scenario = ("BUY","revert_from_bottom") if band <= -2 else ("WAIT","upper_wait")
 
@@ -329,8 +342,10 @@ def analyze_asset(ticker: str, horizon: str):
             vol_ratio=vol_ratio,
             ha_up_run=float(ha_up_run), ha_down_run=float(ha_down_run),
             macd_pos_run=float(macd_pos_run), macd_neg_run=float(macd_neg_run),
+            band=float(_classify_band(price, piv, buf)),
+            long_upper=bool(long_upper), long_lower=bool(long_lower),
         )
-        out_ai = score_signal(feats, hz=hz)
+        out_ai = score_signal(feats, hz=hz, ticker=ticker)
         if out_ai is not None:
             p_long  = float(out_ai.get("p_long", 0.5))
             th_long  = float(os.getenv("ARXORA_AI_TH_LONG",  "0.55"))
