@@ -303,10 +303,30 @@ elif not ticker:
 st.markdown("---")
 st.markdown(
     """
-    <div style="text-align: center; padding: 10px 0;">
-        <span style="font-weight: bold; margin-right: 20px;">US Stocks</span>
-        <span style="font-weight: bold;">Crypto</span>
+    <div style="background-color: #000000; padding: 15px; border-radius: 0px; margin-top: 20px;">
+        <div style="color: #ffffff; text-align: center;">
+            <span style="font-weight: bold; margin-right: 30px;">Arxora</span>
+            <span style="font-weight: bold; margin-right: 30px;">US Stocks</span>
+            <span style="font-weight: bold;">Crypto</span>
+        </div>
     </div>
     """,
     unsafe_allow_html=True
 )
+
+# Добавляем описание Arxora при клике
+if st.button("ℹ️", key="info_button"):
+    st.markdown(
+        """
+        <div style="background-color: #0f1b2b; padding: 15px; border-radius: 10px; margin-top: 10px;">
+            <h4 style="color: #ffffff;">О проекте Arxora</h4>
+            <p style="color: #ffffff;">
+            Arxora AI — это современное решение, которое помогает трейдерам принимать точные и обоснованные решения 
+            на финансовых рынках с помощью передовых технологий искусственного интеллекта и машинного обучения. 
+            Arxora помогает трейдерам автоматизировать анализ, повышать качество входов и управлять рисками, 
+            делая торговлю проще, эффективнее и разумнее. Попробуйте мощь искусственного интеллекта в трейдинге уже сегодня!
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
