@@ -39,7 +39,7 @@ def render_arxora_header():
               </div>
               <div style="background:{BLACK};padding:12px 16px 16px 16px;">
                 <div style="max-width:1120px;margin:0 auto;">
-                  <div style="color:#fff;font-size:clamp(12px,2.4vw,24px);opacity:.92;">trade smarter.</div>
+                  <div style="color:#fff;font-size:clamp(11px,2.4vw,23px);opacity:.92;">trade smarter.</div>
                 </div>
               </div>
             </div>
