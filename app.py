@@ -23,7 +23,7 @@ def render_arxora_header():
     if os.path.exists(hero_path):
         st.image(hero_path, use_container_width=True)
     else:
-        PURPLE = "#5B5BF7"; BLACK = "#0B0D0E"
+        PURPLE = "#5B5BF7"; BLACK = "#000000"
         st.markdown(
             f"""
             <div style="border-radius:8px;overflow:hidden;
