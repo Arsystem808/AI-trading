@@ -302,19 +302,28 @@ elif not ticker:
 # ===================== НИЖНИЙ КОЛОНТИТУЛ =====================
 st.markdown("---")
 
-# Создаем колонки для нижнего колонтитула
-col1, col2, col3 = st.columns(3)
+# Добавляем CSS для жирности кнопок
+st.markdown("""
+<style>
+    .stButton > button {
+        font-weight: 600;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-with col1:
-    if st.button("Arxora"):
+# Создаем центрированные кнопки
+col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
+
+with col2:
+    if st.button("Arxora", use_container_width=True):
         st.session_state.show_arxora = not st.session_state.get('show_arxora', False)
         st.session_state.show_crypto = False
 
-with col2:
-    st.button("US Stocks")
-
 with col3:
-    if st.button("Crypto"):
+    st.button("US Stocks", use_container_width=True)
+
+with col4:
+    if st.button("Crypto", use_container_width=True):
         st.session_state.show_crypto = not st.session_state.get('show_crypto', False)
         st.session_state.show_arxora = False
 
@@ -323,8 +332,8 @@ if st.session_state.get('show_arxora', False):
     st.markdown(
         """
         <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 10px;">
-            <h4>О проекте </h4>
-            <p>
+            <h4 style="font-weight: 600;">О проекте</h4>
+            <p style="font-weight: 500;">
             Arxora AI — это современное решение, которое помогает трейдерам принимать точные и обоснованные решения 
             на финансовых рынках с помощью передовых технологий искусственного интеллекта и машинного обучения. 
             Arxora помогает трейдерам автоматизировать анализ, повышать качество входов и управлять рисками, 
@@ -339,13 +348,13 @@ if st.session_state.get('show_crypto', False):
     st.markdown(
         """
         <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 10px;">
-            <h4>Crypto</h4>
-            <p>
+            <h4 style="font-weight: 600;">Crypto</h4>
+            <p style="font-weight: 500;">
             Arxora анализирует основные криптовалюты 
             (Bitcoin, Ethereum и другие) с использованием тех же алгоритмических подходов, что и для традиционных активов.
             </p>
-            <p>Особенности крипто-анализа:</p>
-            <ul>
+            <p style="font-weight: 500;">Особенности крипто-анализа:</p>
+            <ul style="font-weight: 500;">
                 <li>Учет высокой волатильности криптовалют</li>
                 <li>Анализ круглосуточного рынка</li>
                 <li>Учет специфических крипто-факторов</li>
