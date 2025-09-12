@@ -333,7 +333,7 @@ if st.session_state.get('show_arxora', False):
         """
         <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 10px;">
             <h4 style="font-weight: 600;">О проекте</h4>
-            <p style="font-weight: 300;">
+            <p style="font-weight: 400;">
             Arxora AI — это современное решение, которое помогает трейдерам принимать точные и обоснованные решения 
             на финансовых рынках с помощью передовых технологий искусственного интеллекта и машинного обучения. 
             Arxora помогает трейдерам автоматизировать анализ, повышать качество входов и управлять рисками, 
