@@ -351,7 +351,7 @@ if st.session_state.get('show_crypto', False):
         """
         <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 10px;">
             <h4 style="font-weight: 600;">Crypto</h4>
-            <p style="font-weight: 350;">
+            <p style="font-weight: 300;">
             Arxora анализирует основные криптовалюты 
             (Bitcoin, Ethereum и другие) с использованием тех же алгоритмических подходов, что и для традиционных активов.
             </p>
