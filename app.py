@@ -49,51 +49,6 @@ def render_arxora_header():
 
 render_arxora_header()
 
-# ===================== ИНТЕРАКТИВНЫЕ ЭЛЕМЕНТЫ =====================
-# Инициализация состояния сессии
-if 'show_arxora' not in st.session_state:
-    st.session_state.show_arxora = False
-if 'show_crypto' not in st.session_state:
-    st.session_state.show_crypto = False
-
-# Создаем колонки для кнопок
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    if st.button("Arxora"):
-        st.session_state.show_arxora = not st.session_state.show_arxora
-        st.session_state.show_crypto = False
-
-with col2:
-    st.button("US Stock")
-
-with col3:
-    if st.button("Crypto"):
-        st.session_state.show_crypto = not st.session_state.show_crypto
-        st.session_state.show_arxora = False
-
-# Отображаем информацию при необходимости
-if st.session_state.show_arxora:
-    st.info("""
-    **Arxora AI** — это современное решение, которое помогает трейдерам принимать точные и обоснованные решения 
-    на финансовых рынках с помощью передовых технологий искусственного интеллекта и машинного обучения. 
-    
-    Arxora помогает трейдерам автоматизировать анализ, повышать качество входов и управлять рисками, 
-    делая торговлю проще, эффективнее и разумнее. Попробуйте мощь искусственного интеллекта в трейдинге уже сегодня!
-    """)
-
-if st.session_state.show_crypto:
-    st.info("""
-    **Crypto** — раздел посвященный криптовалютным активам. Arxora анализирует
-    основные криптовалюты (Bitcoin, Ethereum и другие) с использованием тех же
-    алгоритмических подходов, что и для традиционных активов.
-    
-    Особенности крипто-анализа:
-    - Учет высокой волатильности криптовалют
-    - Анализ круглосуточного рынка
-    - Учет специфических крипто-факторов
-    """)
-
 # ===================== НАСТРОЙКИ UI/логики =====================
 ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))  # ~0.15%
 MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT", "0.0010"))
@@ -343,3 +298,15 @@ if run and ticker:
         st.error(f"Ошибка анализа: {e}")
 elif not ticker:
     st.info("Введите тикер и нажмите «Проанализировать».")
+
+# ===================== НИЖНИЙ КОЛОНТИТУЛ =====================
+st.markdown("---")
+st.markdown(
+    """
+    <div style="text-align: center; padding: 10px 0;">
+        <span style="font-weight: bold; margin-right: 20px;">US Stocks</span>
+        <span style="font-weight: bold;">Crypto</span>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
