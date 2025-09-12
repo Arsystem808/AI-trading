@@ -343,4 +343,3 @@ if run and ticker:
         st.error(f"Ошибка анализа: {e}")
 elif not ticker:
     st.info("Введите тикер и нажмите «Проанализировать».")
-```
