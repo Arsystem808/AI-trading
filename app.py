@@ -23,12 +23,12 @@ def render_arxora_header():
     if os.path.exists(hero_path):
         st.image(hero_path, use_container_width=True)
     else:
-        BLACK = "#000000"  # Черный фон
+        PURPLE = "#5B5BF7"; BLACK = "#0B0D0E"
         st.markdown(
             f"""
             <div style="border-radius:8px;overflow:hidden;
                         box-shadow:0 0 0 1px rgba(0,0,0,.06),0 12px 32px rgba(0,0,0,.18);">
-              <div style="background:{BLACK};padding:28px 16px;">
+              <div style="background:{PURPLE};padding:28px 16px;">
                 <div style="max-width:1120px;margin:0 auto;">
                   <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
                               color:#fff;font-weight:700;letter-spacing:.4px;
@@ -301,13 +301,56 @@ elif not ticker:
 
 # ===================== НИЖНИЙ КОЛОНТИТУЛ =====================
 st.markdown("---")
-st.markdown(
-    """
-    <div style="text-align: center; padding: 10px 0;">
-        <span style="font-weight: bold; margin-right: 20px;">Arxora</span>
-        <span style="font-weight: bold; margin-right: 20px;">US Stocks</span>
-        <span style="font-weight: bold;">Crypto</span>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+
+# Создаем колонки для нижнего колонтитула
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    if st.button("Arxora"):
+        st.session_state.show_arxora = not st.session_state.get('show_arxora', False)
+        st.session_state.show_crypto = False
+
+with col2:
+    st.button("US Stocks")
+
+with col3:
+    if st.button("Crypto"):
+        st.session_state.show_crypto = not st.session_state.get('show_crypto', False)
+        st.session_state.show_arxora = False
+
+# Отображаем информацию при необходимости
+if st.session_state.get('show_arxora', False):
+    st.markdown(
+        """
+        <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 10px;">
+            <h4>О проекте Arxora</h4>
+            <p>
+            Arxora AI — это современное решение, которое помогает трейдерам принимать точные и обоснованные решения 
+            на финансовых рынках с помощью передовых технологий искусственного интеллекта и машинного обучения. 
+            Arxora помогает трейдерам автоматизировать анализ, повышать качество входов и управлять рисками, 
+            делая торговлю проще, эффективнее и разумнее. Попробуйте мощь искусственного интеллекта в трейдинге уже сегодня!
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+if st.session_state.get('show_crypto', False):
+    st.markdown(
+        """
+        <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 10px;">
+            <h4>Crypto</h4>
+            <p>
+            Раздел посвященный криптовалютным активам. Arxora анализирует основные криптовалюты 
+            (Bitcoin, Ethereum и другие) с использованием тех же алгоритмических подходов, что и для традиционных активов.
+            </p>
+            <p>Особенности крипто-анализа:</p>
+            <ul>
+                <li>Учет высокой волатильности криптовалют</li>
+                <li>Анализ круглосуточного рынка</li>
+                <li>Учет специфических крипто-факторов</li>
+            </ul>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
