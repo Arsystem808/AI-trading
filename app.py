@@ -297,7 +297,46 @@ if run and ticker:
     except Exception as e:
         st.error(f"Ошибка анализа: {e}")
 elif not ticker:
-    st.info("Введите тикер и нажмите «Проанализировать».")
+    # --- custom style for the hint box ---
+st.markdown(
+    """
+    <style>
+    /* общая страница: делаем фон чуть темнее/монохромным (опционально) */
+    .arxora-page-bg {
+        background: transparent;
+    }
+
+    /* наша кастомная подсказка */
+    .arxora-hint {
+        background: rgba(255,255,255,0.02);  /* почти прозрачный фон */
+        color: #FFA94D;                      /* оранжевый текст */
+        border: 1px solid rgba(255,169,77,0.08);
+        padding: 14px 18px;
+        border-radius: 12px;
+        font-size: 1.05rem;
+        line-height: 1.4;
+        margin: 10px 0;
+        box-shadow: 0 4px 18px rgba(0,0,0,0.45);
+        font-weight: 500;
+    }
+
+    /* адаптация под тёмную тему (чуть более заметный текст) */
+    @media (prefers-color-scheme: dark) {
+        .arxora-hint { color: #FFB06A; }
+    }
+
+    /* убираем возможные маргины у streamlit вокруг блока внутри колонки */
+    .arxora-hint + .css-1kyxreq { margin-top: 0 !important; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# --- использование кастомной подсказки (заменяет st.info(...)) ---
+st.markdown(
+    '<div class="arxora-hint">Введите тикер и нажмите «Проанализировать».</div>',
+    unsafe_allow_html=True,
+)
 
 # ===================== НИЖНИЙ КОЛОНТИТУЛ =====================
 st.markdown("---")
