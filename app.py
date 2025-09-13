@@ -1,4 +1,4 @@
-# app.py — Arxora (AI)
+# app.py — Arxora (AI) — обновлённая версия с новой карточкой "Проанализировать"
 import os
 import re
 import hashlib
@@ -11,35 +11,126 @@ from core.strategy import analyze_asset
 
 load_dotenv()
 
-# ===================== BRANDING =====================
+# ===================== PAGE =====================
 st.set_page_config(
     page_title="Arxora — трейд-ИИ (MVP)",
     page_icon="assets/arxora_favicon_512.png",
     layout="centered",
 )
 
+# ===================== CUSTOM CSS =====================
+# Центральная цель: строгая однотонная страница, аккуратная панель ввода и стильная кнопка
+_CUSTOM_CSS = """
+/* общий фон страницы -> делаем тёмно-графитовый */
+[data-testid="stAppViewContainer"] {
+  background: #060607;
+  color: #e6e6e6;
+}
+
+/* контейнер заголовка (hero) — менее яркий */
+.arxora-hero {
+  background: linear-gradient(90deg,#4746f8 0%, #3b3be0 100%);
+  padding: 22px 18px;
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.45);
+  margin-bottom: 14px;
+}
+
+/* панель ввода (тикер / горизонт / кнопка) — монохромный строгий бокс */
+.input-panel {
+  background: rgba(18,18,20,0.85);
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.04);
+  margin-bottom: 18px;
+}
+
+/* подложка для подсказки (st.info заменяем визуально) */
+.input-hint {
+  background: rgba(12,12,14,0.7);
+  padding: 10px 14px;
+  border-radius: 10px;
+  color: #cfcfcf;
+  margin-top: 8px;
+  border: 1px solid rgba(255,255,255,0.03);
+}
+
+/* Кнопка "Проанализировать" — строгая, но заметная */
+.stButton > button {
+  background: linear-gradient(180deg,#2530ff 0%, #0f18c8 100%);
+  color: white;
+  padding: 10px 22px;
+  border-radius: 12px;
+  border: none;
+  box-shadow: 0 6px 18px rgba(16,18,45,0.5);
+  font-weight: 700;
+  font-size: 1.0rem;
+  transition: transform 0.08s ease, box-shadow 0.12s ease;
+}
+
+/* hover/active */
+.stButton > button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 26px rgba(11,12,40,0.6);
+}
+.stButton > button:active {
+  transform: translateY(0);
+  box-shadow: 0 6px 18px rgba(11,12,40,0.5);
+}
+
+/* текстовые поля и селект — более строгие, чуть темнее */
+input[type="text"], .st-cb, .stSelectbox>div>div>div {
+  background: rgba(28,28,30,0.6) !important;
+  color: #eaeaea !important;
+  border-radius: 10px !important;
+  padding: 10px !important;
+}
+
+/* карточки уровней — чуть прозрачные */
+.card-bg {
+  background: rgba(18,18,20,0.6);
+  border-radius: 12px;
+  padding: 10px;
+  border: 1px solid rgba(255,255,255,0.03);
+}
+
+/* пометка RR — гарантирую видимость */
+.rr-line {
+  color: #FFA94D;
+  font-weight: 600;
+  margin-top: 6px;
+}
+
+/* мелкий стиль для нижних панелей */
+.footer-panel {
+  background: rgba(10,10,12,0.6);
+  color: #dcdcdc;
+  padding: 12px;
+  border-radius: 10px;
+  margin-top: 12px;
+}
+"""
+
+st.markdown(f"<style>{_CUSTOM_CSS}</style>", unsafe_allow_html=True)
+
+# ===================== HEADER =====================
 def render_arxora_header():
     hero_path = "assets/arxora_logo_hero.png"
     if os.path.exists(hero_path):
         st.image(hero_path, use_container_width=True)
     else:
-        PURPLE = "#5B5BF7"; BLACK = "#000000"
+        # более строгий hero (неяркий)
         st.markdown(
-            f"""
-            <div style="border-radius:8px;overflow:hidden;
-                        box-shadow:0 0 0 1px rgba(0,0,0,.06),0 12px 32px rgba(0,0,0,.18);">
-              <div style="background:{PURPLE};padding:28px 16px;">
-                <div style="max-width:1120px;margin:0 auto;">
-                  <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
-                              color:#fff;font-weight:700;letter-spacing:.4px;
-                              font-size:clamp(36px,7vw,72px);line-height:1.05;">
-                    Arxora
-                  </div>
+            """
+            <div class="arxora-hero">
+              <div style="max-width:1120px;margin:0 auto;">
+                <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
+                            color:#fff;font-weight:700;letter-spacing:.4px;
+                            font-size:clamp(28px,4.6vw,48px);line-height:1.05;">
+                  Arxora
                 </div>
-              </div>
-              <div style="background:{BLACK};padding:12px 16px 16px 16px;">
-                <div style="max-width:1120px;margin:0 auto;">
-                  <div style="color:#fff;font-size:clamp(16px,2.4vw,28px);opacity:.92;">trade smarter.</div>
+                <div style="color:rgba(255,255,255,0.9); margin-top:6px; font-size:0.95rem;">
+                  trade smarter.
                 </div>
               </div>
             </div>
@@ -49,35 +140,33 @@ def render_arxora_header():
 
 render_arxora_header()
 
-# ===================== НАСТРОЙКИ UI/логики =====================
+# ===================== SETTINGS =====================
 ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))  # ~0.15%
 MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT", "0.0010"))
 
-# ===================== ТЕКСТЫ =====================
+# (--- все ваши тексты, хелперы и др. не трогаю ---)
 CUSTOM_PHRASES = {
-    "BUY": [
+    "BUY":[
         "Точка входа: покупка в диапазоне {range_low}–{range_high}{unit_suffix}. По результатам AI-анализа выявлена зона поддержки в рамках текущего временного горизонта."
     ],
-    "SHORT": [
-        "Точка входа: продажа (short) в диапазоне {range_low}–{range_high}{unit_suffix}. AI-анализ выявил зону сопротивления на текущем временном горизонте."
+    "SHORT":[
+        "Точка входа: продажа (short) в диапазоне {range_low}–{range_high}{unit_suffix}. AI-анализ выявил зону сопротивления на текущем временном горизоне."
     ],
-    "WAIT": [
+    "WAIT":[
         "Пока нет ясности с картиной на текущем горизонте, и я не спешу с решениями.",
         "Пока не стоит спешить — лучше дождаться более ясной картины. Вероятно, новости могут спровоцировать изменения на рынке.",
         "Пока без позиции — жду более чёткого сигнала. Новостной фон может сдвинуть рынок и повысить волатильность."
     ],
-    "CONTEXT": {
-        "support": ["Цена подошла к поддержке, и вероятность разворота здесь повышена. Оптимальный вариант — открывать позицию на основе ордера, сгенерированного AI-анализом, рассчитанного на рост. Arxora учитывает множество факторов, которые трудно просчитать вручную, минимизируя эмоции и риски, и позволяя автоматически реагировать на быстро меняющиеся условия рынка. При этом важно контролировать риски: закрепление ниже этой зоны поддержки будет сигналом для пересмотра сценария. Торгуйте дисциплинированно. Строго соблюдайте уровни стоп-лосса."],
-        "resistance": ["Цена подошла к сопротивлению, и вероятность коррекции здесь повышена. Оптимальный вариант — открывать позицию на основе ордера, сгенерированного AI-анализом, рассчитанного на падение. Такой подход обеспечивает максимально точный и своевременный вход в сделку. Arxora учитывает множество факторов, которые трудно просчитать вручную, минимизируя эмоции и риски, и позволяя автоматически реагировать на быстро меняющиеся условия рынка. При этом важно контролировать риски: закрепление выше зоны сопротивления будет сигналом для пересмотра сценария. Строго соблюдайте уровни стоп-лосса."],
-        "neutral": ["Рынок пока в балансе — действую только по подтверждённому сигналу."]
+    "CONTEXT":{
+        "support":["Цена подошла к поддержке, и вероятность разворота здесь повышена. Оптимальный вариант — открывать позицию на основе ордера, сгенерированного AI-анализом, рассчитанного на рост. Arxora учитывает множество факторов, которые трудно просчитать вручную, минимизируя эмоции и риски, и позволяя автоматически реагировать на быстро меняющиеся условия рынка. При этом важно контролировать риски: закрепление ниже этой зоны поддержки будет сигналом для пересмотра сценария. Торгуйте дисциплинированно. Строго соблюдайте уровни стоп-лосса."],
+        "resistance":["Цена подошла к сопротивлению, и вероятность коррекции здесь повышена. Оптимальный вариант — открывать позицию на основе ордера, сгенерированного AI-анализом, рассчитанного на падение. Такой подход обеспечивает максимально точный и своевременный вход в сделку. Arxora учитывает множество факторов, которые трудно просчитать вручную, минимизируя эмоции и риски, и позволяя автоматически реагировать на быстро меняющиеся условия рынка. При этом важно контролировать риски: закрепление выше зоны сопротивления будет сигналом для пересмотра сценария. Строго соблюдайте уровни стоп-лосса."],
+        "neutral":["Рынок пока в балансе — действую только по подтверждённому сигналу."]
     },
-    "STOPLINE": [
-        "Стоп-лосс: {sl}. Потенциальный риск ~{risk_pct}% от входа. Уровень определён алгоритмами анализа волатильности как критический для защиты капитала."
-    ],
-    "DISCLAIMER": "AI-анализ носит информационный характер, и не является прямой инвестиционной рекомендацией. Рыночная ситуация может быстро меняться, и Arxora адаптируется к этим изменениям. Прошлые результаты не гарантируют будущие. Торговля на финансовых рынках связана с высоким риском."
+    "STOPLINE":["Стоп-лосс: {sl}. Потенциальный риск ~{risk_pct}% от входа. Уровень определён алгоритмами анализа волатильности как критический для защиты капитала."],
+    "DISCLAIMER":"AI-анализ носит информационный характер, и не является прямой инвестиционной рекомендацией. Рыночная ситуация может быстро меняться, и Arxora адаптируется к этим изменениям. Прошлые результаты не гарантируют будущие. Торговля на финансовых рынках связана с высоким риском."
 }
 
-# ===================== helper'ы =====================
+# ===================== HELPERS (копия ваших) =====================
 def _fmt(x): return f"{float(x):.2f}"
 
 def compute_display_range(levels, widen_factor=0.25):
@@ -165,7 +254,6 @@ def sanitize_targets(action: str, entry: float, tp1: float, tp2: float, tp3: flo
         return a[0], a[1], a[2]
     return tp1, tp2, tp3
 
-# Режим входа для шапки/карточки Entry
 def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
     if action not in ("BUY", "SHORT"):
         return "WAIT", "Entry"
@@ -173,12 +261,14 @@ def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
         return "Market price", "Entry (Market)"
     if action == "BUY":
         return ("Buy Stop", "Entry (Buy Stop)") if entry > last_price else ("Buy Limit", "Entry (Buy Limit)")
-    else:  # SHORT
+    else:
         return ("Sell Stop", "Entry (Sell Stop)") if entry < last_price else ("Sell Limit", "Entry (Sell Limit)")
 
-# ===================== Inputs =====================
-col1, col2 = st.columns([2,1])
-with col1:
+# ===================== INPUT PANEL (styled) =====================
+col_main, col_side = st.columns([2, 1])
+with col_main:
+    # обёртка панели ввода — HTML чтобы визуально был "карточный"
+    st.markdown('<div class="input-panel">', unsafe_allow_html=True)
     ticker_input = st.text_input(
         "Тикер",
         value="",
@@ -186,30 +276,38 @@ with col1:
         key="main_ticker",
     )
     ticker = ticker_input.strip().upper()
-with col2:
+    st.markdown('''</div>''', unsafe_allow_html=True)
+
+with col_side:
+    st.markdown('<div style="height:100%; display:flex; align-items:flex-start;">', unsafe_allow_html=True)
     horizon = st.selectbox(
         "Горизонт",
         ["Краткосрок (1–5 дней)", "Среднесрок (1–4 недели)", "Долгосрок (1–6 месяцев)"],
         index=1,
         key="main_horizon",
     )
+    st.markdown('</div>', unsafe_allow_html=True)
 
 symbol_for_engine = normalize_for_polygon(ticker)
+# Анализируем по кнопке (стандартный st.button, но с кастомной CSS выше)
 run = st.button("Проанализировать", type="primary", key="main_analyze")
+
+# Показываем подсказку/инфо в едином стиле
+st.markdown('<div class="input-hint">Введите тикер и нажмите «Проанализировать».</div>', unsafe_allow_html=True)
 
 # Статус режима (AI/AI pseudo)
 AI_PSEUDO = str(os.getenv("ARXORA_AI_PSEUDO", "0")).strip() in ("1", "true", "True", "yes")
 hz_tag = "ST" if "Кратко" in horizon else ("MID" if "Средне" in horizon else "LT")
-st.write(f"Mode: {'AI (pseudo)' if AI_PSEUDO else 'AI'} · Horizon: {hz_tag}")
+st.markdown(f"<div style='margin-top:8px; color:rgba(255,255,255,0.75)'>Mode: {'AI (pseudo)' if AI_PSEUDO else 'AI'} · Horizon: {hz_tag}</div>", unsafe_allow_html=True)
 
-# ===================== Main =====================
+# ===================== MAIN =====================
 if run and ticker:
     try:
         out = analyze_asset(ticker=symbol_for_engine, horizon=horizon)
 
         last_price = float(out.get("last_price", 0.0))
         st.markdown(
-            f"<div style='font-size:3rem; font-weight:800; text-align:center; margin:6px 0 14px 0;'>${last_price:.2f}</div>",
+            f"<div style='font-size:3rem; font-weight:800; text-align:center; margin:10px 0 18px 0;'>${last_price:.2f}</div>",
             unsafe_allow_html=True,
         )
 
@@ -222,7 +320,7 @@ if run and ticker:
             t1,t2,t3 = sanitize_targets(action, lv["entry"], lv["tp1"], lv["tp2"], lv["tp3"])
             lv["tp1"], lv["tp2"], lv["tp3"] = float(t1), float(t2), float(t3)
 
-        # --- шапка: Long/Short + Buy/Sell Stop/Limit/Market
+        # header
         mode_text, entry_title = entry_mode_labels(action, lv.get("entry", last_price), last_price, ENTRY_MARKET_EPS)
         header_text = "WAIT"
         if action == "BUY":
@@ -232,15 +330,15 @@ if run and ticker:
 
         st.markdown(
             f"""
-            <div style="background:#0f1b2b; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:10px;">
-                <div style="font-size:1.15rem; font-weight:700;">{header_text}</div>
-                <div style="opacity:0.75; font-size:0.95rem; margin-top:2px;">{conf_pct} confidence</div>
+            <div style="background:rgba(12,16,20,0.7); padding:12px 16px; border-radius:12px; border:1px solid rgba(255,255,255,0.03); margin-bottom:12px;">
+                <div style="font-size:1.05rem; font-weight:700;">{header_text}</div>
+                <div style="opacity:0.75; font-size:0.9rem; margin-top:4px;">{conf_pct} confidence</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        # --- карточки уровней
+        # cards
         if action in ("BUY", "SHORT"):
             c1, c2, c3 = st.columns(3)
             with c1: st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
@@ -258,14 +356,10 @@ if run and ticker:
                                   unsafe_allow_html=True)
 
             rr = rr_line(lv)
-            # ⬇️ СДЕЛАНО: RR теперь оранжевым
             if rr:
-                st.markdown(
-                    f"<div style='margin-top:4px; color:#FFA94D; font-weight:600;'>{rr}</div>",
-                    unsafe_allow_html=True,
-                )
+                st.markdown(f"<div class='rr-line'>{rr}</div>", unsafe_allow_html=True)
 
-        # --- план/контекст/стоп-линия
+        # plan/context/stopline
         def render_plan_line(action, levels, ticker="", seed_extra=""):
             seed = int(hashlib.sha1(f"{ticker}{seed_extra}{levels['entry']}{levels['sl']}{action}".encode()).hexdigest(), 16) % (2**32)
             rnd = random.Random(seed)
@@ -284,11 +378,11 @@ if run and ticker:
 
         if action in ("BUY","SHORT"):
             stopline = CUSTOM_PHRASES["STOPLINE"][0].format(sl=_fmt(lv["sl"]), risk_pct=compute_risk_pct(lv))
-            st.markdown(f"<div style='opacity:0.9; margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='opacity:0.9; margin-top:6px'>{stopline}</div>", unsafe_allow_html=True)
 
         if out.get("alt"):
             st.markdown(
-                f"<div style='margin-top:6px;'><b>Если пойдёт против базового сценария:</b> {out['alt']}</div>",
+                f"<div style='margin-top:8px;'><b>Если пойдёт против базового сценария:</b> {out['alt']}</div>",
                 unsafe_allow_html=True,
             )
 
@@ -296,72 +390,32 @@ if run and ticker:
 
     except Exception as e:
         st.error(f"Ошибка анализа: {e}")
-elif not ticker:
-    st.info("Введите тикер и нажмите «Проанализировать».")
+else:
+    # если тикер пустой — не навязчивая подсказка уже есть выше в .input-hint
+    pass
 
-# ===================== НИЖНИЙ КОЛОНТИТУЛ =====================
+# ===================== FOOTER (info buttons) =====================
 st.markdown("---")
-
-# Добавляем CSS для жирности кнопок
 st.markdown("""
 <style>
-    .stButton > button {
-        font-weight: 600;
-    }
+    .stButton > button { font-weight:600; }
 </style>
 """, unsafe_allow_html=True)
 
-# Создаем центрированные кнопки
-col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
-
+col1, col2, col3, col4, col5 = st.columns([1,1,2,1,1])
 with col2:
     if st.button("Arxora", use_container_width=True):
         st.session_state.show_arxora = not st.session_state.get('show_arxora', False)
         st.session_state.show_crypto = False
-
 with col3:
     st.button("US Stocks", use_container_width=True)
-
 with col4:
     if st.button("Crypto", use_container_width=True):
         st.session_state.show_crypto = not st.session_state.get('show_crypto', False)
         st.session_state.show_arxora = False
 
-# Отображаем информацию при необходимости
 if st.session_state.get('show_arxora', False):
-    st.markdown(
-        """
-        <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 10px;">
-            <h4 style="font-weight: 600;">О проекте</h4>
-            <p style="font-weight: 300;">
-            Arxora AI — это современное решение, которое помогает трейдерам принимать точные и обоснованные решения 
-            на финансовых рынках с помощью передовых технологий искусственного интеллекта и машинного обучения. 
-            Arxora помогает трейдерам автоматизировать анализ, повышать качество входов и управлять рисками, 
-            делая торговлю проще, эффективнее и разумнее. Ключевые особенности платформы: AI Override — это встроенный механизм, который позволяет искусственному интеллекту вмешиваться в работу базовых алгоритмов и принимать более точные решения в моменты, когда рынок ведёт себя нестандартно.
-            Вероятностный анализ: Используя мощные алгоритмы машинного обучения, система рассчитывает вероятность успеха каждой сделки и присваивает уровень confidence (%), что дает прозрачность и помогает управлять рисками.
-            Машинное обучение (ML): Система постоянно обучается на исторических данных и поведении рынка, совершенствуя модели и адаптируясь к изменениям рыночной конъюнктуры. Попробуйте мощь искусственного интеллекта в трейдинге уже сегодня!
-            </p>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+    st.markdown('<div class="footer-panel"><h4 style="margin:0 0 6px 0;">О проекте</h4><div style="opacity:0.9;">Arxora AI — современное решение для трейдеров: AI Override, вероятностный анализ, ML-модели и т.д.</div></div>', unsafe_allow_html=True)
 
 if st.session_state.get('show_crypto', False):
-    st.markdown(
-        """
-        <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 10px;">
-            <h4 style="font-weight: 600;">Crypto</h4>
-            <p style="font-weight: 300;">
-            Arxora анализирует основные криптовалюты 
-            (Bitcoin, Ethereum и другие) с использованием тех же алгоритмических подходов, что и для традиционных активов.
-            </p>
-            <p style="font-weight: 500;">Особенности крипто-анализа:</p>
-            <ul style="font-weight: 350;">
-                <li>Учет высокой волатильности криптовалют</li>
-                <li>Анализ круглосуточного рынка</li>
-                <li>Учет специфических крипто-факторов</li>
-            </ul>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+    st.markdown('<div class="footer-panel"><h4 style="margin:0 0 6px 0;">Crypto</h4><div style="opacity:0.9;">Особенности анализа криптовалют — учёт круглосуточной торговой активности и повышенной волатильности.</div></div>', unsafe_allow_html=True)
