@@ -32,7 +32,7 @@ def render_arxora_header():
                 <div style="max-width:1120px;margin:0 auto;">
                   <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
                               color:#fff;font-weight:700;letter-spacing:.4px;
-                              font-size:clamp(36px,7vw,72px);line-height:1.05;">
+                              font-size:clamp(36px,7vw,52px);line-height:1.05;">
                     Arxora
                   </div>
                 </div>
