@@ -323,16 +323,13 @@ def analyze_asset(ticker: str, horizon: str):
             else:
                 action, scenario = ("BUY","revert_from_bottom") if band <= -2 else ("WAIT","upper_wait")
 
-    # базовая уверенность (до AI)
+    # базовая уверенность
     base = 0.55 + 0.12*_clip01(abs(slope_norm)*1800) + 0.08*_clip01((vol_ratio-0.9)/0.6)
     if action == "WAIT":
         base -= 0.07
-    # сохраняем базовый вклад (перед AI override)
-    base_conf = float(max(0.55, min(0.90, base)))
-    conf = base_conf
+    conf = float(max(0.55, min(0.90, base)))
 
     # ===== optional AI override =====
-    used_ai_model = None
     try:
         from core.ai_inference import score_signal
     except Exception:
@@ -345,11 +342,11 @@ def analyze_asset(ticker: str, horizon: str):
             vol_ratio=vol_ratio,
             ha_up_run=float(ha_up_run), ha_down_run=float(ha_down_run),
             macd_pos_run=float(macd_pos_run), macd_neg_run=float(macd_neg_run),
+            band=float(_classify_band(price, piv, buf)),
+            long_upper=bool(long_upper), long_lower=bool(long_lower),
         )
         out_ai = score_signal(feats, hz=hz, ticker=ticker)
         if out_ai is not None:
-            # если ai вернул p_long и/или model_path
-            used_ai_model = out_ai.get("model_path")
             p_long  = float(out_ai.get("p_long", 0.5))
             th_long  = float(os.getenv("ARXORA_AI_TH_LONG",  "0.55"))
             th_short = float(os.getenv("ARXORA_AI_TH_SHORT", "0.45"))
@@ -363,9 +360,6 @@ def analyze_asset(ticker: str, horizon: str):
                 action = "WAIT"
                 conf = float(max(0.48, min(0.83, conf - 0.05)))
     # ===== end override =====
-
-    # сколько «добавил» AI (положительное = AI усилил базу, отрицательное = уменьшил)
-    ai_delta = float(conf - base_conf)
 
     # уровни (черновик)
     step_d, step_w = atr_d, atr_w
@@ -439,10 +433,4 @@ def analyze_asset(ticker: str, horizon: str):
         "alt": alt,
         "entry_kind": entry_kind,
         "entry_label": entry_label,
-        # new meta
-        "meta": {
-            "base_conf": float(round(base_conf, 4)),
-            "ai_delta": float(round(ai_delta, 4)),
-            "ai_model": used_ai_model
-        }
     }
