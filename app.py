@@ -243,7 +243,7 @@ if run and ticker:
         # --- карточки уровней
         if action in ("BUY", "SHORT"):
             c1, c2, c3 = st.columns(3)
-            with c1: st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="lime green"), unsafe_allow_html=True)
+            with c1: st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="limegreen"), unsafe_allow_html=True)
             with c2: st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
             with c3: st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}",
                                            sub=f"Probability {int(round(out['probs']['tp1']*100))}%"),
