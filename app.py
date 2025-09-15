@@ -232,7 +232,7 @@ if run and ticker:
 
         st.markdown(
             f"""
-            <div style="background:#3051BC; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:10px;">
+            <div style="background:#0f1b2b; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:10px;">
                 <div style="font-size:1.15rem; font-weight:700;">{header_text}</div>
                 <div style="opacity:0.75; font-size:0.95rem; margin-top:2px;">{conf_pct} confidence</div>
             </div>
@@ -243,7 +243,7 @@ if run and ticker:
         # --- карточки уровней
         if action in ("BUY", "SHORT"):
             c1, c2, c3 = st.columns(3)
-            with c1: st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="blue"), unsafe_allow_html=True)
+            with c1: st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
             with c2: st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
             with c3: st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}",
                                            sub=f"Probability {int(round(out['probs']['tp1']*100))}%"),
