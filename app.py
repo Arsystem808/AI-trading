@@ -127,7 +127,7 @@ def rr_line(levels):
 
 def card_html(title, value, sub=None, color=None):
     bg = "#141a20"
-    if color == "green": bg = "#32CD32"
+    if color == "green": bg = "#39AD48"
     elif color == "red": bg = "#842F2F"
     return f"""
         <div style="background:{bg}; padding:12px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.06); margin:6px 0;">
