@@ -232,7 +232,7 @@ if run and ticker:
 
         st.markdown(
             f"""
-            <div style="background:#0f1b2b; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:10px;">
+            <div style="background:#ed930c; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:10px;">
                 <div style="font-size:1.15rem; font-weight:700;">{header_text}</div>
                 <div style="opacity:0.75; font-size:0.95rem; margin-top:2px;">{conf_pct} confidence</div>
             </div>
