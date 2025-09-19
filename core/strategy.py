@@ -621,3 +621,9 @@ return {
     "entry_label": best_signal['type']
 }
 
+
+if name == "main":
+# Тестирование стратегии M7
+result = analyze_asset_m7("AAPL")
+print("M7 Strategy Result:")
+print(result)
