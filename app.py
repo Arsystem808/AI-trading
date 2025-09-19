@@ -22,7 +22,7 @@ layout="centered",
 )
 
 def render_arxora_header():
-hero_path = “assets/arxora_logo_hero.png”
+hero_path = "assets/arxora_logo_hero.png"
 if os.path.exists(hero_path):
 st.image(hero_path, use_container_width=True)
 else:
