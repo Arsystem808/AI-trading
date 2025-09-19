@@ -28,7 +28,7 @@ st.image(hero_path, use_container_width=True)
 else:
 PURPLE = "#5B5BF7"; BLACK = "#000000"
 st.markdown(
-f”””
+f"""
 <div style="border-radius:8px;overflow:hidden;
 box-shadow:0 0 0 1px rgba(0,0,0,.06),0 12px 32px rgba(0,0,0,.18);">
 <div style="background:{PURPLE};padding:28px 16px;">
