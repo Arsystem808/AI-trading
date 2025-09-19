@@ -7,7 +7,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 # Базовый движок сигналов (AI + правила)
-from core.strategy import analyze_asset, analyze_asset_m7
+from core.strategy import analyze_asset, analyze_asset_m7  # Исправлено: n7 → m7
 
 load_dotenv()
 
@@ -175,9 +175,9 @@ def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
         return ("Sell Stop", "Entry (Sell Stop)") if entry < last_price else ("Sell Limit", "Entry (Sell Limit)")
 
 # ===================== Inputs =====================
-strategy_options = ["Основная стратегия", "M7 Strategy"]
+strategy_options = ["Global", "M7"]
 selected_strategy = st.selectbox(
-    "Стратегия",
+    "AI Agent",
     options=strategy_options,
     index=0,
     key="strategy_select"
