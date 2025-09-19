@@ -7,7 +7,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 # Базовый движок сигналов (AI + правила)
-from core.strategy import analyze_asset
+from core.strategy import analyze_asset, analyze_asset_m7  # Добавлен импорт analyze_asset_m7
 
 load_dotenv()
 
@@ -177,6 +177,15 @@ def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
         return ("Sell Stop", "Entry (Sell Stop)") if entry < last_price else ("Sell Limit", "Entry (Sell Limit)")
 
 # ===================== Inputs =====================
+# Добавляем выбор стратегии
+strategy_options = ["Основная стратегия", "M7 Strategy"]
+selected_strategy = st.selectbox(
+    "Стратегия",
+    options=strategy_options,
+    index=0,
+    key="strategy_select"
+)
+
 col1, col2 = st.columns([2,1])
 with col1:
     ticker_input = st.text_input(
@@ -200,12 +209,16 @@ run = st.button("Проанализировать", type="primary", key="main_an
 # Статус режима (AI/AI pseudo)
 AI_PSEUDO = str(os.getenv("ARXORA_AI_PSEUDO", "0")).strip() in ("1", "true", "True", "yes")
 hz_tag = "ST" if "Кратко" in horizon else ("MID" if "Средне" in horizon else "LT")
-st.write(f"Mode: {'AI (pseudo)' if AI_PSEUDO else 'AI'} · Horizon: {hz_tag}")
+st.write(f"Mode: {'AI (pseudo)' if AI_PSEUDO else 'AI'} · Horizon: {hz_tag} · Strategy: {selected_strategy}")
 
 # ===================== Main =====================
 if run and ticker:
     try:
-        out = analyze_asset(ticker=symbol_for_engine, horizon=horizon)
+        # Выбираем стратегию в зависимости от выбора
+        if selected_strategy == "M7 Strategy":
+            out = analyze_asset_m7(ticker=symbol_for_engine, horizon=horizon)
+        else:
+            out = analyze_asset(ticker=symbol_for_engine, horizon=horizon)
 
         last_price = float(out.get("last_price", 0.0))
         st.markdown(
@@ -265,103 +278,202 @@ if run and ticker:
                     unsafe_allow_html=True,
                 )
 
-        # --- план/контекст/стоп-линия
+        # --- план/контекстст/стоп-/стоп-линия
+        def render_planлиния
         def render_plan_line(action, levels, ticker="", seed_extra=""):
             seed = int(hashlib.sha1(f"{ticker}{seed_extra}{levels['entry']}{levels['sl']}{action}".encode()).hexdigest(), 16) % (2**32)
             rnd = random.Random(seed)
             if action == "WAIT":
                 return rnd.choice(CUSTOM_PHRASES["WAIT"])
+            rng_low, rng_high = compute_display_range(_line(action, levels, ticker="", seed_extra=""):
+            seed = int(hashlib.sha1(f"{ticker}{seed_extra}{levels['entry']}{levels['sl']}{action}".encode()).hexdigest(), 16) % (2**32)
+            rnd = random.Random(seed)
+            if action == "WAIT":
+                return rnd.choice(CUSTOM_PHRASES["WAIT"])
             rng_low, rng_high = compute_display_range(levels)
+           levels)
             us = unit_suffix(ticker)
+            tpl = CUSTOM_PHRASES[action][ us = unit_suffix(ticker)
             tpl = CUSTOM_PHRASES[action][0]
-            return tpl.format(range_low=rng_low, range_high=rng_high, unit_suffix=us)
+            return t0]
+            return tpl.formatpl.format(range_low(range_low=rng_low, range_=rng_low, range_high=rhigh=rng_ng_high, unit_suffix=us)
 
         plan = render_plan_line(action, lv, ticker=ticker, seed_extra=horizon)
-        st.markdown(f"<div style='margin-top:8px'>{plan}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='margin-top:8px'>{plan}</high, unit_suffix=us)
 
-        ctx_key = "support" if action == "BUY" else ("resistance" if action == "SHORT" else "neutral")
-        st.markdown(f"<div style='opacity:0.9'>{CUSTOM_PHRASES['CONTEXT'][ctx_key][0]}</div>", unsafe_allow_html=True)
+        plan = render_plan_line(action, lv, ticker=ticker, seed_extra=horizon)
+        st.markdown(f"<div style='margin-top:8px'>{plan}</divdiv>", unsafe_allow_html=True)
 
-        if action in ("BUY","SHORT"):
-            stopline = CUSTOM_PHRASES["STOPLINE"][0].format(sl=_fmt(lv["sl"]), risk_pct=compute_risk_pct(lv))
-            st.markdown(f"<div style='opacity:0.9; margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
+>", unsafe_allow_html=True)
+
+        ctx        ctx_key = "_key = "supportsupport" if action ==" if action == "BUY" "BUY" else ("resistance else ("resistance" if" if action == "SH action == "SHORT" else "ORT" else "neutral")
+        stneutral")
+        st.markdown.markdown(f"<(f"<div style='opacitydiv style='opacity:0.9':0.9'>{CUSTOM_P>{CUSTOM_PHRASES['CONTEXTHRASES['CONTEXT'][ctx_key][0'][ctx_key][0]}</div>",]}</div>", unsafe_allow_html unsafe_allow_html=True)
+
+        if action in=True)
+
+        if action in ("BUY"," ("BUY","SHSHORT"):
+           ORT"):
+            stopline = CUSTOM_P stopline = CUSTOM_PHRASES["STHRASES["STOPLINE"OPLINE"][0].format(s][0].format(sl=_fmt(ll=_fmt(lv["v["sl"]), risksl"]), risk_p_pct=compute_risk_pctct=compute_risk_pct(lv(lv))
+            st.mark))
+            st.markdown(f"down(f"<div<div style style='opacity:0.9; margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
+
+        if out.get("alt"):
+            st.markdown(
+                f"<div style='margin-top:6px;'><b>Если пойдёт против базового сценария:</b> {out['alt']}</div>",
+               ='opacity:0.9; margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
 
         if out.get("alt"):
             st.markdown(
                 f"<div style='margin-top:6px;'><b>Если пойдёт против базового сценария:</b> {out['alt']}</div>",
                 unsafe_allow_html=True,
+            unsafe_allow_html=True,
             )
 
-        st.caption(CUSTOM_PHRASES["DISCLAIMER"])
+ )
 
-    except Exception as e:
-        st.error(f"Ошибка анализа: {e}")
+        st.caption        st.caption(CUSTOM(CUSTOM_PHRASES["_PHRASES["DISCLAIMERDISCLAIMER"])
+
+"])
+
+    except Exception    except Exception as as e:
+        e:
+        st st.error(f"Ошиб.error(f"Ошибкака анализа: {e анализа: {e}")
+elif not tick}")
 elif not ticker:
-    st.info("Введите тикер и нажмите «Проанализировать».")
+er:
+    st.info    st.info("Введите("Введите тик тикер иер и наж нажмите «мите «ПроаПроаналинализировать»зировать».")
 
-# ===================== НИЖНИЙ КОЛОНТИТУЛ =====================
-st.markdown("---")
+# =.")
+
+# ========================================= НИЖНИ НИЖНИЙЙ К КОЛОЛОНТИТУОНТИТУЛ =================Л =====================
+st.mark====
+st.markdown("---down("---")
+
+# Добавля")
 
 # Добавляем CSS для жирности кнопок
+st.markdownем CSS для жирности кнопок
 st.markdown("""
 <style>
-    .stButton > button {
-        font-weight: 600;
+    .("""
+<style>
+    .ststButton > button {
+Button > button {
+               font-weight:  font-weight: 600;
+600;
+    }
     }
 </style>
-""", unsafe_allow_html=True)
+""</style>
+""",", unsafe_allow unsafe_allow_html=True_html=True)
 
-# Создаем центрированные кнопки
-col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
+# Соз)
 
-with col2:
-    if st.button("Arxora", use_container_width=True):
-        st.session_state.show_arxora = not st.session_state.get('show_arxora', False)
-        st.session_state.show_crypto = False
+# Создаем центридаем центрированные крованные кнопки
+нопки
+colcol1, col21, col2, col3,, col3, col col44, col5 =, col5 = st.columns st.columns([1, 1,([1, 1, 2, 1, 2, 1, 1])
 
-with col3:
-    st.button("US Stocks", use_container_width=True)
+with 1])
+
+with col2 col2:
+   :
+    if st if st.button("Arx.button("Arxora", use_containerora", use_container_width_width=True):
+        st=True):
+        st.session.session_state.show_ar_state.show_arxora = notxora = not st.session st.session_state.get('show_state.get('show__arxoraarxora', False', False)
+        st)
+        st.session.session_state.show_crypto_state.show_crypto = False = False
+
+with
+
+with col3 col3:
+    st:
+    st.button(".button("US Stocks",US Stocks", use_container use_container_width=True_width=True)
+
+with)
 
 with col4:
-    if st.button("Crypto", use_container_width=True):
-        st.session_state.show_crypto = not st.session_state.get('show_crypto', False)
-        st.session_state.show_arxora = False
+    col4:
+    if st.button if st.button("("CCrypto", use_container_width=True):
+        st.session_staterypto", use_container_width=True):
+        st.session_state.show_crypto.show_crypto = not st.session_state.get = not st.session_state.get('show_crypto', False)
+        st.session_state.show_('show_crypto', False)
+        st.session_state.show_arxoraarxora = False
 
-# Отображаем информацию при необходимости
-if st.session_state.get('show_arxora', False):
+ = False
+
+# Отобра# Отображажаем информацию при необходимостием информацию при необходимости
+if
+if st.session st.session_state_state.get('.get('show_arshow_arxoraxora', False):
+    st.mark', False):
     st.markdown(
+down(
         """
-        <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 10px;">
-            <h4 style="font-weight: 600;">О проекте</h4>
-            <p style="font-weight: 300;">
-            Arxora AI — это современное решение, которое помогает трейдерам принимать точные и обоснованные решения 
-            на финансовых рынках с помощью передовых технологий искусственного интеллекта и машинного обучения. 
-            Arxora помогает трейдерам автоматизировать анализ, повышать качество входов и управлять рисками, 
-            делая торговлю проще, эффективнее и разумнее. Благодаря высокой скорости обработки данных Arxora может быстро предоставить анализ большого количества активов за очень короткое время. Это упрощает торговлю, позволяя трейдерам легко осуществлять самопроверку и рассматривать альтернативные варианты решений. Ключевые особенности платформы: AI Override — это встроенный механизм, который позволяет искусственному интеллекту вмешиваться в работу базовых алгоритмов и принимать более точные решения в моменты, когда рынок ведёт себя нестандартно.
-            Вероятностный анализ: Используя мощные алгоритмы машинного обучения, система рассчитывает вероятность успеха каждой сделки и присваивает уровень confidence (%), что дает прозрачность и помогает управлять рисками.
-            Машинное обучение (ML): Система постоянно обучается на исторических данных и поведении рынка, совершенствуя модели и адаптируясь к изменениям рыночной конъюнктуры. Попробуйте мощь искусственного интеллекта в трейдинге уже сегодня!
-            </p>
-        </div>
+               """
+        < <div style="backgrounddiv style="background-color-color: #000: #000000;000; color: #ffffff color: #ffffff; padding; padding: : 15px15px; border; border-radius: 10px; margin-top-radius: 10px; margin-top: 10px: 10px;">
+            <h;">
+            <h44 style="font-weight: style="font-weight: 600;"> 600;">ОО проекте</h4 проекте</h4>
+            <p style="font-weight:>
+            <p style="font-weight: 300 300;">
+            Arxora AI — это современное;">
+            Arxora AI — это современное решение, которое помогает тре решение, которое помогает трейдерамйдерам принимать точные принимать точные и об и обосноваоснованные решениянные решения 
+            
+            на финансовых на финансовых рынках рынках с помощью перед с помощью передовых технологийовых технологий искусственного интеллек искусственного интеллекта и машинта и машинного обучения. 
+           ного обучения. 
+            Arxora помогает трейдера Arxora помогает трейдерам автоматизим автоматизировать анализровать анализ, повы, повышатьшать качество качество входов и управ входов и управлять рисками,лять рисками, 
+            дела 
+            делаяя торговлю проще, эффективнее и торговлю проще, эффективнее и раз разумнее. Бумнее. Благлагодаря высокой скорости обработодаря высокой скорости обработки данных Arxoraки данных Arxora может быстро предоставить анализ может быстро предоставить анализ большого количества активов большого количества активов за очень короткое время. Это уп за очень короткое время. Это упрощает торговлю, позволярощает торговлю, позволяя трейя трейдерадерам легко осуществлятьм легко осуществлять самопроверку и рассматри самопроверку и рассматривать альтернативныевать альтерна варианты решений.тивные варианты решений. Ключевые Ключевые особенности платфор особенности платформы: AI Override —мы: AI Over это встроенныйride — это встроенный механизм, который позволяет механизм, который позволяет искусственному инте искусственному интелллекту вмешилекту вмешиваться в работу базовыхваться в работу баз алгоритмов и принимать болееовых алгоритмов и принимать более точные решения в моменты точные решения в моменты, когда, когда рынок рынок вед ведёт себя нестандартно.
+           ёт себя нестандартно Вероятностный анализ: Исп.
+            Вероятностный анализ: Используяользуя мощные алгоритмы машин мощные алгоритмы машинногоного обучения, обучения, система рассчитывает вероятность успеха каждой сделки и присваивает уровень confidence ( система рассчитывает вероятность успеха каждой сделки и присваивает уровень confidence (%),%), что дает прозрачность что дает прозрачность и помогает управлять риска и помогает управлять рисками.
+            Машинное обучение (ML): Система постоянно обучается на исторических данных и поведении рынка, совершенствуя модели и адаптируясь к изменениям рыночнойми.
+            Машинное обучение (ML): Система постоянно обучается на исторических данных и поведении рынка, совершенствуя модели и адаптируясь к изменениям рыночной конъюнктуры конъюнктуры. Попробуйте мощь искусственного интеллекта в трейдинге уже сегодня!
+           . Попробуйте мощь искусственного интеллекта в трейдинге уже сегодня!
+            </p </p>
+        </>
+        </divdiv>
         """,
-        unsafe_allow_html=True
+>
+        """,
+        unsafe        unsafe_allow_allow_html=True_html=True
     )
 
-if st.session_state.get('show_crypto', False):
-    st.markdown(
+
+    )
+
+ifif st.session_state.get('show_crypto st.session_state.get('show_crypto', False):
+    st', False):
+   .markdown(
         """
-        <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 10px;">
-            <h4 style="font-weight: 600;">Crypto</h4>
-            <p style="font-weight: 300;">
-            Arxora анализирует основные криптовалюты 
-            (Bitcoin, Ethereum и другие) с использованием тех же алгоритмических подходов, что и для традиционных активов.
+ st.markdown(
+        """
+        <div style        <div style="background-color: #000="background-color: #000000; color:000; color: #ffffff; padding #ffffff; padding: 15px: 15px; border-radius: 10; border-radius: 10px; margin-toppx; margin-top: 10px: 10px;">
+            <h4 style="font-weight: ;">
+            <h4 style="font-weight: 600600;">Crypto</;">Crypto</h4>
+           h4>
+            < <p style="font-weightp style="font-weight: 300;">
+            Arx: 300;">
+            Arxora анализируетora анализирует основные крип основные криптовалтовалюты 
+            (юты 
+            (Bitcoin, EthereumBitcoin, Ethereum и другие и другие) с использованием) с использованием тех тех же алгоритмических же алгоритмических подходов, что подходов, что и и для традиционных для традиционных активов.
+            </p активов.
             </p>
-            <p style="font-weight: 500;">Особенности крипто-анализа:</p>
-            <ul style="font-weight: 350;">
-                <li>Учет высокой волатильности криптовалют</li>
-                <li>Анализ круглосуточного рынка</li>
-                <li>Учет специфических крипто-факторов</li>
+            <>
+            <p style="font-weight: 500p style="font-weight: 500;">Особ;">Особенности крипто-аенности крипто-анализа:</p>
+           нализа:</p>
+            <ul style <ul style="font="font-weight-weight: 350: 350;">
+                <li;">
+                <li>У>Учетчет высокой в высокой волатильолатильности криности криптовалютптовалют</li</li>
+                <li>
+                <li>Анализ>Анализ круглос круглосуточуточного рынного рынка</ка</li>
+               li>
+                <li> <li>УчетУчет специфи специфических крических крипто-фпто-факторовакторов</li</li>
+           >
             </ul>
-        </div>
+ </ul>
+               </div>
         """,
-        unsafe_allow_html=True
+        unsafe </div>
+        """,
+        unsafe_allow_allow_html=True
+   _html=True
     )
