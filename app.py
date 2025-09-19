@@ -383,67 +383,57 @@ st.markdown(”””
 </style>
 
 “””, unsafe_allow_html=True)
-
 # Создаем центрированные кнопки
-
 col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
 
 with col2:
-if st.button(“Arxora”, use_container_width=True):
-st.session_state.show_arxora = not st.session_state.get(‘show_arxora’, False)
-st.session_state.show_crypto = False
+    if st.button("Arxora", use_container_width=True):
+        st.session_state.show_arxora = not st.session_state.get('show_arxora', False)
+        st.session_state.show_crypto = False
 
 with col3:
-st.button(“US Stocks”, use_container_width=True)
+    st.button("US Stocks", use_container_width=True)
 
 with col4:
-if st.button(“Crypto”, use_container_width=True):
-st.session_state.show_crypto = not st.session_state.get(‘show_crypto’, False)
-st.session_state.show_arxora = False
+    if st.button("Crypto", use_container_width=True):
+        st.session_state.show_crypto = not st.session_state.get('show_crypto', False)
+        st.session_state.show_arxora = False
 
 # Отображаем информацию при необходимости
+if st.session_state.get('show_arxora', False):
+    st.markdown(
+        """
+        <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 10px;">
+            <h4 style="font-weight: 600;">О проекте</h4>
+            <p style="font-weight: 300;">
+            Arxora AI — это современное решение, которое помогает трейдерам принимать точные и обоснованные решения 
+            на финансовых рынках с помощью передовых технологий искусственного интеллекта и машинного обучения. 
+            Arxora помогает трейдерам автоматизировать анализ, повышать качество входов и управлять рисками, 
+            делая торговлю проще, эффективнее и разумнее. Благодаря высокой скорости обработки данных Arxora может быстро предоставить анализ большого количества активов за очень короткое время. Это упрощает торговлю, позволяя трейдерам легко осуществлять самопроверку и рассматривать альтернативные варианты решений. Ключевые особенности платформы: AI Override — это встроенный механизм, который позволяет искусственному интеллекту вмешиваться в работу базовых алгоритмов и принимать более точные решения в моменты, когда рынок ведёт себя нестандартно.
+            Вероятностный анализ: Используя мощные алгоритмы машинного обучения, система рассчитывает вероятность успеха каждой сделки и присваивает уровень confidence (%), что дает прозрачность и помогает управлять рисками.
+            Машинное обучение (ML): Система постоянно обучается на исторических данных и поведении рынка, совершенствуя модели и адаптируясь к изменениям рыночной конъюнктуры. Попробуйте мощь искусственного интеллекта в трейдинге уже сегодня!
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-if st.session_state.get(‘show_arxora’, False):
-st.markdown(
-“””
-<div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 10px;">
-<h4 style="font-weight: 600;">О проекте</h4>
-<p style="font-weight: 300;">
-Arxora AI - это современное решение, которое помогает трейдерам принимать точные и обоснованные решения
-на финансовых рынках с помощью передовых технологий искусственного интеллекта и машинного обучения.
-Arxora помогает трейдерам автоматизировать анализ, повышать качество входов и управлять рисками,
-делая торговлю проще, эффективнее и разумнее. Благодаря высокой скорости обработки данных Arxora может быстро предоставить анализ большого количества активов за очень короткое время. Это упрощает торговлю, позволяя трейдерам легко осуществлять самопроверку и рассматривать альтернативные варианты решений. Ключевые особенности платформы: AI Override - это встроенный механизм, который позволяет искусственному интеллекту вмешиваться в работу базовых алгоритмов и принимать более точные решения в моменты, когда рынок ведет себя нестандартно.
-Вероятностный анализ: Используя мощные алгоритмы машинного обучения, система рассчитывает вероятность успеха каждой сделки и присваивает уровень confidence (%), что дает прозрачность и помогает управлять рисками.
-Машинное обучение (ML): Система постоянно обучается на исторических данных и поведении рынка, совершенствуя модели и адаптируясь к изменениям рыночной конъюнктуры. Попробуйте мощь искусственного интеллекта в трейдинге уже сегодня!
-</p>
-<p style="font-weight: 500; color: #8b5cf6; margin-top: 15px;">
-<strong>NEW: Universal Strategy</strong><br>
-Теперь доступна Universal Strategy для краткосрочного горизонта - стратегия, основанная на анализе 400+ реальных успешных сделок.
-Основные принципы: временные окна (10:00-11:30 входы, 9:31 выходы), динамические уровни поддержки/сопротивления,
-без сложных индикаторов - только время, цена и объем.
-</p>
-</div>
-“””,
-unsafe_allow_html=True
-)
-
-if st.session_state.get(‘show_crypto’, False):
-st.markdown(
-“””
-<div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 10px;">
-<h4 style="font-weight: 600;">Crypto</h4>
-<p style="font-weight: 300;">
-Arxora анализирует основные криптовалюты
-(Bitcoin, Ethereum и другие) с использованием тех же алгоритмических подходов, что и для традиционных активов.
-</p>
-<p style="font-weight: 500;">Особенности крипто-анализа:</p>
-<ul style="font-weight: 350;">
-<li>Учет высокой волатильности криптовалют</li>
-<li>Анализ круглосуточного рынка</li>
-<li>Учет специфических крипто-факторов</li>
-<li>Universal Strategy поддерживает крипто ETF (ETH-X, BTC-X)</li>
-</ul>
-</div>
-“””,
-unsafe_allow_html=True
-)
+if st.session_state.get('show_crypto', False):
+    st.markdown(
+        """
+        <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 10px;">
+            <h4 style="font-weight: 600;">Crypto</h4>
+            <p style="font-weight: 300;">
+            Arxora анализирует основные криптовалюты 
+            (Bitcoin, Ethereum и другие) с использованием тех же алгоритмических подходов, что и для традиционных активов.
+            </p>
+            <p style="font-weight: 500;">Особенности крипто-анализа:</p>
+            <ul style="font-weight: 350;">
+                <li>Учет высокой волатильности криптовалют</li>
+                <li>Анализ круглосуточного рынка</li>
+                <li>Учет специфических крипто-факторов</li>
+            </ul>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
