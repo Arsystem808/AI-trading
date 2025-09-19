@@ -16,7 +16,7 @@ load_dotenv()
 # ===================== BRANDING =====================
 
 st.set_page_config(
-page_title=“Arxora - трейд-ИИ (MVP)”,
+page_title="Arxora — трейд-ИИ (MVP)",
 page_icon=“assets/arxora_favicon_512.png”,
 layout=“centered”,
 )
