@@ -620,7 +620,7 @@ return {
     "entry_kind": "limit",
     "entry_label": best_signal['type']
 }
-```
+
 
 if name == "main":
 # Тестирование стратегии M7
