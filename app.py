@@ -366,11 +366,4 @@ if st.session_state.get('show_crypto', False):
         """,
         unsafe_allow_html=True
     )
-```
 
-Основное исправление:
-
-· В строке с st.markdown для отображения plan было исправлено форматирование: </div> вместо </high, unik_suffix=us).
-· Также убедитесь, что в вашем файле core/strategy.py корректно реализованы функции analyze_asset и analyze_asset_m7.
-
-Теперь приложение должно работать без синтаксических ошибок.
