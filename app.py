@@ -367,22 +367,18 @@ except Exception as e:
 
 elif not ticker:
 st.info(“Введите тикер и нажмите «Проанализировать».”)
-
 # ===================== НИЖНИЙ КОЛОНТИТУЛ =====================
-
-st.markdown(”—”)
+st.markdown("---")
 
 # Добавляем CSS для жирности кнопок
-
-st.markdown(”””
-
+st.markdown("""
 <style>
     .stButton > button {
         font-weight: 600;
     }
 </style>
+""", unsafe_allow_html=True)
 
-“””, unsafe_allow_html=True)
 # Создаем центрированные кнопки
 col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
 
