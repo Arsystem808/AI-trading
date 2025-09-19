@@ -7,7 +7,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 # Базовый движок сигналов (AI + правила)
-from core.strategy import analyze_asset, analyze_asset_m7
+from core.strategy import analyze_asset, analyze_asset_m7  # Исправлено: n7 → m7
 
 load_dotenv()
 
