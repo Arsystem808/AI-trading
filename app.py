@@ -1,4 +1,4 @@
-# app.py — Arxora (AI) — agents UI with compatibility fallback
+# app.py — Arxora (AI) — 4 агента без горизонта
 import os
 import re
 import hashlib
@@ -6,11 +6,11 @@ import random
 import streamlit as st
 from dotenv import load_dotenv
 
-# -------- Robust imports (new API -> fallback to old) --------
+# Новый API -> fallback на старый при импорте
 try:
     from core.strategy import analyze_by_agent, Agent
     _NEW_API = True
-except Exception as _IMPORT_ERR:
+except Exception:
     _NEW_API = False
     from core.strategy import analyze_asset, analyze_asset_m7
 
@@ -54,7 +54,7 @@ def render_arxora_header():
 
 render_arxora_header()
 
-# ===================== НАСТРОЙКИ UI/логики =====================
+# ===================== НАСТРОЙКИ =====================
 ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))
 MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT", "0.0010"))
 
@@ -193,31 +193,27 @@ def run_agent(ticker_norm: str, label: str):
             return analyze_by_agent(ticker_norm, Agent.M7PRO)
         raise ValueError(f"Unknown agent label: {label}")
     else:
-        # Старые API: маппинг в прежние функции
+        # Старые API: маппим в прежние функции
         if label == "AlphaPulse":
             return analyze_asset(ticker_norm, "Среднесрочный", strategy="W7")
         if label == "Octopus":
-            return analyze_asset(ticker_norm, "Краткосрочный", strategy="W7")
+            return analyze_asset(ticker_norm, "Краткосрок", strategy="W7")
         if label == "Global":
             return analyze_asset(ticker_norm, "Долгосрок", strategy="Global")
         if label == "M7pro":
             return analyze_asset_m7(ticker_norm)
 
-# ===================== Inputs (agents) =====================
-
-is_pro = bool(st.secrets.get("PRO_SUBSCRIBER", False)) or st.session_state.get("is_pro", False)
+# ===================== Inputs (AI agent) =====================
 
 AGENTS = [
-    {"label": "AlphaPulse", "caption": "Среднесрок (W7 • MID)", "pro": False},
-    {"label": "Octopus",    "caption": "Краткосрок (W7 • ST)", "pro": True},
-    {"label": "Global",     "caption": "Долгосрок (Global • LT)", "pro": False},
-    {"label": "M7pro",      "caption": "Отдельный AI‑профиль", "pro": True},
+    {"label": "AlphaPulse", "caption": "AI‑профиль среднесрока"},
+    {"label": "Octopus",    "caption": "AI‑профиль краткосрока"},
+    {"label": "Global",     "caption": "AI‑профиль долгосрока"},
+    {"label": "M7pro",      "caption": "Отдельный AI‑профиль"},
 ]
 
 def fmt(i: int) -> str:
-    a = AGENTS[i]
-    lock = " 🔒" if (a["pro"] and not is_pro) else ""
-    return f'{a["label"]}{lock}'
+    return AGENTS[i]["label"]  # без замков/иконок
 
 st.subheader("AI agent")
 idx = st.radio(
@@ -229,7 +225,6 @@ idx = st.radio(
     horizontal=False,
     key="agent_radio"
 )
-
 agent_rec = AGENTS[idx]
 
 ticker_input = st.text_input(
@@ -243,13 +238,11 @@ symbol_for_engine = normalize_for_polygon(ticker)
 
 run = st.button("Проанализировать", type="primary", key="main_analyze")
 
+# Статус без горизонта
 st.write(f"Mode: AI · Agent: {agent_rec['label']}")
 
 # ===================== Main =====================
 if run and ticker:
-    if agent_rec["pro"] and not is_pro:
-        st.info("Этот агент доступен по подписке. Оформите PRO, чтобы разблокировать Octopus и M7pro.", icon="🔒")
-        st.stop()
     try:
         out = run_agent(symbol_for_engine, agent_rec["label"])
 
