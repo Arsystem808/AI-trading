@@ -208,7 +208,7 @@ AGENTS = [
     {"label": "AlphaPulse"},
     {"label": "Octopus"},
     {"label": "Global"},
-    {"label": "M7 Pro"},
+    {"label": "M7pro"},
 ]
 
 def fmt(i: int) -> str:
