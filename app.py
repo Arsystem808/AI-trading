@@ -1,4 +1,4 @@
-# app.py — Arxora (AI) — 4 агента без горизонта
+# app.py — Arxora (AI) — финал
 import os
 import re
 import hashlib
@@ -6,7 +6,7 @@ import random
 import streamlit as st
 from dotenv import load_dotenv
 
-# Новый API -> fallback на старый при импорте
+# Новый API -> fallback на старый
 try:
     from core.strategy import analyze_by_agent, Agent
     _NEW_API = True
@@ -193,7 +193,6 @@ def run_agent(ticker_norm: str, label: str):
             return analyze_by_agent(ticker_norm, Agent.M7PRO)
         raise ValueError(f"Unknown agent label: {label}")
     else:
-        # Старые API: маппим в прежние функции
         if label == "AlphaPulse":
             return analyze_asset(ticker_norm, "Среднесрочный", strategy="W7")
         if label == "Octopus":
@@ -203,25 +202,24 @@ def run_agent(ticker_norm: str, label: str):
         if label == "M7pro":
             return analyze_asset_m7(ticker_norm)
 
-# ===================== Inputs (AI agent) =====================
+# ===================== Inputs (AI agents) =====================
 
 AGENTS = [
-    {"label": "AlphaPulse", "caption": "AI‑профиль среднесрока"},
-    {"label": "Octopus",    "caption": "AI‑профиль краткосрока"},
-    {"label": "Global",     "caption": "AI‑профиль долгосрока"},
-    {"label": "M7pro",      "caption": "Отдельный AI‑профиль"},
+    {"label": "AlphaPulse"},
+    {"label": "Octopus"},
+    {"label": "Global"},
+    {"label": "M7pro"},
 ]
 
 def fmt(i: int) -> str:
-    return AGENTS[i]["label"]  # без замков/иконок
+    return AGENTS[i]["label"]  # чистые названия без подписей
 
-st.subheader("AI agent")
+st.subheader("AI agents")
 idx = st.radio(
-    "Выберите профиль",
+    "Выберите модель",
     options=list(range(len(AGENTS))),
     index=0,
     format_func=fmt,
-    captions=[a["caption"] for a in AGENTS],
     horizontal=False,
     key="agent_radio"
 )
@@ -239,7 +237,7 @@ symbol_for_engine = normalize_for_polygon(ticker)
 run = st.button("Проанализировать", type="primary", key="main_analyze")
 
 # Статус без горизонта
-st.write(f"Mode: AI · Agent: {agent_rec['label']}")
+st.write(f"Mode: AI · Model: {agent_rec['label']}")
 
 # ===================== Main =====================
 if run and ticker:
@@ -339,9 +337,7 @@ st.markdown("---")
 
 st.markdown("""
 <style>
-    .stButton > button {
-        font-weight: 600;
-    }
+    .stButton > button { font-weight: 600; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -386,4 +382,3 @@ if st.session_state.get('show_crypto', False):
         """,
         unsafe_allow_html=True
     )
-
