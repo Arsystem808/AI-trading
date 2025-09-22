@@ -1,4 +1,4 @@
-# app.py — Arxora (AI) — agents UI
+# app.py — Arxora (AI) — agents UI with compatibility fallback
 import os
 import re
 import hashlib
@@ -6,8 +6,13 @@ import random
 import streamlit as st
 from dotenv import load_dotenv
 
-# Новый роутер и Enum агентов
-from core.strategy import analyze_by_agent, Agent  # <-- обновлено
+# -------- Robust imports (new API -> fallback to old) --------
+try:
+    from core.strategy import analyze_by_agent, Agent
+    _NEW_API = True
+except Exception as _IMPORT_ERR:
+    _NEW_API = False
+    from core.strategy import analyze_asset, analyze_asset_m7
 
 load_dotenv()
 
@@ -67,7 +72,7 @@ CUSTOM_PHRASES = {
         "Пока без позиции — следим за волатильностью и новостями."
     ],
     "CONTEXT": {
-        "support": ["Цена у поддержки. Оптимален отложенный вход из зоны спроса, стоп за уровнем. Соблюдайте риск-менеджмент."],
+        "support": ["Цена у поддержки. Отложенный вход из зоны спроса, стоп за уровнем. Соблюдайте риск-менеджмент."],
         "resistance": ["Цена у сопротивления. Отложенный шорт от зоны предложения, стоп над уровнем. Соблюдайте риск-менеджмент."],
         "neutral": ["Баланс. Работаем только по подтверждённому сигналу."]
     },
@@ -77,7 +82,7 @@ CUSTOM_PHRASES = {
     "DISCLAIMER": "AI-анализ не является инвестиционной рекомендацией. Рынок волатилен; прошлые результаты не гарантируют будущие."
 }
 
-# ===================== helper'ы =====================
+# ===================== helpers =====================
 def _fmt(x): return f"{float(x):.2f}"
 
 def compute_display_range(levels, widen_factor=0.25):
@@ -140,7 +145,7 @@ def card_html(title, value, sub=None, color=None):
 def normalize_for_polygon(symbol: str) -> str:
     s = (symbol or "").strip().upper().replace(" ", "")
     if s.startswith(("X:", "C:", "O:")):
-        head, tail = s.split("?", 1) if "?" in s else s.split(":", 1)
+        head, tail = s.split(":", 1)
         tail = tail.replace("USDT", "USD").replace("USDC", "USD")
         return f"{head}:{tail}"
     if re.match(r"^[A-Z]{2,10}USD(T|C)?$", s):
@@ -174,16 +179,39 @@ def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
     else:
         return ("Sell Stop", "Entry (Sell Stop)") if entry < last_price else ("Sell Limit", "Entry (Sell Limit)")
 
+# -------- Compatibility runner --------
+def run_agent(ticker_norm: str, label: str):
+    if _NEW_API:
+        lbl = label.strip().lower()
+        if lbl == "alphapulse":
+            return analyze_by_agent(ticker_norm, Agent.ALPHAPULSE)
+        if lbl == "octopus":
+            return analyze_by_agent(ticker_norm, Agent.OCTOPUS)
+        if lbl == "global":
+            return analyze_by_agent(ticker_norm, Agent.GLOBAL)
+        if lbl == "m7pro":
+            return analyze_by_agent(ticker_norm, Agent.M7PRO)
+        raise ValueError(f"Unknown agent label: {label}")
+    else:
+        # Старые API: маппинг в прежние функции
+        if label == "AlphaPulse":
+            return analyze_asset(ticker_norm, "Среднесрочный", strategy="W7")
+        if label == "Octopus":
+            return analyze_asset(ticker_norm, "Краткосрочный", strategy="W7")
+        if label == "Global":
+            return analyze_asset(ticker_norm, "Долгосрок", strategy="Global")
+        if label == "M7pro":
+            return analyze_asset_m7(ticker_norm)
+
 # ===================== Inputs (agents) =====================
 
-# Флаг подписки (можно выставлять через .streamlit/secrets.toml)
 is_pro = bool(st.secrets.get("PRO_SUBSCRIBER", False)) or st.session_state.get("is_pro", False)
 
 AGENTS = [
-    {"key": Agent.ALPHAPULSE, "label": "AlphaPulse", "caption": "Среднесрок (W7 • MID)", "pro": False},
-    {"key": Agent.OCTOPUS,    "label": "Octopus",    "caption": "Краткосрок (W7 • ST)", "pro": True},
-    {"key": Agent.GLOBAL,     "label": "Global",     "caption": "Долгосрок (Global • LT)", "pro": False},
-    {"key": Agent.M7PRO,      "label": "M7pro",      "caption": "Отдельный AI‑профиль", "pro": True},
+    {"label": "AlphaPulse", "caption": "Среднесрок (W7 • MID)", "pro": False},
+    {"label": "Octopus",    "caption": "Краткосрок (W7 • ST)", "pro": True},
+    {"label": "Global",     "caption": "Долгосрок (Global • LT)", "pro": False},
+    {"label": "M7pro",      "caption": "Отдельный AI‑профиль", "pro": True},
 ]
 
 def fmt(i: int) -> str:
@@ -215,7 +243,6 @@ symbol_for_engine = normalize_for_polygon(ticker)
 
 run = st.button("Проанализировать", type="primary", key="main_analyze")
 
-# Статусная строка
 st.write(f"Mode: AI · Agent: {agent_rec['label']}")
 
 # ===================== Main =====================
@@ -224,7 +251,7 @@ if run and ticker:
         st.info("Этот агент доступен по подписке. Оформите PRO, чтобы разблокировать Octopus и M7pro.", icon="🔒")
         st.stop()
     try:
-        out = analyze_by_agent(ticker=symbol_for_engine, agent=agent_rec["key"])
+        out = run_agent(symbol_for_engine, agent_rec["label"])
 
         last_price = float(out.get("last_price", 0.0))
         st.markdown(
