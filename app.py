@@ -1,3 +1,4 @@
+
 # app.py — Arxora (AI)
 import os
 import re
@@ -7,7 +8,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 # Базовый движок сигналов (AI + правила)
-from core.strategy import analyze_asset
+from core.strategy import analyze_asset, analyze_asset_m7
 
 load_dotenv()
 
@@ -50,7 +51,7 @@ def render_arxora_header():
 render_arxora_header()
 
 # ===================== НАСТРОЙКИ UI/логики =====================
-ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))  # ~0.15%
+ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))
 MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT", "0.0010"))
 
 # ===================== ТЕКСТЫ =====================
@@ -148,7 +149,6 @@ def normalize_for_polygon(symbol: str) -> str:
         return f"X:{s}"
     return s
 
-# Санити-правки целей (TP по направлению + по порядку)
 def sanitize_targets(action: str, entry: float, tp1: float, tp2: float, tp3: float):
     step = max(MIN_TP_STEP_PCT * max(1.0, abs(entry)), 1e-6 * max(1.0, abs(entry)))
     if action == "BUY":
@@ -165,7 +165,6 @@ def sanitize_targets(action: str, entry: float, tp1: float, tp2: float, tp3: flo
         return a[0], a[1], a[2]
     return tp1, tp2, tp3
 
-# Режим входа для шапки/карточки Entry
 def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
     if action not in ("BUY", "SHORT"):
         return "WAIT", "Entry"
@@ -173,10 +172,18 @@ def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
         return "Market price", "Entry (Market)"
     if action == "BUY":
         return ("Buy Stop", "Entry (Buy Stop)") if entry > last_price else ("Buy Limit", "Entry (Buy Limit)")
-    else:  # SHORT
+    else:
         return ("Sell Stop", "Entry (Sell Stop)") if entry < last_price else ("Sell Limit", "Entry (Sell Limit)")
 
 # ===================== Inputs =====================
+strategy_options = ["Основная стратегия", "M7 Strategy"]
+selected_strategy = st.selectbox(
+    "Стратегия",
+    options=strategy_options,
+    index=0,
+    key="strategy_select"
+)
+
 col1, col2 = st.columns([2,1])
 with col1:
     ticker_input = st.text_input(
@@ -197,15 +204,17 @@ with col2:
 symbol_for_engine = normalize_for_polygon(ticker)
 run = st.button("Проанализировать", type="primary", key="main_analyze")
 
-# Статус режима (AI/AI pseudo)
 AI_PSEUDO = str(os.getenv("ARXORA_AI_PSEUDO", "0")).strip() in ("1", "true", "True", "yes")
 hz_tag = "ST" if "Кратко" in horizon else ("MID" if "Средне" in horizon else "LT")
-st.write(f"Mode: {'AI (pseudo)' if AI_PSEUDO else 'AI'} · Horizon: {hz_tag}")
+st.write(f"Mode: {'AI (pseudo)' if AI_PSEUDO else 'AI'} · Horizon: {hz_tag} · Strategy: {selected_strategy}")
 
 # ===================== Main =====================
 if run and ticker:
     try:
-        out = analyze_asset(ticker=symbol_for_engine, horizon=horizon)
+        if selected_strategy == "M7 Strategy":
+            out = analyze_asset_m7(ticker=symbol_for_engine, horizon=horizon)
+        else:
+            out = analyze_asset(ticker=symbol_for_engine, horizon=horizon)
 
         last_price = float(out.get("last_price", 0.0))
         st.markdown(
@@ -222,7 +231,6 @@ if run and ticker:
             t1,t2,t3 = sanitize_targets(action, lv["entry"], lv["tp1"], lv["tp2"], lv["tp3"])
             lv["tp1"], lv["tp2"], lv["tp3"] = float(t1), float(t2), float(t3)
 
-        # --- шапка: Long/Short + Buy/Sell Stop/Limit/Market
         mode_text, entry_title = entry_mode_labels(action, lv.get("entry", last_price), last_price, ENTRY_MARKET_EPS)
         header_text = "WAIT"
         if action == "BUY":
@@ -240,7 +248,6 @@ if run and ticker:
             unsafe_allow_html=True,
         )
 
-        # --- карточки уровней
         if action in ("BUY", "SHORT"):
             c1, c2, c3 = st.columns(3)
             with c1: st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
@@ -258,14 +265,12 @@ if run and ticker:
                                   unsafe_allow_html=True)
 
             rr = rr_line(lv)
-            # ⬇️ СДЕЛАНО: RR теперь оранжевым
             if rr:
                 st.markdown(
                     f"<div style='margin-top:4px; color:#FFA94D; font-weight:600;'>{rr}</div>",
                     unsafe_allow_html=True,
                 )
 
-        # --- план/контекст/стоп-линия
         def render_plan_line(action, levels, ticker="", seed_extra=""):
             seed = int(hashlib.sha1(f"{ticker}{seed_extra}{levels['entry']}{levels['sl']}{action}".encode()).hexdigest(), 16) % (2**32)
             rnd = random.Random(seed)
@@ -302,7 +307,6 @@ elif not ticker:
 # ===================== НИЖНИЙ КОЛОНТИТУЛ =====================
 st.markdown("---")
 
-# Добавляем CSS для жирности кнопок
 st.markdown("""
 <style>
     .stButton > button {
@@ -311,7 +315,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Создаем центрированные кнопки
 col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
 
 with col2:
@@ -327,7 +330,6 @@ with col4:
         st.session_state.show_crypto = not st.session_state.get('show_crypto', False)
         st.session_state.show_arxora = False
 
-# Отображаем информацию при необходимости
 if st.session_state.get('show_arxora', False):
     st.markdown(
         """
@@ -337,7 +339,7 @@ if st.session_state.get('show_arxora', False):
             Arxora AI — это современное решение, которое помогает трейдерам принимать точные и обоснованные решения 
             на финансовых рынках с помощью передовых технологий искусственного интеллекта и машинного обучения. 
             Arxora помогает трейдерам автоматизировать анализ, повышать качество входов и управлять рисками, 
-            делая торговлю проще, эффективнее и разумнее. Благодаря высокой скорости обработки данных Arxora может быстро предоставить анализ большого количества активов за очень короткое время. Это упрощает торговлю, позволяя трейдерам легко осуществлять самопроверку и рассматривать альтернативные варианты решений. Ключевые особенности платформы: AI Override — это встроенный механизм, который позволяет искусственному интеллекту вмешиваться в работу базовых алгоритмов и принимать более точные решения в моменты, когда рынок ведёт себя нестандартно.
+            делая торговлю проще, эффективнее и разумнее. Благодаря высокой скорости обработки данных Arxora может быстро предоставить анализ большого количества активов за очень короткое время. Это упрощает торговлю, позволяя трейдерам легко осуществлять самопроверку и рассматривать альтернативные варианты решений. Ключевые особенности платформы: AI Override — это встроенный механиств, который позволяет искусственному интеллекту вмешиваться в работу базовых алгоритмов и принимать более точные решения в моменты, когда рынок ведёт себя нестандартно.
             Вероятностный анализ: Используя мощные алгоритмы машинного обучения, система рассчитывает вероятность успеха каждой сделки и присваивает уровень confidence (%), что дает прозрачность и помогает управлять рисками.
             Машинное обучение (ML): Система постоянно обучается на исторических данных и поведении рынка, совершенствуя модели и адаптируясь к изменениям рыночной конъюнктуры. Попробуйте мощь искусственного интеллекта в трейдинге уже сегодня!
             </p>
