@@ -184,6 +184,28 @@ def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
     else:
         return ("Sell Stop", "Entry (Sell Stop)") if entry < last_price else ("Sell Limit", "Entry (Sell Limit)")
 
+def run_agent(ticker_norm: str, label: str):
+    if _NEW_API:
+        lbl = label.strip().lower()
+        if lbl == "alphapulse":
+            return analyze_by_agent(ticker_norm, Agent.ALPHAPULSE)
+        if lbl == "octopus":
+            return analyze_by_agent(ticker_norm, Agent.OCTOPUS)
+        if lbl == "global":
+            return analyze_by_agent(ticker_norm, Agent.GLOBAL)
+        if lbl == "m7pro":
+            return analyze_by_agent(ticker_norm, Agent.M7PRO)
+        raise ValueError(f"Unknown agent label: {label}")
+    else:
+        if label == "AlphaPulse":
+            return analyze_asset(ticker_norm, "Среднесрочный", strategy="W7")
+        if label == "Octopus":
+            return analyze_asset(ticker_norm, "Краткосрок", strategy="W7")
+        if label == "Global":
+            return analyze_asset(ticker_norm, "Долгосрок", strategy="Global")
+        if label == "M7pro":
+            return analyze_asset_m7(ticker_norm)
+
 AGENTS = [
     {"label": "AlphaPulse"},
     {"label": "Octopus"},
@@ -219,28 +241,6 @@ symbol_for_engine = normalize_for_polygon(ticker)
 run = st.button("Проанализировать", type="primary", key="main_analyze")
 
 st.write(f"Mode: AI · Model: {agent_rec['label']}")
-
-def run_agent(ticker_norm: str, label: str):
-    if _NEW_API:
-        lbl = label.strip().lower()
-        if lbl == "alphapulse":
-            return analyze_by_agent(ticker_norm, Agent.ALPHAPULSE)
-        if lbl == "octopus":
-            return analyze_by_agent(ticker_norm, Agent.OCTOPUS)
-        if lbl == "global":
-            return analyze_by_agent(ticker_norm, Agent.GLOBAL)
-        if lbl == "m7pro":
-            return analyze_by_agent(ticker_norm, Agent.M7PRO)
-        raise ValueError(f"Unknown agent label: {label}")
-    else:
-        if label == "AlphaPulse":
-            return analyze_asset(ticker_norm, "Среднесрочный", strategy="W7")
-        if label == "Octopus":
-            return analyze_asset(ticker_norm, "Краткосрок", strategy="W7")
-        if label == "Global":
-            return analyze_asset(ticker_norm, "Долгосрок", strategy="Global")
-        if label == "M7pro":
-            return analyze_asset_m7(ticker_norm)
 
 if run and ticker:
     try:
@@ -286,25 +286,24 @@ if run and ticker:
         if action in ("BUY", "SHORT"):
             c1, c2, c3 = st.columns(3)
             with c1:
-                st.markdown(card_html("Entry", f"{lv['entry']:.2f}", color="green"))
+                st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
             with c2:
-                st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"))
+                st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
             with c3:
-                st.markdown(card_html("TP1", f"{lv['tp1']:.2f}", sub=f"Probability {int(round(out['probs']['tp1']*100))}%"))
+                st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}", sub=f"Probability {int(round(out['probs']['tp1']*100))}%"), unsafe_allow_html=True)
 
             c1, c2 = st.columns(2)
             with c1:
-                st.markdown(card_html("TP2", f"{lv['tp2']:.2f}", sub=f"Probability {int(round(out['probs']['tp2']*100))}%"))
+                st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}", sub=f"Probability {int(round(out['probs']['tp2']*100))}%"), unsafe_allow_html=True)
             with c2:
-                st.markdown(card_html("TP3", f"{lv['tp3']:.2f}", sub=f"Probability {int(round(out['probs']['tp3']*100))}%"))
+                st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}", sub=f"Probability {int(round(out['probs']['tp3']*100))}%"), unsafe_allow_html=True)
 
             rr = rr_line(lv)
             if rr:
-                st.markdown(f"<div style='margin-top:6px; color:#ffaa33; font-weight:600;'>{rr}</div>")
+                st.markdown(f"<div style='margin-top:6px; color:#FFA94D; font-weight:600;'>{rr}</div>", unsafe_allow_html=True)
 
         # Графики доходности ключевых тикеров
         st.subheader(f"Эффективность модели {agent_rec['label']} по ключевым инструментам (3 месяца)")
-
         cols = st.columns(2)
 
         for i, tk in enumerate(KEY_TICKERS):
@@ -319,10 +318,9 @@ if run and ticker:
 
         ctx_key = "support" if action == "BUY" else ("resistance" if action == "SHORT" else "neutral")
         st.markdown(f"<div style='opacity:0.9'>{CUSTOM_PHRASES['CONTEXT'][ctx_key][0]}</div>", unsafe_allow_html=True)
-
         if action in ("BUY", "SHORT"):
             stopline = CUSTOM_PHRASES["STOPLINE"][0].format(sl=_fmt(lv["sl"]), risk_pct=compute_risk_pct(lv))
-            st.markdown(f"<div style='opacity:0.9; margin-top:6px'>{stopline}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='opacity:0.9; margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
 
         st.caption(CUSTOM_PHRASES["DISCLAIMER"])
 
@@ -362,8 +360,8 @@ if st.session_state.get('show_arxora', False):
         <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 10px;">
             <h4 style="font-weight: 600;">О проекте</h4>
             <p style="font-weight: 300;">
-            Arxora AI помогает принимать решения на рынках с помощью ИИ и ML.
-            Платформа ускоряет анализ активов, автоматизирует входы и управление риском.
+            Arxora AI помогает принимать решения на рынках с помощью ИИ и ML. 
+            Платформа ускоряет анализ активов, автоматизирует входы и управление риском. 
             </p>
         </div>
         """,
@@ -382,3 +380,4 @@ if st.session_state.get('show_crypto', False):
         """,
         unsafe_allow_html=True
     )
+
