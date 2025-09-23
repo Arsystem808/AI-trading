@@ -219,6 +219,7 @@ symbol_for_engine = normalize_for_polygon(ticker)
 run = st.button("Проанализировать", type="primary", key="main_analyze")
 
 st.write(f"Mode: AI · Model: {agent_rec['label']}")
+
 def run_agent(ticker_norm: str, label: str):
     if _NEW_API:
         lbl = label.strip().lower()
