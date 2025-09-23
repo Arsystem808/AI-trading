@@ -35,7 +35,7 @@ def render_arxora_header():
             <div style="border-radius:8px;overflow:hidden;
                         box-shadow:0 0 0 1px rgba(0,0,0,.06),0 12px 32px rgba(0,0,0,.18);">
               <div style="background:{PURPLE};padding:28px 16px;">
-                <div style="max-width:800px;margin:0 auto;">
+                <div style="max-width:1120px;margin:0 auto;">
                   <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
                               color:#fff;font-weight:700;letter-spacing:.4px;
                               font-size:clamp(36px,7vw,72px);line-height:1.05;">
