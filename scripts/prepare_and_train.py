@@ -6,7 +6,7 @@ from lightgbm import LGBMRegressor
 from sklearn.model_selection import train_test_split
 import joblib
 
-POLYGON_API_KEY = "ваш_ключ_от_polygon"
+POLYGON_API_KEY = "ooSjpJAULw4VXxsY28ck7DQST7i13kcG"
 
 def download_polygon_data(ticker, from_date, to_date):
     url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{from_date}/{to_date}?adjusted=true&sort=asc&apiKey={POLYGON_API_KEY}"
