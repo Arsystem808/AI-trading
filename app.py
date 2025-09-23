@@ -59,7 +59,26 @@ ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))
 MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT", "0.0010"))
 
 CUSTOM_PHRASES = {
-    # ... (оставляем ваши текущие словари CUSTOM_PHRASES) ...
+    "BUY": [
+        "Точка входа: покупка в диапазоне {range_low}–{range_high}{unit_suffix}. По результатам AI-анализа выявлена ключевая область спроса."
+    ],
+    "SHORT": [
+        "Точка входа: продажа (short) в диапазоне {range_low}–{range_high}{unit_suffix}. AI-анализ выявил значимую область предложения."
+    ],
+    "WAIT": [
+        "Пока нет ясности — лучше дождаться более чёткого сигнала.",
+        "Пока не стоит спешить — дождаться подтверждения или ретеста уровня.",
+        "Пока без позиции — следим за волатильностью и новостями."
+    ],
+    "CONTEXT": {
+        "support": ["Цена у поддержки. Отложенный вход из зоны спроса, стоп за уровнем. Соблюдайте риск-менеджмент."],
+        "resistance": ["Цена у сопротивления. Отложенный шорт от зоны предложения, стоп над уровнем. Соблюдайте риск-менеджмент."],
+        "neutral": ["Баланс. Работаем только по подтверждённому сигналу."]
+    },
+    "STOPLINE": [
+        "Стоп-лосс: {sl}. Потенциальный риск ~{risk_pct}% от входа. Уровень оценён по волатильности."
+    ],
+    "DISCLAIMER": "AI-анализ не является инвестиционной рекомендацией. Рынок волатилен; прошлые результаты не гарантируют будущие."
 }
 
 def _fmt(x): return f"{float(x):.2f}"
@@ -188,7 +207,7 @@ AGENTS = [
 ]
 
 def fmt(i: int) -> str:
-    return AGENTS[i]["label"]  # чистые названия без подписей
+    return AGENTS[i]["label"]
 
 KEY_TICKERS = ["SPY", "QQQ", "BTCUSD", "ETHUSD"]
 
@@ -226,7 +245,6 @@ if run and ticker:
             unsafe_allow_html=True,
         )
 
-        # Вычисляем daily_return через сессию и предыдущую цену
         session_key = f"{agent_rec['label']}_{ticker}_last_price"
         prev_price = st.session_state.get(session_key, None)
         if prev_price is None or prev_price == 0:
@@ -235,16 +253,15 @@ if run and ticker:
             daily_return = (last_price - prev_price) / prev_price
         st.session_state[session_key] = last_price
 
-        # Логируем доходность
         log_agent_performance(agent_rec["label"], ticker, datetime.today(), daily_return)
 
         action = out["recommendation"]["action"]
-        conf   = float(out["recommendation"].get("confidence", 0))
+        conf = float(out["recommendation"].get("confidence", 0))
         conf_pct = f"{int(round(conf*100))}%"
 
         lv = dict(out["levels"])
-        if action in ("BUY","SHORT"):
-            t1,t2,t3 = sanitize_targets(action, lv["entry"], lv["tp1"], lv["tp2"], lv["tp3"])
+        if action in ("BUY", "SHORT"):
+            t1, t2, t3 = sanitize_targets(action, lv["entry"], lv["tp1"], lv["tp2"], lv["tp3"])
             lv["tp1"], lv["tp2"], lv["tp3"] = float(t1), float(t2), float(t3)
 
         mode_text, entry_title = entry_mode_labels(action, lv.get("entry", last_price), last_price, ENTRY_MARKET_EPS)
@@ -256,7 +273,7 @@ if run and ticker:
 
         st.markdown(
             f"""
-            <div style="background:#c57a0a; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:10px;">
+            <div style="background:#c57b0a; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:10px;">
                 <div style="font-size:1.15rem; font-weight:700;">{header_text}</div>
                 <div style="opacity:0.75; font-size:0.95rem; margin-top:2px;">{conf_pct} confidence</div>
             </div>
@@ -264,7 +281,7 @@ if run and ticker:
             unsafe_allow_html=True,
         )
 
-        order_desc = CUSTOM_PHRASES["ORDER_DESCRIPTIONS"].get(mode_text, "")
+        order_desc = CUSTOM_PHRASES.get("ORDER_DESCRIPTIONS", {}).get(mode_text, "")
         if order_desc:
             st.markdown(f"<div style='margin-bottom:12px; font-style: italic; color: #ccc;'>{order_desc}</div>", unsafe_allow_html=True)
 
@@ -275,19 +292,21 @@ if run and ticker:
             with c2:
                 st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
             with c3:
-                st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}", sub=f"Probability {int(round(out['probs']['tp1']*100))}%"), unsafe_allow_html=True)
+                st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}", sub=f"Probability {int(round(out.get('probs', {}).get('tp1', 0)*100))}%"), unsafe_allow_html=True)
 
             c1, c2 = st.columns(2)
             with c1:
-                st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}", sub=f"Probability {int(round(out['probs']['tp2']*100))}%"), unsafe_allow_html=True)
+                st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}", sub=f"Probability {int(round(out.get('probs', {}).get('tp2', 0)*100))}%"), unsafe_allow_html=True)
             with c2:
-                st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}", sub=f"Probability {int(round(out['probs']['tp3']*100))}%"), unsafe_allow_html=True)
+                st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}", sub=f"Probability {int(round(out.get('probs', {}).get('tp3', 0)*100))}%"), unsafe_allow_html=True)
 
             rr = rr_line(lv)
             if rr:
-                st.markdown(f"<div style='margin-top:6px; color:#FFA94D; font-weight:600;'>{rr}</div>", unsafe_allow_html=True)
+                st.markdown(
+                    f"<div style='margin-top:6px; color:#FFA94D; font-weight:600;'>{rr}</div>",
+                    unsafe_allow_html=True,
+                )
 
-        # Графики доходности ключевых тикеров
         st.subheader(f"Эффективность модели {agent_rec['label']} по ключевым инструментам (3 месяца)")
         cols = st.columns(2)
 
@@ -303,7 +322,8 @@ if run and ticker:
 
         ctx_key = "support" if action == "BUY" else ("resistance" if action == "SHORT" else "neutral")
         st.markdown(f"<div style='opacity:0.9'>{CUSTOM_PHRASES['CONTEXT'][ctx_key][0]}</div>", unsafe_allow_html=True)
-        if action in ("BUY","SHORT"):
+
+        if action in ("BUY", "SHORT"):
             stopline = CUSTOM_PHRASES["STOPLINE"][0].format(sl=_fmt(lv["sl"]), risk_pct=compute_risk_pct(lv))
             st.markdown(f"<div style='opacity:0.9; margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
 
@@ -315,7 +335,8 @@ if run and ticker:
 elif not ticker:
     st.info("Введите тикер и нажмите «Проанализировать».")
 
-# Footer
+# ---------------- Футер ----------------
+
 st.markdown("---")
 
 st.markdown("""
@@ -345,8 +366,8 @@ if st.session_state.get('show_arxora', False):
         <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 10px;">
             <h4 style="font-weight: 600;">О проекте</h4>
             <p style="font-weight: 300;">
-            Arxora AI помогает принимать решения на рынках с помощью ИИ и ML.
-            Платформа ускоряет анализ активов, автоматизирует входы и управление риском.
+            Arxora AI помогает принимать решения на рынках с помощью ИИ и ML. 
+            Платформа ускоряет анализ активов, автоматизирует входы и управление риском. 
             </p>
         </div>
         """,
@@ -365,3 +386,4 @@ if st.session_state.get('show_crypto', False):
         """,
         unsafe_allow_html=True
     )
+
