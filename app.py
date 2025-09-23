@@ -1,3 +1,4 @@
+# app.py — Arxora (AI) — финал
 import os
 import re
 import hashlib
@@ -60,10 +61,10 @@ MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT", "0.0010"))
 # ===================== ТЕКСТЫ =====================
 CUSTOM_PHRASES = {
     "BUY": [
-        "Точка входа: покупка в диапазоне {range_low}–{range_high}{unit_suffix}. Обнаружена ключевая зона спроса."
+        "Точка входа: покупка в диапазоне {range_low}–{range_high}{unit_suffix}. По результатам AI-анализа выявлена ключевая область спроса."
     ],
     "SHORT": [
-        "Точка входа: продажа (short) в диапазоне {range_low}–{range_high}{unit_suffix}. Обнаружена важная зона предложения."
+        "Точка входа: продажа (short) в диапазоне {range_low}–{range_high}{unit_suffix}. AI-анализ выявил значимую область предложения."
     ],
     "WAIT": [
         "Пока нет ясности — лучше дождаться более чёткого сигнала.",
@@ -78,13 +79,6 @@ CUSTOM_PHRASES = {
     "STOPLINE": [
         "Стоп-лосс: {sl}. Потенциальный риск ~{risk_pct}% от входа. Уровень оценён по волатильности."
     ],
-    "ORDER_DESCRIPTIONS": {
-        "Buy Limit": "AI-анализ выявил повышенный спрос в районе указанного ценового уровня. Выставлен лимитный ордер на покупку — исполнение произойдет при достижении этой цены, что позволяет контролировать вход и ожидать благоприятных условий.",
-        "Sell Limit": "AI-анализ обнаружил важную зону предложения или потенциал снижения цены. Лимитный ордер на продажу может служить для фиксации прибыли по длинной позиции или открытия короткой позиции, и исполнится при достижении либо превышении этого уровня.",
-        "Buy Stop": "AI выявил вероятность начала восходящего движения после пробития ключевого уровня. Стоп-ордер на покупку активируется при повышении цены, что помогает войти в позицию на подтверждённом росте.",
-        "Sell Stop": "Система зафиксировала риск снижения цены после пробития критического уровня поддержки. Стоп-ордер на продажу позволяет войти в шорт или закрыть длинную позицию, активируясь при снижении цены до заданного уровня.",
-        "Market price": "AI рекомендует немедленное исполнение сделки по текущей рыночной цене. Такой ордер обеспечивает максимально быстрый вход или выход с рынка, что полезно при быстро меняющихся условиях."
-    },
     "DISCLAIMER": "AI-анализ не является инвестиционной рекомендацией. Рынок волатилен; прошлые результаты не гарантируют будущие."
 }
 
@@ -181,9 +175,9 @@ def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
     if abs(entry - last_price) <= eps * max(1.0, abs(last_price)):
         return "Market price", "Entry (Market)"
     if action == "BUY":
-        return ("Buy Stop", "Buy Limit") if entry > last_price else ("Buy Limit", "Buy Limit")
+        return ("Buy Stop", "Entry (Buy Stop)") if entry > last_price else ("Buy Limit", "Entry (Buy Limit)")
     else:
-        return ("Sell Stop", "Sell Limit") if entry < last_price else ("Sell Limit", "Sell Limit")
+        return ("Sell Stop", "Entry (Sell Stop)") if entry < last_price else ("Sell Limit", "Entry (Sell Limit)")
 
 # -------- Compatibility runner --------
 def run_agent(ticker_norm: str, label: str):
@@ -218,7 +212,7 @@ AGENTS = [
 ]
 
 def fmt(i: int) -> str:
-    return AGENTS[i]["label"]
+    return AGENTS[i]["label"]  # чистые названия без подписей
 
 st.subheader("AI agents")
 idx = st.radio(
@@ -242,8 +236,10 @@ symbol_for_engine = normalize_for_polygon(ticker)
 
 run = st.button("Проанализировать", type="primary", key="main_analyze")
 
+# Статус без горизонта
 st.write(f"Mode: AI · Model: {agent_rec['label']}")
 
+# ===================== Main =====================
 if run and ticker:
     try:
         out = run_agent(symbol_for_engine, agent_rec["label"])
@@ -264,7 +260,6 @@ if run and ticker:
             lv["tp1"], lv["tp2"], lv["tp3"] = float(t1), float(t2), float(t3)
 
         mode_text, entry_title = entry_mode_labels(action, lv.get("entry", last_price), last_price, ENTRY_MARKET_EPS)
-
         header_text = "WAIT"
         if action == "BUY":
             header_text = f"Long • {mode_text}"
@@ -273,17 +268,13 @@ if run and ticker:
 
         st.markdown(
             f"""
-            <div style="background:#c57b0a; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:6px;">
+            <div style="background:#c57b0a; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:10px;">
                 <div style="font-size:1.15rem; font-weight:700;">{header_text}</div>
                 <div style="opacity:0.75; font-size:0.95rem; margin-top:2px;">{conf_pct} confidence</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
-
-        order_desc = CUSTOM_PHRASES["ORDER_DESCRIPTIONS"].get(mode_text, "")
-        if order_desc:
-            st.markdown(f"<div style='margin-bottom:12px; font-style: italic; color: #ccc;'>{order_desc}</div>", unsafe_allow_html=True)
 
         if action in ("BUY", "SHORT"):
             c1, c2, c3 = st.columns(3)
@@ -328,7 +319,11 @@ if run and ticker:
             stopline = CUSTOM_PHRASES["STOPLINE"][0].format(sl=_fmt(lv["sl"]), risk_pct=compute_risk_pct(lv))
             st.markdown(f"<div style='opacity:0.9; margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
 
-        # Альтернативный сценарий удалён
+        if out.get("alt"):
+            st.markdown(
+                f"<div style='margin-top:6px;'><b>Если пойдёт против базового сценария:</b> {out['alt']}</div>",
+                unsafe_allow_html=True,
+            )
 
         st.caption(CUSTOM_PHRASES["DISCLAIMER"])
 
@@ -337,7 +332,7 @@ if run and ticker:
 elif not ticker:
     st.info("Введите тикер и нажмите «Проанализировать».")
 
-# ===================== Footer =====================
+# ===================== НИЖНИЙ КОЛОНТИТУЛ =====================
 st.markdown("---")
 
 st.markdown("""
