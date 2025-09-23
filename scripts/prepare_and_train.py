@@ -46,7 +46,7 @@ model = LGBMRegressor(n_estimators=1000, learning_rate=0.05)
     os.makedirs("models", exist_ok=True)
     model_path = f"models/arxora_m7pro_{ticker}.joblib"
     joblib.dump(model, model_path)
-    print(f"Модель сохранена: {model_path}")
+    print(f"Модель сохранена: {model_path}"
 
 if __name__ == "__main__":
     import argparse
