@@ -2,14 +2,14 @@ import os
 import pandas as pd
 from datetime import datetime
 
+# Папка для хранения исторических данных
 PERF_DIR = "performance_data"
 os.makedirs(PERF_DIR, exist_ok=True)
 
 def log_agent_performance(agent_label: str, ticker: str, date: datetime, daily_return: float):
     """
-    Записать доходность агента по определённому тикеру на дату.
-    Данные сохраняются в CSV в каталоге performance_data.
-    Если запись за дату уже есть — обновляются данные.
+    Запись дневной доходности агента по тикеру в CSV.
+    Если запись за дату уже есть, обновляет данные.
     """
     filename = os.path.join(PERF_DIR, f"performance_{agent_label.lower()}_{ticker.upper()}.csv")
     if os.path.exists(filename):
@@ -28,9 +28,8 @@ def log_agent_performance(agent_label: str, ticker: str, date: datetime, daily_r
 
 def get_agent_performance(agent_label: str, ticker: str):
     """
-    Получить историю доходности агента по тикеру за последние 90 дней.
-    Возвращает DataFrame с columns: date, daily_return, cumulative_return.
-    Если данных нет, возвращает None.
+    Получение истории доходности агента по тикеру за последние 90 дней.
+    Возвращает DataFrame с датой и накопленной доходностью или None, если данных нет.
     """
     filename = os.path.join(PERF_DIR, f"performance_{agent_label.lower()}_{ticker.upper()}.csv")
     if not os.path.exists(filename):
