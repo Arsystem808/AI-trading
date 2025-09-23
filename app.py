@@ -79,11 +79,11 @@ CUSTOM_PHRASES = {
         "Стоп-лосс: {sl}. Потенциальный риск ~{risk_pct}% от входа. Уровень оценён по волатильности."
     ],
     "ORDER_DESCRIPTIONS": {
-        "Limit Buy": "AI-анализ выявил повышенный спрос в районе указанного ценового уровня. Выставлен лимитный ордер на покупку — исполнение произойдет при достижении этой цены, что позволяет контролировать вход и ожидать благоприятных условий.",
-        "Limit Sell": "AI-анализ обнаружил важную зону предложения или потенциал снижения цены. Лимитный ордер на продажу может служить для фиксации прибыли по длинной позиции или открытия короткой позиции, и исполнится при достижении либо превышении этого уровня.",
+        "Buy Limit": "AI-анализ выявил повышенный спрос в районе указанного ценового уровня. Выставлен лимитный ордер на покупку — исполнение произойдет при достижении этой цены, что позволяет контролировать вход и ожидать благоприятных условий.",
+        "Sell Limit": "AI-анализ обнаружил важную зону предложения или потенциал снижения цены. Лимитный ордер на продажу может служить для фиксации прибыли по длинной позиции или открытия короткой позиции, и исполнится при достижении либо превышении этого уровня.",
         "Buy Stop": "AI выявил вероятность начала восходящего движения после пробития ключевого уровня. Стоп-ордер на покупку активируется при повышении цены, что помогает войти в позицию на подтверждённом росте.",
         "Sell Stop": "Система зафиксировала риск снижения цены после пробития критического уровня поддержки. Стоп-ордер на продажу позволяет войти в шорт или закрыть длинную позицию, активируясь при снижении цены до заданного уровня.",
-        "Market Order": "AI рекомендует немедленное исполнение сделки по текущей рыночной цене. Такой ордер обеспечивает максимально быстрый вход или выход с рынка, что полезно при быстро меняющихся условиях."
+        "Market price": "AI рекомендует немедленное исполнение сделки по текущей рыночной цене. Такой ордер обеспечивает максимально быстрый вход или выход с рынка, что полезно при быстро меняющихся условиях."
     },
     "DISCLAIMER": "AI-анализ не является инвестиционной рекомендацией. Рынок волатилен; прошлые результаты не гарантируют будущие."
 }
@@ -91,89 +91,7 @@ CUSTOM_PHRASES = {
 # ===================== helpers =====================
 def _fmt(x): return f"{float(x):.2f}"
 
-def compute_display_range(levels, widen_factor=0.25):
-    entry = float(levels["entry"]); sl = float(levels["sl"])
-    risk = abs(entry - sl)
-    width = max(risk * widen_factor, 0.01)
-    low, high = entry - width, entry + width
-    return _fmt(min(low, high)), _fmt(max(low, high))
-
-def compute_risk_pct(levels):
-    entry = float(levels["entry"]); sl = float(levels["sl"])
-    return "—" if entry == 0 else f"{abs(entry - sl)/max(1e-9,abs(entry))*100.0:.1f}"
-
-UNIT_STYLE = {"equity":"za_akciyu","etf":"omit","crypto":"per_base","fx":"per_base","option":"per_contract"}
-ETF_HINTS  = {"SPY","QQQ","IWM","DIA","EEM","EFA","XLK","XLF","XLE","XLY","XLI","XLV","XLP","XLU","VNQ","GLD","SLV"}
-
-def detect_asset_class(ticker: str):
-    t = ticker.upper().strip()
-    if t.startswith("X:"): return "crypto"
-    if t.startswith("C:"): return "fx"
-    if t.startswith("O:"): return "option"
-    if re.match(r"^[A-Z]{2,10}[-:/]?USD[TDC]?$", t): return "crypto"
-    if t in ETF_HINTS: return "etf"
-    return "equity"
-
-def parse_base_symbol(ticker: str):
-    t = ticker.upper().replace("X:","").replace("C:","").replace(":","").replace("/","").replace("-","")
-    for q in ("USDT","USDC","USD","EUR","JPY","GBP","BTC","ETH"):
-        if t.endswith(q) and len(t) > len(q): return t[:-len(q)]
-    return re.split(r"[-:/]", ticker.upper())[0].replace("X:","").replace("C:","")
-
-def unit_suffix(ticker: str) -> str:
-    kind = detect_asset_class(ticker)
-    style = UNIT_STYLE.get(kind, "omit")
-    if style == "za_akciyu":   return " за акцию"
-    if style == "per_base":     return f" за 1 {parse_base_symbol(ticker)}"
-    if style == "per_contract": return " за контракт"
-    return ""
-
-def rr_line(levels):
-    risk = abs(levels["entry"] - levels["sl"])
-    if risk <= 1e-9: return ""
-    rr1 = abs(levels["tp1"] - levels["entry"]) / risk
-    rr2 = abs(levels["tp2"] - levels["entry"]) / risk
-    rr3 = abs(levels["tp3"] - levels["entry"]) / risk
-    return f"RR ≈ 1:{rr1:.1f} (TP1) · 1:{rr2:.1f} (TP2) · 1:{rr3:.1f} (TP3)"
-
-def card_html(title, value, sub=None, color=None):
-    bg = "#141a20"
-    if color == "green": bg = "#006f6f"
-    elif color == "red": bg = "#6f0000"
-    return f"""
-        <div style="background:{bg}; padding:12px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.06); margin:6px 0;">
-            <div style="font-size:0.9rem; opacity:0.85;">{title}</div>
-            <div style="font-size:1.4rem; font-weight:700; margin-top:4px;">{value}</div>
-            {f"<div style='font-size:0.8rem; opacity:0.7; margin-top:2px;'>{sub}</div>" if sub else ""}
-        </div>
-    """
-
-def normalize_for_polygon(symbol: str) -> str:
-    s = (symbol or "").strip().upper().replace(" ", "")
-    if s.startswith(("X:", "C:", "O:")):
-        head, tail = s.split(":", 1)
-        tail = tail.replace("USDT", "USD").replace("USDC", "USD")
-        return f"{head}:{tail}"
-    if re.match(r"^[A-Z]{2,10}USD(T|C)?$", s):
-        s = s.replace("USDT", "USD").replace("USDC", "USD")
-        return f"X:{s}"
-    return s
-
-def sanitize_targets(action: str, entry: float, tp1: float, tp2: float, tp3: float):
-    step = max(MIN_TP_STEP_PCT * max(1.0, abs(entry)), 1e-6 * max(1.0, abs(entry)))
-    if action == "BUY":
-        a = sorted([tp1, tp2, tp3])
-        a[0] = max(a[0], entry + step)
-        a[1] = max(a[1], a[0] + step)
-        a[2] = max(a[2], a[1] + step)
-        return a[0], a[1], a[2]
-    if action == "SHORT":
-        a = sorted([tp1, tp2, tp3], reverse=True)
-        a[0] = min(a[0], entry - step)
-        a[1] = min(a[1], a[0] - step)
-        a[2] = min(a[2], a[1] - step)
-        return a[0], a[1], a[2]
-    return tp1, tp2, tp3
+# ... (ваши остальные функции helpers без изменений) ...
 
 def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
     if action not in ("BUY", "SHORT"):
@@ -181,9 +99,9 @@ def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
     if abs(entry - last_price) <= eps * max(1.0, abs(last_price)):
         return "Market price", "Entry (Market)"
     if action == "BUY":
-        return ("Buy Stop", "Entry (Buy Stop)") if entry > last_price else ("Buy Limit", "Entry (Buy Limit)")
+        return ("Buy Stop", "Buy Limit") if entry > last_price else ("Buy Limit", "Buy Limit")
     else:
-        return ("Sell Stop", "Entry (Sell Stop)") if entry < last_price else ("Sell Limit", "Entry (Sell Limit)")
+        return ("Sell Stop", "Sell Limit") if entry < last_price else ("Sell Limit", "Sell Limit")
 
 # -------- Compatibility runner --------
 def run_agent(ticker_norm: str, label: str):
@@ -218,7 +136,7 @@ AGENTS = [
 ]
 
 def fmt(i: int) -> str:
-    return AGENTS[i]["label"]  # чистые названия без подписей
+    return AGENTS[i]["label"]
 
 st.subheader("AI agents")
 idx = st.radio(
@@ -242,10 +160,8 @@ symbol_for_engine = normalize_for_polygon(ticker)
 
 run = st.button("Проанализировать", type="primary", key="main_analyze")
 
-# Статус без горизонта
 st.write(f"Mode: AI · Model: {agent_rec['label']}")
 
-# ===================== Main =====================
 if run and ticker:
     try:
         out = run_agent(symbol_for_engine, agent_rec["label"])
@@ -261,11 +177,13 @@ if run and ticker:
         conf_pct = f"{int(round(conf*100))}%"
 
         lv = dict(out["levels"])
-        if action in ("BUY","SHORT"):
-            t1,t2,t3 = sanitize_targets(action, lv["entry"], lv["tp1"], lv["tp2"], lv["tp3"])
+        if action in ("BUY", "SHORT"):
+            t1, t2, t3 = sanitize_targets(action, lv["entry"], lv["tp1"], lv["tp2"], lv["tp3"])
             lv["tp1"], lv["tp2"], lv["tp3"] = float(t1), float(t2), float(t3)
 
         mode_text, entry_title = entry_mode_labels(action, lv.get("entry", last_price), last_price, ENTRY_MARKET_EPS)
+
+        # Заголовок с типом позиции и режимом входа
         header_text = "WAIT"
         if action == "BUY":
             header_text = f"Long • {mode_text}"
@@ -274,7 +192,7 @@ if run and ticker:
 
         st.markdown(
             f"""
-            <div style="background:#c57b0a; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:10px;">
+            <div style="background:#c57b0a; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:6px;">
                 <div style="font-size:1.15rem; font-weight:700;">{header_text}</div>
                 <div style="opacity:0.75; font-size:0.95rem; margin-top:2px;">{conf_pct} confidence</div>
             </div>
@@ -282,28 +200,35 @@ if run and ticker:
             unsafe_allow_html=True,
         )
 
+        # Добавляем универсальное описание ордера
+        order_desc = CUSTOM_PHRASES["ORDER_DESCRIPTIONS"].get(mode_text, "")
+        if order_desc:
+            st.markdown(f"<div style='margin-bottom:12px; font-style: italic; color: #ccc;'>{order_desc}</div>", unsafe_allow_html=True)
+
         if action in ("BUY", "SHORT"):
             c1, c2, c3 = st.columns(3)
-            with c1: st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
-            with c2: st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
-            with c3: st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}",
-                                           sub=f"Probability {int(round(out['probs']['tp1']*100))}%"),
-                                  unsafe_allow_html=True)
+            with c1:
+                st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
+            with c2:
+                st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
+            with c3:
+                st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}",
+                                       sub=f"Probability {int(round(out['probs']['tp1'] * 100))}%"),
+                              unsafe_allow_html=True)
 
             c1, c2 = st.columns(2)
-            with c1: st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}",
-                                           sub=f"Probability {int(round(out['probs']['tp2']*100))}%"),
-                                  unsafe_allow_html=True)
-            with c2: st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}",
-                                           sub=f"Probability {int(round(out['probs']['tp3']*100))}%"),
-                                  unsafe_allow_html=True)
+            with c1:
+                st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}",
+                                       sub=f"Probability {int(round(out['probs']['tp2'] * 100))}%"),
+                              unsafe_allow_html=True)
+            with c2:
+                st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}",
+                                       sub=f"Probability {int(round(out['probs']['tp3'] * 100))}%"),
+                              unsafe_allow_html=True)
 
             rr = rr_line(lv)
             if rr:
-                st.markdown(
-                    f"<div style='margin-top:4px; color:#FFA94D; font-weight:600;'>{rr}</div>",
-                    unsafe_allow_html=True,
-                )
+                st.markdown(f"<div style='margin-top:4px; color:#FFA94D; font-weight:600;'>{rr}</div>", unsafe_allow_html=True)
 
         def render_plan_line(action, levels, ticker="", seed_extra=""):
             seed = int(hashlib.sha1(f"{ticker}{seed_extra}{levels['entry']}{levels['sl']}{action}".encode()).hexdigest(), 16) % (2**32)
@@ -321,11 +246,11 @@ if run and ticker:
         ctx_key = "support" if action == "BUY" else ("resistance" if action == "SHORT" else "neutral")
         st.markdown(f"<div style='opacity:0.9'>{CUSTOM_PHRASES['CONTEXT'][ctx_key][0]}</div>", unsafe_allow_html=True)
 
-        if action in ("BUY","SHORT"):
+        if action in ("BUY", "SHORT"):
             stopline = CUSTOM_PHRASES["STOPLINE"][0].format(sl=_fmt(lv["sl"]), risk_pct=compute_risk_pct(lv))
             st.markdown(f"<div style='opacity:0.9; margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
 
-        # УДАЛЕН ВЫВОД АЛЬТЕРНАТИВНОГО СЦЕНАРИЯ, как запрошено
+        # Альтернативный сценарий в интерфейсе убран
 
         st.caption(CUSTOM_PHRASES["DISCLAIMER"])
 
@@ -384,3 +309,4 @@ if st.session_state.get('show_crypto', False):
         """,
         unsafe_allow_html=True
     )
+
