@@ -219,6 +219,27 @@ symbol_for_engine = normalize_for_polygon(ticker)
 run = st.button("Проанализировать", type="primary", key="main_analyze")
 
 st.write(f"Mode: AI · Model: {agent_rec['label']}")
+def run_agent(ticker_norm: str, label: str):
+    if _NEW_API:
+        lbl = label.strip().lower()
+        if lbl == "alphapulse":
+            return analyze_by_agent(ticker_norm, Agent.ALPHAPULSE)
+        if lbl == "octopus":
+            return analyze_by_agent(ticker_norm, Agent.OCTOPUS)
+        if lbl == "global":
+            return analyze_by_agent(ticker_norm, Agent.GLOBAL)
+        if lbl == "m7pro":
+            return analyze_by_agent(ticker_norm, Agent.M7PRO)
+        raise ValueError(f"Unknown agent label: {label}")
+    else:
+        if label == "AlphaPulse":
+            return analyze_asset(ticker_norm, "Среднесрочный", strategy="W7")
+        if label == "Octopus":
+            return analyze_asset(ticker_norm, "Краткосрок", strategy="W7")
+        if label == "Global":
+            return analyze_asset(ticker_norm, "Долгосрок", strategy="Global")
+        if label == "M7pro":
+            return analyze_asset_m7(ticker_norm)
 
 if run and ticker:
     try:
