@@ -13,7 +13,6 @@ except Exception:
     _NEW_API = False
     from core.strategy import analyze_asset, analyze_asset_m7
 
-# Импорт функции для истории доходности
 from core.performance_tracker import get_agent_performance
 
 load_dotenv()
@@ -185,30 +184,16 @@ def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
     else:
         return ("Sell Stop", "Entry (Sell Stop)") if entry < last_price else ("Sell Limit", "Entry (Sell Limit)")
 
-# -------- Compatibility runner --------
-def run_agent(ticker_norm: str, label: str):
-    if _NEW_API:
-        lbl = label.strip().lower()
-        if lbl == "alphapulse":
-            return analyze_by_agent(ticker_norm, Agent.ALPHAPULSE)
-        if lbl == "octopus":
-            return analyze_by_agent(ticker_norm, Agent.OCTOPUS)
-        if lbl == "global":
-            return analyze_by_agent(ticker_norm, Agent.GLOBAL)
-        if lbl == "m7pro":
-            return analyze_by_agent(ticker_norm, Agent.M7PRO)
-        raise ValueError(f"Unknown agent label: {label}")
-    else:
-        if label == "AlphaPulse":
-            return analyze_asset(ticker_norm, "Среднесрочный", strategy="W7")
-        if label == "Octopus":
-            return analyze_asset(ticker_norm, "Краткосрок", strategy="W7")
-        if label == "Global":
-            return analyze_asset(ticker_norm, "Долгосрок", strategy="Global")
-        if label == "M7pro":
-            return analyze_asset_m7(ticker_norm)
+AGENTS = [
+    {"label": "AlphaPulse"},
+    {"label": "Octopus"},
+    {"label": "Global"},
+    {"label": "M7pro"},
+]
 
-# ====== Графики доходности =======
+def fmt(i: int) -> str:
+    return AGENTS[i]["label"]
+
 KEY_TICKERS = ["SPY", "QQQ", "BTCUSD", "ETHUSD"]
 
 st.subheader("AI agents")
@@ -241,7 +226,7 @@ if run and ticker:
 
         last_price = float(out.get("last_price", 0.0))
         st.markdown(
-            f"<div style='font-size:3rem; font-weight:800; text-align:center; margin:6px 0 14px 0;'>${last_price:.2f}</div>",
+            f"<div style='font-size:3rem; font-weight:800; text-align:center; margin: 6px 0 14px 0;'>${last_price:.2f}</div>",
             unsafe_allow_html=True,
         )
 
@@ -295,7 +280,7 @@ if run and ticker:
             if rr:
                 st.markdown(f"<div style='margin-top:6px; color:#ffaa33; font-weight:600;'>{rr}</div>")
 
-        # Новый блок с графиками доходности по ключевым тикерам
+        # Графики доходности ключевых тикеров
         st.subheader(f"Эффективность модели {agent_rec['label']} по ключевым инструментам (3 месяца)")
 
         cols = st.columns(2)
@@ -325,8 +310,7 @@ if run and ticker:
 elif not ticker:
     st.info("Введите тикер и нажмите «Проанализировать».")
 
-# ---------------- Футер ----------------
-
+# Нижний колонтитул
 st.markdown("---")
 
 st.markdown("""
