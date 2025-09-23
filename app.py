@@ -4,6 +4,8 @@ import hashlib
 import random
 import streamlit as st
 from dotenv import load_dotenv
+from datetime import datetime
+from core.performance_tracker import log_agent_performance, get_agent_performance
 
 # Новый API -> fallback на старый
 try:
@@ -12,8 +14,6 @@ try:
 except Exception:
     _NEW_API = False
     from core.strategy import analyze_asset, analyze_asset_m7
-
-from core.performance_tracker import get_agent_performance
 
 load_dotenv()
 
@@ -59,33 +59,7 @@ ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))
 MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT", "0.0010"))
 
 CUSTOM_PHRASES = {
-    "BUY": [
-        "Точка входа: покупка в диапазоне {range_low}–{range_high}{unit_suffix}. По результатам AI-анализа выявлена ключевая область спроса."
-    ],
-    "SHORT": [
-        "Точка входа: продажа (short) в диапазоне {range_low}–{range_high}{unit_suffix}. AI-анализ выявил значимую область предложения."
-    ],
-    "WAIT": [
-        "Пока нет ясности — лучше дождаться более чёткого сигнала.",
-        "Пока не стоит спешить — дождаться подтверждения или ретеста уровня.",
-        "Пока без позиции — следим за волатильностью и новостями."
-    ],
-    "CONTEXT": {
-        "support": ["Цена у поддержки. Отложенный вход из зоны спроса, стоп за уровнем. Соблюдайте риск-менеджмент."],
-        "resistance": ["Цена у сопротивления. Отложенный шорт от зоны предложения, стоп над уровнем. Соблюдайте риск-менеджмент."],
-        "neutral": ["Баланс. Работаем только по подтверждённому сигналу."]
-    },
-    "STOPLINE": [
-        "Стоп-лосс: {sl}. Потенциальный риск ~{risk_pct}% от входа. Уровень оценён по волатильности."
-    ],
-    "ORDER_DESCRIPTIONS": {
-        "Buy Limit": "AI-анализ выявил повышенный спрос в районе указанного ценового уровня. Выставлен лимитный ордер на покупку — исполнение произойдет при достижении этой цены, что позволяет контролировать вход и ожидать благоприятных условий.",
-        "Sell Limit": "AI-анализ обнаружил важную зону предложения или потенциал снижения цены. Лимитный ордер на продажу может служить для фиксации прибыли по длинной позиции или открытия короткой позиции, и исполнится при достижении либо превышении этого уровня.",
-        "Buy Stop": "AI выявил вероятность начала восходящего движения после пробития ключевого уровня. Стоп-ордер на покупку активируется при повышении цены, что помогает войти в позицию на подтверждённом росте.",
-        "Sell Stop": "Система зафиксировала риск снижения цены после пробития критического уровня поддержки. Стоп-ордер на продажу позволяет войти в шорт или закрыть длинную позицию, активируясь при снижении цены до заданного уровня.",
-        "Market price": "AI рекомендует немедленное исполнение сделки по текущей рыночной цене. Такой ордер обеспечивает максимально быстрый вход или выход с рынка, что полезно при быстро меняющихся условиях."
-    },
-    "DISCLAIMER": "AI-анализ не является инвестиционной рекомендацией. Рынок волатилен; прошлые результаты не гарантируют будущие."
+    # ... (оставляем ваши текущие словари CUSTOM_PHRASES) ...
 }
 
 def _fmt(x): return f"{float(x):.2f}"
@@ -214,7 +188,7 @@ AGENTS = [
 ]
 
 def fmt(i: int) -> str:
-    return AGENTS[i]["label"]
+    return AGENTS[i]["label"]  # чистые названия без подписей
 
 KEY_TICKERS = ["SPY", "QQQ", "BTCUSD", "ETHUSD"]
 
@@ -248,21 +222,32 @@ if run and ticker:
 
         last_price = float(out.get("last_price", 0.0))
         st.markdown(
-            f"<div style='font-size:3rem; font-weight:800; text-align:center; margin: 6px 0 14px 0;'>${last_price:.2f}</div>",
+            f"<div style='font-size:3rem; font-weight:800; text-align:center; margin:6px 0 14px 0;'>${last_price:.2f}</div>",
             unsafe_allow_html=True,
         )
 
+        # Вычисляем daily_return через сессию и предыдущую цену
+        session_key = f"{agent_rec['label']}_{ticker}_last_price"
+        prev_price = st.session_state.get(session_key, None)
+        if prev_price is None or prev_price == 0:
+            daily_return = 0.0
+        else:
+            daily_return = (last_price - prev_price) / prev_price
+        st.session_state[session_key] = last_price
+
+        # Логируем доходность
+        log_agent_performance(agent_rec["label"], ticker, datetime.today(), daily_return)
+
         action = out["recommendation"]["action"]
-        conf = float(out["recommendation"].get("confidence", 0))
+        conf   = float(out["recommendation"].get("confidence", 0))
         conf_pct = f"{int(round(conf*100))}%"
 
         lv = dict(out["levels"])
-        if action in ("BUY", "SHORT"):
-            t1, t2, t3 = sanitize_targets(action, lv["entry"], lv["tp1"], lv["tp2"], lv["tp3"])
+        if action in ("BUY","SHORT"):
+            t1,t2,t3 = sanitize_targets(action, lv["entry"], lv["tp1"], lv["tp2"], lv["tp3"])
             lv["tp1"], lv["tp2"], lv["tp3"] = float(t1), float(t2), float(t3)
 
         mode_text, entry_title = entry_mode_labels(action, lv.get("entry", last_price), last_price, ENTRY_MARKET_EPS)
-
         header_text = "WAIT"
         if action == "BUY":
             header_text = f"Long • {mode_text}"
@@ -271,9 +256,9 @@ if run and ticker:
 
         st.markdown(
             f"""
-            <div style="background:#c57a0a; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:6px;">
+            <div style="background:#c57a0a; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:10px;">
                 <div style="font-size:1.15rem; font-weight:700;">{header_text}</div>
-                <div style="opacity:0.75; font-size:0.95; margin-top:2px;">{conf_pct} confidence</div>
+                <div style="opacity:0.75; font-size:0.95rem; margin-top:2px;">{conf_pct} confidence</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -318,7 +303,7 @@ if run and ticker:
 
         ctx_key = "support" if action == "BUY" else ("resistance" if action == "SHORT" else "neutral")
         st.markdown(f"<div style='opacity:0.9'>{CUSTOM_PHRASES['CONTEXT'][ctx_key][0]}</div>", unsafe_allow_html=True)
-        if action in ("BUY", "SHORT"):
+        if action in ("BUY","SHORT"):
             stopline = CUSTOM_PHRASES["STOPLINE"][0].format(sl=_fmt(lv["sl"]), risk_pct=compute_risk_pct(lv))
             st.markdown(f"<div style='opacity:0.9; margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
 
@@ -330,7 +315,7 @@ if run and ticker:
 elif not ticker:
     st.info("Введите тикер и нажмите «Проанализировать».")
 
-# Нижний колонтитул
+# Footer
 st.markdown("---")
 
 st.markdown("""
@@ -360,8 +345,8 @@ if st.session_state.get('show_arxora', False):
         <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 10px;">
             <h4 style="font-weight: 600;">О проекте</h4>
             <p style="font-weight: 300;">
-            Arxora AI помогает принимать решения на рынках с помощью ИИ и ML. 
-            Платформа ускоряет анализ активов, автоматизирует входы и управление риском. 
+            Arxora AI помогает принимать решения на рынках с помощью ИИ и ML.
+            Платформа ускоряет анализ активов, автоматизирует входы и управление риском.
             </p>
         </div>
         """,
@@ -380,4 +365,3 @@ if st.session_state.get('show_crypto', False):
         """,
         unsafe_allow_html=True
     )
-
