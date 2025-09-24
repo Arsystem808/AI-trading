@@ -34,3 +34,5 @@ def get_confidence_breakdown_from_session() -> Dict[str, Any]:
         },
         "shap_top": []
     }
+
+def render_confidence_breakdown_inline(ticker: str, overall_pct: float) -> Dict[str, Any]:
