@@ -15,6 +15,53 @@ except Exception:
     _NEW_API = False
     from core.strategy import analyze_asset, analyze_asset_m7
 
+# ======= Confidence breakdown (inline) =======
+from core.ui_confidence import (
+    ui_get_confidence_breakdown_via_model,
+    compute_breakdown_from_overall,
+)
+
+def render_confidence_breakdown_inline(ticker, conf_pct):
+    """Рендер confidence breakdown прямо в основной экран после анализа."""
+    data = None
+    try:
+        data = ui_get_confidence_breakdown_via_model(ticker)
+    except Exception:
+        data = None
+
+    # Если модель недоступна — считаем из 'общего процента' и правил
+    if (not data or not data.get("breakdown")) and conf_pct is not None:
+        try:
+            from core.rules import rules_confidence_for_ticker
+            rules_pct = float(rules_confidence_for_ticker(ticker))
+        except Exception:
+            rules_pct = 44.0
+        b = compute_breakdown_from_overall(rules_pct, float(conf_pct))
+        data = {
+            "signal": "BUY" if b["ai_override_delta_pct"] >= 0 else "SELL",
+            "overall_confidence_pct": float(max(0.0, min(100.0, b["rules_pct"] + b["ai_override_delta_pct"]))),
+            "breakdown": b,
+            "shap_top": [],
+        }
+
+    if not data:
+        st.info("Confidence breakdown временно недоступен.")
+        return
+
+    st.markdown("#### Confidence breakdown")
+    st.write(f"Общая уверенность: {data.get('overall_confidence_pct',0):.1f}%")
+    b = data.get("breakdown", {})
+    st.write(f"— Базовые правила: {b.get('rules_pct',0):.1f}%")
+    st.write(f"— AI override: {b.get('ai_override_delta_pct',0):.1f}%")
+
+    shap = data.get("shap_top", [])
+    if shap:
+        with st.expander("SHAP факторы влияния", expanded=False):
+            for it in shap:
+                st.write(f"{it.get('feature','f')}: {float(it.get('shap',0)):.3f}")
+
+# ============================================
+
 load_dotenv()
 
 # ===================== BRANDING =====================
@@ -152,6 +199,7 @@ def normalize_for_polygon(symbol: str) -> str:
     return s
 
 def sanitize_targets(action: str, entry: float, tp1: float, tp2: float, tp3: float):
+    MIN_TP_STEP_PCT = float(os.getenv("ARXORA_MIN_TP_STEP_PCT", "0.0010"))
     step = max(MIN_TP_STEP_PCT * max(1.0, abs(entry)), 1e-6 * max(1.0, abs(entry)))
     if action == "BUY":
         a = sorted([tp1, tp2, tp3])
@@ -199,12 +247,7 @@ def run_agent(ticker_norm: str, label: str):
         if label == "M7pro":
             return analyze_asset_m7(ticker_norm)
 
-AGENTS = [
-    {"label": "AlphaPulse"},
-    {"label": "Octopus"},
-    {"label": "Global"},
-    {"label": "M7pro"},
-]
+AGENTS = [{"label": "AlphaPulse"}, {"label": "Octopus"}, {"label": "Global"}, {"label": "M7pro"}]
 
 def fmt(i: int) -> str:
     return AGENTS[i]["label"]
@@ -212,22 +255,10 @@ def fmt(i: int) -> str:
 KEY_TICKERS = ["SPY", "QQQ", "BTCUSD", "ETHUSD"]
 
 st.subheader("AI agents")
-idx = st.radio(
-    "Выберите модель",
-    options=list(range(len(AGENTS))),
-    index=0,
-    format_func=fmt,
-    horizontal=False,
-    key="agent_radio"
-)
+idx = st.radio("Выберите модель", options=list(range(len(AGENTS))), index=0, format_func=fmt, horizontal=False, key="agent_radio")
 agent_rec = AGENTS[idx]
 
-ticker_input = st.text_input(
-    "Тикер",
-    value="",
-    placeholder="Примеры: AAPL · TSLA · X:BTCUSD · BTCUSDT",
-    key="main_ticker",
-)
+ticker_input = st.text_input("Тикер", value="", placeholder="Примеры: AAPL · TSLA · X:BTCUSD · BTCUSDT", key="main_ticker")
 ticker = ticker_input.strip().upper()
 symbol_for_engine = normalize_for_polygon(ticker)
 
@@ -247,12 +278,8 @@ if run and ticker:
 
         session_key = f"{agent_rec['label']}_{ticker}_last_price"
         prev_price = st.session_state.get(session_key, None)
-        if prev_price is None or prev_price == 0:
-            daily_return = 0.0
-        else:
-            daily_return = (last_price - prev_price) / prev_price
+        daily_return = 0.0 if (prev_price is None or prev_price == 0) else (last_price - prev_price) / prev_price
         st.session_state[session_key] = last_price
-
         log_agent_performance(agent_rec["label"], ticker, datetime.today(), daily_return)
 
         action = out["recommendation"]["action"]
@@ -264,12 +291,10 @@ if run and ticker:
             t1, t2, t3 = sanitize_targets(action, lv["entry"], lv["tp1"], lv["tp2"], lv["tp3"])
             lv["tp1"], lv["tp2"], lv["tp3"] = float(t1), float(t2), float(t3)
 
-        mode_text, entry_title = entry_mode_labels(action, lv.get("entry", last_price), last_price, ENTRY_MARKET_EPS)
+        mode_text, entry_title = entry_mode_labels(action, lv.get("entry", last_price), last_price, float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015")))
         header_text = "WAIT"
-        if action == "BUY":
-            header_text = f"Long • {mode_text}"
-        elif action == "SHORT":
-            header_text = f"Short • {mode_text}"
+        if action == "BUY": header_text = f"Long • {mode_text}"
+        elif action == "SHORT": header_text = f"Short • {mode_text}"
 
         st.markdown(
             f"""
@@ -281,35 +306,24 @@ if run and ticker:
             unsafe_allow_html=True,
         )
 
-        order_desc = CUSTOM_PHRASES.get("ORDER_DESCRIPTIONS", {}).get(mode_text, "")
-        if order_desc:
-            st.markdown(f"<div style='margin-bottom:12px; font-style: italic; color: #ccc;'>{order_desc}</div>", unsafe_allow_html=True)
+        # === ВСТАВЛЕНО: Confidence breakdown прямо под карточкой сигнала ===
+        render_confidence_breakdown_inline(ticker, conf*100)
 
         if action in ("BUY", "SHORT"):
             c1, c2, c3 = st.columns(3)
-            with c1:
-                st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
-            with c2:
-                st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
-            with c3:
-                st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}", sub=f"Probability {int(round(out.get('probs', {}).get('tp1', 0)*100))}%"), unsafe_allow_html=True)
-
+            with c1: st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
+            with c2: st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
+            with c3: st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}", sub=f"Probability {int(round(out.get('probs', {}).get('tp1', 0)*100))}%"), unsafe_allow_html=True)
             c1, c2 = st.columns(2)
-            with c1:
-                st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}", sub=f"Probability {int(round(out.get('probs', {}).get('tp2', 0)*100))}%"), unsafe_allow_html=True)
-            with c2:
-                st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}", sub=f"Probability {int(round(out.get('probs', {}).get('tp3', 0)*100))}%"), unsafe_allow_html=True)
+            with c1: st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}", sub=f"Probability {int(round(out.get('probs', {}).get('tp2', 0)*100))}%"), unsafe_allow_html=True)
+            with c2: st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}", sub=f"Probability {int(round(out.get('probs', {}).get('tp3', 0)*100))}%"), unsafe_allow_html=True)
 
             rr = rr_line(lv)
             if rr:
-                st.markdown(
-                    f"<div style='margin-top:6px; color:#FFA94D; font-weight:600;'>{rr}</div>",
-                    unsafe_allow_html=True,
-                )
+                st.markdown(f"<div style='margin-top:6px; color:#FFA94D; font-weight:600;'>{rr}</div>", unsafe_allow_html=True)
 
         st.subheader(f"Эффективность модели {agent_rec['label']} по ключевым инструментам (3 месяца)")
         cols = st.columns(2)
-
         for i, tk in enumerate(KEY_TICKERS):
             perf_data = get_agent_performance(agent_rec['label'], tk)
             with cols[i % 2]:
@@ -336,9 +350,7 @@ elif not ticker:
     st.info("Введите тикер и нажмите «Проанализировать».")
 
 # ---------------- Футер ----------------
-
 st.markdown("---")
-
 st.markdown("""
 <style>
     .stButton > button { font-weight: 600; }
@@ -390,4 +402,3 @@ if st.session_state.get('show_crypto', False):
         """,
         unsafe_allow_html=True
     )
-
