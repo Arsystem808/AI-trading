@@ -1,11 +1,15 @@
 import os
 import re
-import hashlib
-import random
 import streamlit as st
 from dotenv import load_dotenv
 from datetime import datetime
-from core.performance_tracker import log_agent_performance, get_agent_performance
+
+# ===== мягкие импорты, чтобы UI не падал при отсутствии модулей/секретов =====
+try:
+    from core.performance_tracker import log_agent_performance, get_agent_performance
+except Exception:
+    def log_agent_performance(*args, **kwargs): pass
+    def get_agent_performance(*args, **kwargs): return None
 
 # Новый API -> fallback на старый
 try:
@@ -15,7 +19,7 @@ except Exception:
     _NEW_API = False
     from core.strategy import analyze_asset, analyze_asset_m7
 
-# ======= Confidence breakdown (inline) =======
+# ===== Confidence breakdown (inline) =====
 from core.ui_confidence import (
     ui_get_confidence_breakdown_via_model,
     compute_breakdown_from_overall,
@@ -24,12 +28,13 @@ from core.ui_confidence import (
 def render_confidence_breakdown_inline(ticker, conf_pct):
     """Рендер confidence breakdown прямо в основной экран после анализа."""
     data = None
+    # 1) пробуем через модель
     try:
         data = ui_get_confidence_breakdown_via_model(ticker)
-    except Exception:
-        data = None
+    except Exception as e:
+        st.caption(f"AI breakdown fallback (no model): {e}")
 
-    # Если модель недоступна — считаем из 'общего процента' и правил
+    # 2) если модель недоступна — считаем из общего процента и правил
     if (not data or not data.get("breakdown")) and conf_pct is not None:
         try:
             from core.rules import rules_confidence_for_ticker
@@ -60,7 +65,7 @@ def render_confidence_breakdown_inline(ticker, conf_pct):
             for it in shap:
                 st.write(f"{it.get('feature','f')}: {float(it.get('shap',0)):.3f}")
 
-# ============================================
+# =============================================================================
 
 load_dotenv()
 
@@ -106,36 +111,23 @@ ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))
 MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT", "0.0010"))
 
 CUSTOM_PHRASES = {
-    "BUY": [
-        "Точка входа: покупка в диапазоне {range_low}–{range_high}{unit_suffix}. По результатам AI-анализа выявлена ключевая область спроса."
-    ],
-    "SHORT": [
-        "Точка входа: продажа (short) в диапазоне {range_low}–{range_high}{unit_suffix}. AI-анализ выявил значимую область предложения."
-    ],
+    "BUY": ["Точка входа: покупка в диапазоне {range_low}–{range_high}{unit_suffix}. По результатам AI-анализа выявлена ключевая область спроса."],
+    "SHORT": ["Точка входа: продажа (short) в диапазоне {range_low}–{range_high}{unit_suffix}. AI-анализ выявил значимую область предложения."],
     "WAIT": [
         "Пока нет ясности — лучше дождаться более чёткого сигнала.",
         "Пока не стоит спешить — дождаться подтверждения или ретеста уровня.",
         "Пока без позиции — следим за волатильностью и новостями."
     ],
     "CONTEXT": {
-        "support": ["Цена у поддержки. Отложенный вход из зоны спроса, стоп за уровнем. Соблюдайте риск-менеджмент."],
-        "resistance": ["Цена у сопротивления. Отложенный шорт от зоны предложения, стоп над уровнем. Соблюдайте риск-менеджмент."],
-        "neutral": ["Баланс. Работаем только по подтверждённому сигналу."]
+        "support":   ["Цена у поддержки. Отложенный вход из зоны спроса, стоп за уровнем. Соблюдайте риск-менеджмент."],
+        "resistance":["Цена у сопротивления. Отложенный шорт от зоны предложения, стоп над уровнем. Соблюдайте риск-менеджмент."],
+        "neutral":   ["Баланс. Работаем только по подтверждённому сигналу."]
     },
-    "STOPLINE": [
-        "Стоп-лосс: {sl}. Потенциальный риск ~{risk_pct}% от входа. Уровень оценён по волатильности."
-    ],
+    "STOPLINE": ["Стоп-лосс: {sl}. Потенциальный риск ~{risk_pct}% от входа. Уровень оценён по волатильности."],
     "DISCLAIMER": "AI-анализ не является инвестиционной рекомендацией. Рынок волатилен; прошлые результаты не гарантируют будущие."
 }
 
 def _fmt(x): return f"{float(x):.2f}"
-
-def compute_display_range(levels, widen_factor=0.25):
-    entry = float(levels["entry"]); sl = float(levels["sl"])
-    risk = abs(entry - sl)
-    width = max(risk * widen_factor, 0.01)
-    low, high = entry - width, entry + width
-    return _fmt(min(low, high)), _fmt(max(low, high))
 
 def compute_risk_pct(levels):
     entry = float(levels["entry"]); sl = float(levels["sl"])
@@ -199,8 +191,7 @@ def normalize_for_polygon(symbol: str) -> str:
     return s
 
 def sanitize_targets(action: str, entry: float, tp1: float, tp2: float, tp3: float):
-    MIN_TP_STEP_PCT = float(os.getenv("ARXORA_MIN_TP_STEP_PCT", "0.0010"))
-    step = max(MIN_TP_STEP_PCT * max(1.0, abs(entry)), 1e-6 * max(1.0, abs(entry)))
+    step = max(float(os.getenv("ARXORA_MIN_TP_STEP_PCT", "0.0010")) * max(1.0, abs(entry)), 1e-6 * max(1.0, abs(entry)))
     if action == "BUY":
         a = sorted([tp1, tp2, tp3])
         a[0] = max(a[0], entry + step)
@@ -228,30 +219,19 @@ def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
 def run_agent(ticker_norm: str, label: str):
     if _NEW_API:
         lbl = label.strip().lower()
-        if lbl == "alphapulse":
-            return analyze_by_agent(ticker_norm, Agent.ALPHAPULSE)
-        if lbl == "octopus":
-            return analyze_by_agent(ticker_norm, Agent.OCTOPUS)
-        if lbl == "global":
-            return analyze_by_agent(ticker_norm, Agent.GLOBAL)
-        if lbl == "m7pro":
-            return analyze_by_agent(ticker_norm, Agent.M7PRO)
+        if lbl == "alphapulse": return analyze_by_agent(ticker_norm, Agent.ALPHAPULSE)
+        if lbl == "octopus":    return analyze_by_agent(ticker_norm, Agent.OCTOPUS)
+        if lbl == "global":     return analyze_by_agent(ticker_norm, Agent.GLOBAL)
+        if lbl == "m7pro":      return analyze_by_agent(ticker_norm, Agent.M7PRO)
         raise ValueError(f"Unknown agent label: {label}")
     else:
-        if label == "AlphaPulse":
-            return analyze_asset(ticker_norm, "Среднесрочный", strategy="W7")
-        if label == "Octopus":
-            return analyze_asset(ticker_norm, "Краткосрок", strategy="W7")
-        if label == "Global":
-            return analyze_asset(ticker_norm, "Долгосрок", strategy="Global")
-        if label == "M7pro":
-            return analyze_asset_m7(ticker_norm)
+        if label == "AlphaPulse": return analyze_asset(ticker_norm, "Среднесрочный", strategy="W7")
+        if label == "Octopus":    return analyze_asset(ticker_norm, "Краткосрок", strategy="W7")
+        if label == "Global":     return analyze_asset(ticker_norm, "Долгосрок", strategy="Global")
+        if label == "M7pro":      return analyze_asset_m7(ticker_norm)
 
 AGENTS = [{"label": "AlphaPulse"}, {"label": "Octopus"}, {"label": "Global"}, {"label": "M7pro"}]
-
-def fmt(i: int) -> str:
-    return AGENTS[i]["label"]
-
+def fmt(i: int) -> str: return AGENTS[i]["label"]
 KEY_TICKERS = ["SPY", "QQQ", "BTCUSD", "ETHUSD"]
 
 st.subheader("AI agents")
@@ -263,7 +243,6 @@ ticker = ticker_input.strip().upper()
 symbol_for_engine = normalize_for_polygon(ticker)
 
 run = st.button("Проанализировать", type="primary", key="main_analyze")
-
 st.write(f"Mode: AI · Model: {agent_rec['label']}")
 
 if run and ticker:
@@ -276,12 +255,17 @@ if run and ticker:
             unsafe_allow_html=True,
         )
 
+        # Перфоманс-трекер (мягко)
         session_key = f"{agent_rec['label']}_{ticker}_last_price"
         prev_price = st.session_state.get(session_key, None)
         daily_return = 0.0 if (prev_price is None or prev_price == 0) else (last_price - prev_price) / prev_price
         st.session_state[session_key] = last_price
-        log_agent_performance(agent_rec["label"], ticker, datetime.today(), daily_return)
+        try:
+            log_agent_performance(agent_rec["label"], ticker, datetime.today(), daily_return)
+        except Exception:
+            pass
 
+        # Сигнал и confidence
         action = out["recommendation"]["action"]
         conf = float(out["recommendation"].get("confidence", 0))
         conf_pct = f"{int(round(conf*100))}%"
@@ -291,7 +275,7 @@ if run and ticker:
             t1, t2, t3 = sanitize_targets(action, lv["entry"], lv["tp1"], lv["tp2"], lv["tp3"])
             lv["tp1"], lv["tp2"], lv["tp3"] = float(t1), float(t2), float(t3)
 
-        mode_text, entry_title = entry_mode_labels(action, lv.get("entry", last_price), last_price, float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015")))
+        mode_text, entry_title = entry_mode_labels(action, lv.get("entry", last_price), last_price, ENTRY_MARKET_EPS)
         header_text = "WAIT"
         if action == "BUY": header_text = f"Long • {mode_text}"
         elif action == "SHORT": header_text = f"Short • {mode_text}"
@@ -306,9 +290,10 @@ if run and ticker:
             unsafe_allow_html=True,
         )
 
-        # === ВСТАВЛЕНО: Confidence breakdown прямо под карточкой сигнала ===
+        # === INLINE: Confidence breakdown прямо под карточкой сигнала ===
         render_confidence_breakdown_inline(ticker, conf*100)
 
+        # Карточки таргетов
         if action in ("BUY", "SHORT"):
             c1, c2, c3 = st.columns(3)
             with c1: st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
@@ -322,10 +307,15 @@ if run and ticker:
             if rr:
                 st.markdown(f"<div style='margin-top:6px; color:#FFA94D; font-weight:600;'>{rr}</div>", unsafe_allow_html=True)
 
+        # Перфоманс по ключевым инструментам
         st.subheader(f"Эффективность модели {agent_rec['label']} по ключевым инструментам (3 месяца)")
         cols = st.columns(2)
         for i, tk in enumerate(KEY_TICKERS):
-            perf_data = get_agent_performance(agent_rec['label'], tk)
+            perf_data = None
+            try:
+                perf_data = get_agent_performance(agent_rec['label'], tk)
+            except Exception:
+                perf_data = None
             with cols[i % 2]:
                 st.markdown(f"**{tk}**")
                 if perf_data is not None:
@@ -334,6 +324,7 @@ if run and ticker:
                 else:
                     st.info("Данных пока нет")
 
+        # Контекст и дисклеймер
         ctx_key = "support" if action == "BUY" else ("resistance" if action == "SHORT" else "neutral")
         st.markdown(f"<div style='opacity:0.9'>{CUSTOM_PHRASES['CONTEXT'][ctx_key][0]}</div>", unsafe_allow_html=True)
 
