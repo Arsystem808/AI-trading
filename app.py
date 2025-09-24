@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os
 import re
 import streamlit as st
@@ -17,48 +18,41 @@ try:
     _NEW_API = True
 except Exception:
     _NEW_API = False
-    from core.strategy import analyze_asset, analyze_asset_m7
+    # Важно: импортируем только универсальный роутер, чтобы не ломаться при изменениях
+    from core.strategy import analyze_asset
 
 # ===== Confidence breakdown (inline) =====
 from core.ui_confidence import (
-    ui_get_confidence_breakdown_via_model,
-    compute_breakdown_from_overall,
+    get_confidence_breakdown_from_session,
+    render_confidence_breakdown_inline as _render_breakdown_native,  # может отсутствовать
 )
 
 def render_confidence_breakdown_inline(ticker, conf_pct):
-    """Рендер confidence breakdown прямо в основной экран после анализа."""
-    data = None
-    # 1) пробуем через модель
+    """
+    Рендер confidence breakdown прямо в основной экран после анализа.
+    1) Пытаемся вызвать нативный рендер (если есть).
+    2) Иначе рисуем текст на основе Session State/переданного процента.
+    """
+    # Синхронизируем Session State — чтобы breakdown и карточка совпадали
     try:
-        data = ui_get_confidence_breakdown_via_model(ticker)
-    except Exception as e:
-        st.caption(f"AI breakdown fallback (no model): {e}")
+        st.session_state["last_overall_conf_pct"] = float(conf_pct or 0.0)
+        st.session_state.setdefault("last_rules_pct", 44.0)
+    except Exception:
+        pass
 
-    # 2) если модель недоступна — считаем из общего процента и правил
-    if (not data or not data.get("breakdown")) and conf_pct is not None:
-        try:
-            from core.rules import rules_confidence_for_ticker
-            rules_pct = float(rules_confidence_for_ticker(ticker))
-        except Exception:
-            rules_pct = 44.0
-        b = compute_breakdown_from_overall(rules_pct, float(conf_pct))
-        data = {
-            "signal": "BUY" if b["ai_override_delta_pct"] >= 0 else "SELL",
-            "overall_confidence_pct": float(max(0.0, min(100.0, b["rules_pct"] + b["ai_override_delta_pct"]))),
-            "breakdown": b,
-            "shap_top": [],
-        }
+    # Попытка нативного рендера (если реализован)
+    try:
+        return _render_breakdown_native(ticker, float(conf_pct or 0.0))
+    except Exception:
+        pass
 
-    if not data:
-        st.info("Confidence breakdown временно недоступен.")
-        return
-
+    # Fallback: честные значения из Session State
+    data = get_confidence_breakdown_from_session()
     st.markdown("#### Confidence breakdown")
     st.write(f"Общая уверенность: {data.get('overall_confidence_pct',0):.1f}%")
     b = data.get("breakdown", {})
     st.write(f"— Базовые правила: {b.get('rules_pct',0):.1f}%")
     st.write(f"— AI override: {b.get('ai_override_delta_pct',0):.1f}%")
-
     shap = data.get("shap_top", [])
     if shap:
         with st.expander("SHAP факторы влияния", expanded=False):
@@ -127,7 +121,11 @@ CUSTOM_PHRASES = {
     "DISCLAIMER": "AI-анализ не является инвестиционной рекомендацией. Рынок волатилен; прошлые результаты не гарантируют будущие."
 }
 
-def _fmt(x): return f"{float(x):.2f}"
+def _fmt(x): 
+    try:
+        return f"{float(x):.2f}"
+    except Exception:
+        return "0.00"
 
 def compute_risk_pct(levels):
     entry = float(levels["entry"]); sl = float(levels["sl"])
@@ -217,6 +215,7 @@ def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
         return ("Sell Stop", "Entry (Sell Stop)") if entry < last_price else ("Sell Limit", "Entry (Sell Limit)")
 
 def run_agent(ticker_norm: str, label: str):
+    """Унифицированный запуск агента для нового/старого API."""
     if _NEW_API:
         lbl = label.strip().lower()
         if lbl == "alphapulse": return analyze_by_agent(ticker_norm, Agent.ALPHAPULSE)
@@ -225,10 +224,12 @@ def run_agent(ticker_norm: str, label: str):
         if lbl == "m7pro":      return analyze_by_agent(ticker_norm, Agent.M7PRO)
         raise ValueError(f"Unknown agent label: {label}")
     else:
+        # Старый API через универсальный роутер
         if label == "AlphaPulse": return analyze_asset(ticker_norm, "Среднесрочный", strategy="W7")
-        if label == "Octopus":    return analyze_asset(ticker_norm, "Краткосрок", strategy="W7")
-        if label == "Global":     return analyze_asset(ticker_norm, "Долгосрок", strategy="Global")
-        if label == "M7pro":      return analyze_asset_m7(ticker_norm)
+        if label == "Octopus":    return analyze_asset(ticker_norm, "Кратко", strategy="W7")
+        if label == "Global":     return analyze_asset(ticker_norm, "Долгосрочный", strategy="Global")
+        if label == "M7pro":      return analyze_asset(ticker_norm, "Краткосрочный", strategy="M7")
+        raise ValueError(f"Unknown agent label: {label}")
 
 AGENTS = [{"label": "AlphaPulse"}, {"label": "Octopus"}, {"label": "Global"}, {"label": "M7pro"}]
 def fmt(i: int) -> str: return AGENTS[i]["label"]
@@ -248,6 +249,14 @@ st.write(f"Mode: AI · Model: {agent_rec['label']}")
 if run and ticker:
     try:
         out = run_agent(symbol_for_engine, agent_rec["label"])
+
+        # Синхронизируем общий процент в Session State для breakdown
+        try:
+            conf_val = float(out.get("recommendation", {}).get("confidence", 0.0))
+            st.session_state["last_overall_conf_pct"] = float(conf_val * 100.0)
+            st.session_state.setdefault("last_rules_pct", 44.0)
+        except Exception:
+            pass
 
         last_price = float(out.get("last_price", 0.0))
         st.markdown(
