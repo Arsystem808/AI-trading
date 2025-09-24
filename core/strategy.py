@@ -1,19 +1,21 @@
+### core/strategy.py
+Полная стратегия с M7MLModel (обучение, сохранение, инференс), унификацией confidence и записью подсказок в Session State для breakdown. [2][3]
+```python
 # core/strategy.py
 import os
 import hashlib
 import random
 import numpy as np
 import pandas as pd
-from typing import Dict, Any, Optional, List, Tuple
-from core.polygon_client import PolygonClient
 import logging
+from typing import Optional, Dict, List, Tuple
+
+from core.polygon_client import PolygonClient
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 import joblib
-from datetime import datetime, timedelta
 
-# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -88,7 +90,6 @@ def _macd_hist(close: pd.Series):
 # -------------------- horizons & pivots --------------------
 
 def _horizon_cfg(text: str):
-    # ST — weekly; MID/LT — monthly
     if "Кратко" in text:
         return dict(look=60, trend=14, atr=14, pivot_rule="W-FRI", use_weekly_atr=False, hz="ST")
     if "Средне" in text:
@@ -99,7 +100,7 @@ def _last_period_hlc(df: pd.DataFrame, rule: str):
     g = df.resample(rule).agg({"high":"max","low":"min","close":"last"}).dropna()
     if len(g) < 2:
         return None
-    row = g.iloc[-2]  # последняя завершённая
+    row = g.iloc[-2]
     return float(row["high"]), float(row["low"]), float(row["close"])
 
 def _fib_pivots(H: float, L: float, C: float):
@@ -114,7 +115,6 @@ def _fib_pivots(H: float, L: float, C: float):
     return {"P":P, "R1":R1, "R2":R2, "R3":R3, "S1":S1, "S2":S2, "S3":S3}
 
 def _classify_band(price: float, piv: dict, buf: float) -> int:
-    # -3: <S2, -2:[S2,S1), -1:[S1,P), 0:[P,R1), +1:[R1,R2), +2:[R2,R3), +3:>=R3
     P, R1 = piv["P"], piv["R1"]
     R2, R3, S1, S2 = piv.get("R2"), piv.get("R3"), piv["S1"], piv.get("S2")
     neg_inf, pos_inf = -1e18, 1e18
@@ -126,18 +126,12 @@ def _classify_band(price: float, piv: dict, buf: float) -> int:
         R2 if R2 is not None else pos_inf, 
         R3 if R3 is not None else pos_inf
     ]
-    if price < levels[0] - buf: 
-        return -3
-    if price < levels[1] - buf: 
-        return -2
-    if price < levels[2] - buf: 
-        return -1
-    if price < levels[3] - buf: 
-        return 0
-    if R2 is None or price < levels[4] - buf: 
-        return +1
-    if price < levels[5] - buf: 
-        return +2
+    if price < levels[0] - buf: return -3
+    if price < levels[1] - buf: return -2
+    if price < levels[2] - buf: return -1
+    if price < levels[3] - buf: return 0
+    if R2 is None or price < levels[4] - buf: return +1
+    if price < levels[5] - buf: return +2
     return +3
 
 # -------------------- wick profile --------------------
@@ -154,16 +148,12 @@ def _wick_profile(row: pd.Series):
 def _entry_kind(action: str, entry: float, price: float, step_d: float) -> str:
     tol = max(0.0015 * max(1.0, price), 0.15 * step_d)
     if action == "BUY":
-        if entry > price + tol:  
-            return "buy-stop"
-        if entry < price - tol:  
-            return "buy-limit"
+        if entry > price + tol:  return "buy-stop"
+        if entry < price - tol:  return "buy-limit"
         return "buy-now"
     if action == "SHORT":
-        if entry < price - tol:  
-            return "sell-stop"
-        if entry > price + tol:  
-            return "sell-limit"
+        if entry < price - tol:  return "sell-stop"
+        if entry > price + tol:  return "sell-limit"
         return "sell-now"
     return "wait"
 
@@ -235,559 +225,264 @@ def _sanity_levels(action: str, entry: float, sl: float,
         sl = entry - max(0.60 * step_w, 0.90 * step_d)
     if action == "SHORT" and sl <= entry + 0.25 * step_d:
         sl = entry + max(0.60 * step_w, 0.90 * step_d)
-    def _push_tp(tp, rank):
+    def _push(tp, rank):
         need = floor_gap * (1.0 if rank == 1 else (1.6 if rank == 2 else 2.2))
         want = entry + side * need
-        if side * (tp - entry) <= 0:
-            return want
-        if abs(tp - entry) < need:
-            return want
+        if side * (tp - entry) <= 0: return want
+        if abs(tp - entry) < need:   return want
         return tp
-    tp1 = _push_tp(tp1, 1)
-    tp2 = _push_tp(tp2, 2)
-    tp3 = _push_tp(tp3, 3)
-    tp1, tp2, tp3 = _order_targets(entry, tp1, tp2, tp3, action)
-    return sl, tp1, tp2, tp3
+    tp1 = _push(tp1, 1); tp2 = _push(tp2, 2); tp3 = _push(tp3, 3)
+    return _order_targets(entry, tp1, tp2, tp3, action)
 
 # -------------------- ML Model для M7 Strategy --------------------
 
 class M7MLModel:
-    """ML модель для улучшения стратегии M7"""
-
+    """ML модель для M7: обучение, персистенция, инференс."""
     def __init__(self):
         self.model = None
         self.scaler = StandardScaler()
+        self.calibrator = None
         self.model_path = "models/m7_model.pkl"
         self.scaler_path = "models/m7_scaler.pkl"
-        self.load_model()
+        self.calibrator_path = "models/m7_calibrator.pkl"
+        self._load_local()
 
-    def load_model(self):
+    def _load_local(self):
         try:
             if os.path.exists(self.model_path):
                 self.model = joblib.load(self.model_path)
             if os.path.exists(self.scaler_path):
                 self.scaler = joblib.load(self.scaler_path)
+            if os.path.exists(self.calibrator_path):
+                self.calibrator = joblib.load(self.calibrator_path)
         except Exception as e:
-            logger.warning(f"Model load failed: {e}")
-            self.model = None
+            logger.warning(f"Local model load failed: {e}")
 
-    def save_model(self):
-        os.makedirs("models", exist_ok=True)
-        joblib.dump(self.model, self.model_path)
-        joblib.dump(self.scaler, self.scaler_path)
+    def _rsi(self, s: pd.Series, period=14):
+        d = s.diff()
+        up = d.where(d > 0, 0).rolling(period).mean()
+        dn = (-d.where(d < 0, 0)).rolling(period).mean()
+        rs = up / dn
+        return 100 - 100 / (1 + rs)
 
-    def calculate_rsi(self, series, period=14):
-        delta = series.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-        return rsi
+    def _pivots_weekly(self, df: pd.DataFrame):
+        w = df.resample("W").agg({"high":"max","low":"min","close":"last"}).dropna()
+        if len(w) < 2: return {}
+        H,L,C = w.iloc[-2][["high","low","close"]]
+        P=(H+L+C)/3; R1=(2*P)-L; S1=(2*P)-H; R2=P+(H-L); S2=P-(H-L)
+        return {"P":P,"R1":R1,"R2":R2,"S1":S1,"S2":S2}
 
-    def calculate_pivot_levels(self, df):
-        weekly = df.resample('W').agg({'high': 'max', 'low': 'min', 'close': 'last'})
-        if len(weekly) < 2:
-            return {}
-        last_week = weekly.iloc[-2]
-        H, L, C = last_week['high'], last_week['low'], last_week['close']
-        P = (H + L + C) / 3
-        R1 = (2 * P) - L
-        S1 = (2 * P) - H
-        R2 = P + (H - L)
-        S2 = P - (H - L)
-        return {'P': P, 'R1': R1, 'R2': R2, 'S1': S1, 'S2': S2}
+    def _build(self, df: pd.DataFrame) -> Tuple[Optional[pd.DataFrame], Optional[pd.Series], List[str]]:
+        x = pd.DataFrame(index=df.index.copy())
+        x["returns"]=df["close"].pct_change()
+        x["volatility"]=x["returns"].rolling(20).std()
+        x["momentum"]=df["close"]/df["close"].shift(5)-1
+        x["sma_20"]=df["close"].rolling(20).mean()
+        x["sma_50"]=df["close"].rolling(50).mean()
+        x["rsi"]=self._rsi(df["close"])
+        piv = self._pivots_weekly(df)
+        for k,v in piv.items():
+            x[f"pct_to_{k}"]=(df["close"]-v)/max(1e-9,v)
+        x["volume_ma"]=df["volume"].rolling(20).mean()
+        x["volume_ratio"]=df["volume"]/x["volume_ma"]
+        y=(df["close"].shift(-5)>df["close"]).astype(int)
+        z=pd.concat([x,y.rename("target")],axis=1).dropna()
+        if z.empty: return None,None,[]
+        return z.drop(columns=["target"]), z["target"], list(x.columns)
 
-    def prepare_features(self, df: pd.DataFrame, ticker: str) -> Tuple[pd.DataFrame, pd.Series, List[str]]:
-        df = df.copy()
-        df['returns'] = df['close'].pct_change()
-        df['volatility'] = df['returns'].rolling(20).std()
-        df['momentum'] = df['close'] / df['close'].shift(5) - 1
-        df['sma_20'] = df['close'].rolling(20).mean()
-        df['sma_50'] = df['close'].rolling(50).mean()
-        df['rsi'] = self.calculate_rsi(df['close'])
-        pivots = self.calculate_pivot_levels(df)
-        for level_name, level_value in pivots.items():
-            df[f'pct_to_{level_name}'] = (df['close'] - level_value) / max(1e-9, level_value)
-        df['volume_ma'] = df['volume'].rolling(20).mean()
-        df['volume_ratio'] = df['volume'] / df['volume_ma']
-        df = df.dropna()
-        recent = df.copy()  # используем всю очищенную историю
-        recent['target'] = (recent['close'].shift(-5) > recent['close']).astype(int)
-        feature_columns = [
-            'returns', 'volatility', 'momentum', 'sma_20', 'sma_50', 'rsi', 'volume_ratio'
-        ]
-        for level_name in pivots.keys():
-            feature_columns.append(f'pct_to_{level_name}')
-        X = recent[feature_columns].dropna()
-        y = recent['target'].reindex(X.index)
-        return X, y, feature_columns
-
-    # новый алиас под скрипты обучения
-    def train_and_save(self, df: pd.DataFrame, n_estimators: int = 600, max_depth: Optional[int] = None,
-                       use_calibration: bool = True) -> Optional[Dict[str, float]]:
+    def train_and_save(self, df: pd.DataFrame, n_estimators=600, max_depth=None, use_calibration=True):
         from sklearn.linear_model import LogisticRegression
         from sklearn.metrics import roc_auc_score
-        X, y, feats = self.prepare_features(df, ticker="NA")
-        if X is None or len(X) < 200:
+        X,y,_=self._build(df)
+        if X is None or len(X)<200:
             logger.warning("Too few samples to train")
             return None
-        X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-        X_tr_s = self.scaler.fit_transform(X_tr)
-        X_te_s = self.scaler.transform(X_te)
-        self.model = RandomForestClassifier(
-            n_estimators=n_estimators, max_depth=max_depth,
-            n_jobs=-1, random_state=42, class_weight="balanced_subsample"
-        )
-        self.model.fit(X_tr_s, y_tr)
+        Xtr,Xte,Ytr,Yte=train_test_split(X,y,test_size=0.2,random_state=42,stratify=y)
+        Xtr_s=self.scaler.fit_transform(Xtr); Xte_s=self.scaler.transform(Xte)
+        self.model=RandomForestClassifier(n_estimators=n_estimators,max_depth=max_depth,n_jobs=-1,random_state=42,class_weight="balanced_subsample")
+        self.model.fit(Xtr_s,Ytr)
+        auc=None; proba=None
         try:
-            proba = self.model.predict_proba(X_te_s)[:, 1]
-            auc = float(roc_auc_score(y_te, proba))
+            proba=self.model.predict_proba(Xte_s)[:,1]
+            auc=float(roc_auc_score(Yte,proba))
         except Exception:
-            auc = float("nan")
-        # простая калибровка Platt (логистическая регрессия) по out-of-sample
-        self.calibrator = None
-        if use_calibration and 'proba' in locals():
+            pass
+        if use_calibration and proba is not None:
             try:
-                cal = LogisticRegression(max_iter=1000)
-                cal.fit(proba.reshape(-1, 1), y_te.values)
-                self.calibrator = cal
-                joblib.dump(self.calibrator, "models/m7_calibrator.pkl")
+                cal=LogisticRegression(max_iter=1000)
+                cal.fit(proba.reshape(-1,1),Yte.values)
+                self.calibrator=cal
+                joblib.dump(cal,self.calibrator_path)
             except Exception as e:
                 logger.warning(f"Calibration failed: {e}")
-                self.calibrator = None
-        self.save_model()
-        return {"auc": auc, "n": int(len(X))}
+        os.makedirs("models",exist_ok=True)
+        joblib.dump(self.model,self.model_path)
+        joblib.dump(self.scaler,self.scaler_path)
+        return {"auc":auc,"trained_samples":int(len(X))}
 
-    def train_model(self, df, ticker):  # сохранено для обратной совместимости
-        info = self.train_and_save(df, n_estimators=600, max_depth=None, use_calibration=True)
-        return bool(info)
-
-    def predict_signal(self, df, ticker):
-        import joblib
+    def predict_signal(self, df: pd.DataFrame, ticker: str):
+        # попробовать кастомные веса по тикеру
         if self.model is None:
             try:
-                self.model = joblib.load(self.model_path)
-                self.scaler = joblib.load(self.scaler_path)
-            except Exception:
-                return None
-        X, _, _ = self.prepare_features(df, ticker)
-        if X is None or len(X) == 0:
-            return None
-        latest = X.iloc[[-1]]
-        try:
-            latest_s = self.scaler.transform(latest)
-        except Exception:
-            latest_s = latest.values
-        try:
-            if hasattr(self.model, "predict_proba"):
-                p_long = float(self.model.predict_proba(latest_s)[:, 1][0])
-            elif hasattr(self.model, "decision_function"):
-                margin = float(self.model.decision_function(latest_s).ravel()[0])
-                p_long = float(1.0 / (1.0 + np.exp(-margin)))  # сигмоида
-            else:
-                pred = float(self.model.predict(latest_s).ravel()[0])
-                p_long = float(np.tanh(abs(pred)))
-        except Exception as e:
-            logger.warning(f"ML predict failed: {e}")
-            return None
-        # подхват калибратора при наличии
-        if self.calibrator is None and os.path.exists("models/m7_calibrator.pkl"):
-            try:
-                self.calibrator = joblib.load("models/m7_calibrator.pkl")
-            except Exception:
-                self.calibrator = None
-        if self.calibrator is not None:
-            try:
-                p_long = float(self.calibrator.predict_proba(np.array([[p_long]]))[:, 1][0])
+                from core.model_loader import load_model_for
+                mdl=load_model_for(ticker)
+                if mdl is not None: self.model=mdl
             except Exception:
                 pass
-        p_long = max(0.0, min(1.0, p_long))
-        return {
-            'p_long': float(p_long),
-            # нормализуем уверенность вокруг 0.5
-            'confidence': float(0.5 + (p_long - 0.5))
-        }
+        if self.model is None and os.path.exists(self.model_path):
+            try:
+                self.model=joblib.load(self.model_path)
+                self.scaler=joblib.load(self.scaler_path)
+            except Exception:
+                return None
+        X,_,_=self._build(df)
+        if X is None or len(X)==0: return None
+        x_last=X.iloc[[-1]]
+        try: x_last=self.scaler.transform(x_last)
+        except Exception: x_last=x_last.values
+        try:
+            if hasattr(self.model,"predict_proba"):
+                p=float(self.model.predict_proba(x_last)[:,1][0])
+            elif hasattr(self.model,"decision_function"):
+                m=float(self.model.decision_function(x_last).ravel()[0]); p=float(1.0/(1.0+np.exp(-m)))
+            else:
+                lbl=float(self.model.predict(x_last).ravel()[0]); p=float(np.tanh(abs(lbl)))
+        except Exception as e:
+            logger.warning(f"Prediction failed: {e}"); return None
+        if self.calibrator is None and os.path.exists(self.calibrator_path):
+            try: self.calibrator=joblib.load(self.calibrator_path)
+            except Exception: self.calibrator=None
+        if self.calibrator is not None:
+            try: p=float(self.calibrator.predict_proba([[p]])[:,1][0])
+            except Exception: pass
+        p=max(0.0,min(1.0,p))
+        return {"p_long":p,"confidence":0.5+(p-0.5)}
 
 # -------------------- Global Strategy --------------------
 
 def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный"):
     cli = PolygonClient()
-    days = 90
-    df = cli.daily_ohlc(ticker, days=days)
+    df = cli.daily_ohlc(ticker, days=90)
     current_price = float(df['close'].iloc[-1])
-    returns = np.log(df['close'] / df['close'].shift(1))
-    hist_volatility = returns.std() * np.sqrt(252)
     short_ma = df['close'].rolling(20).mean().iloc[-1]
     long_ma = df['close'].rolling(50).mean().iloc[-1]
     if short_ma > long_ma:
-        action = "BUY"
-        confidence = 0.69
+        action = "BUY"; confidence = 0.69
     else:
-        action = "SHORT"
-        confidence = 0.65
+        action = "SHORT"; confidence = 0.65
     atr = float(_atr_like(df, n=14).iloc[-1])
     if action == "BUY":
-        entry = current_price
-        sl = current_price - 2 * atr
-        tp1 = current_price + 1 * atr
-        tp2 = current_price + 2 * atr
-        tp3 = current_price + 3 * atr
-        alt = "Покупка по рынку с консервативными целями"
+        entry=current_price; sl=current_price-2*atr; tp1=current_price+1*atr; tp2=current_price+2*atr; tp3=current_price+3*atr
+        alt="Покупка по рынку с консервативными целями"
     else:
-        entry = current_price
-        sl = current_price + 2 * atr
-        tp1 = current_price - 1 * atr
-        tp2 = current_price - 2 * atr
-        tp3 = current_price - 3 * atr
-        alt = "Продажа по рынку с консервативными целями"
-    context = [f"Волатильность: {hist_volatility:.2%}", f"Тренд: {'Бычий' if action == 'BUY' else 'Медвежий'}"]
-    probs = {"tp1": 0.68, "tp2": 0.52, "tp3": 0.35}
-    note_html = f"""
-    <div style='margin-top:10px; opacity:0.95;'>
-        Global Strategy: {action} сигнал с уверенностью {confidence:.0%}.<br>
-        Консервативные тейк-профиты на основе волатильности.
-    </div>
-    """
-    return {
-        "last_price": current_price,
-        "recommendation": {"action": action, "confidence": confidence},
-        "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
-        "probs": probs,
-        "context": context,
-        "note_html": note_html,
-        "alt": alt,
-        "entry_kind": "market",
-        "entry_label": f"{action} NOW"
-    }
+        entry=current_price; sl=current_price+2*atr; tp1=current_price-1*atr; tp2=current_price-2*atr; tp3=current_price-3*atr
+        alt="Продажа по рынку с консервативными целями"
+    probs={"tp1":0.68,"tp2":0.52,"tp3":0.35}
+    note_html=f"<div style='margin-top:10px; opacity:0.95;'>Global Strategy: {action} с уверенностью {confidence:.0%}.</div>"
+    return {"last_price":current_price,"recommendation":{"action":action,"confidence":confidence},
+            "levels":{"entry":entry,"sl":sl,"tp1":tp1,"tp2":tp2,"tp3":tp3},
+            "probs":probs,"context":[],"note_html":note_html,"alt":alt,"entry_kind":"market","entry_label":f"{action} NOW"}
 
 # -------------------- M7 Strategy --------------------
 
 class M7TradingStrategy:
-    def __init__(self, atr_period=14, atr_multiplier=1.5, pivot_period='D', 
-                 fib_levels=[0.236, 0.382, 0.5, 0.618, 0.786]):
-        self.atr_period = atr_period
-        self.atr_multiplier = atr_multiplier
-        self.pivot_period = pivot_period
-        self.fib_levels = fib_levels
-        
+    def __init__(self, atr_period=14, atr_multiplier=1.5, pivot_period='D', fib_levels=[0.236,0.382,0.5,0.618,0.786]):
+        self.atr_period=atr_period; self.atr_multiplier=atr_multiplier; self.pivot_period=pivot_period; self.fib_levels=fib_levels
     def calculate_pivot_points(self, high, low, close):
-        pivot = (high + low + close) / 3
-        r1 = (2 * pivot) - low
-        r2 = pivot + (high - low)
-        r3 = high + 2 * (pivot - low)
-        s1 = (2 * pivot) - high
-        s2 = pivot - (high - low)
-        s3 = low - 2 * (high - pivot)
-        return {'pivot': pivot,'r1': r1,'r2': r2,'r3': r3,'s1': s1,'s2': s2,'s3': s3}
-        
+        pivot=(high+low+close)/3; r1=(2*pivot)-low; r2=pivot+(high-low); r3=high+2*(pivot-low)
+        s1=(2*pivot)-high; s2=pivot-(high-low); s3=low-2*(high-pivot)
+        return {'pivot':pivot,'r1':r1,'r2':r2,'r3':r3,'s1':s1,'s2':s2,'s3':s3}
     def calculate_fib_levels(self, high, low):
-        diff = high - low
-        fib_levels = {}
-        for level in self.fib_levels:
-            fib_levels[f'fib_{int(level*1000)}'] = high - level * diff
-        return fib_levels
-        
+        diff=high-low; return {f'fib_{int(level*1000)}': high - level * diff for level in self.fib_levels}
     def identify_key_levels(self, data):
-        grouped = data.resample('D') if self.pivot_period == 'D' else data.resample('W')
-        key_levels = {}
-        for _, group in grouped:
-            if len(group) > 0:
-                high = group['high'].max()
-                low = group['low'].min()
-                close = group['close'].iloc[-1]
-                pivot_levels = self.calculate_pivot_points(high, low, close)
-                fib_levels = self.calculate_fib_levels(high, low)
-                for name, value in {**pivot_levels, **fib_levels}.items():
-                    key_levels[name] = value
-        return key_levels
-        
+        grouped=data.resample('D') if self.pivot_period=='D' else data.resample('W'); key={}
+        for _,g in grouped:
+            if len(g)>0:
+                high=g['high'].max(); low=g['low'].min(); close=g['close'].iloc[-1]
+                key.update(self.calculate_pivot_points(high,low,close))
+                key.update(self.calculate_fib_levels(high,low))
+        return key
     def generate_signals(self, data):
-        signals = []
-        required_cols = ['high', 'low', 'close']
-        if not all(col in data.columns for col in required_cols):
-            return signals
-        data = data.copy()
-        data['atr'] = _atr_like(data, self.atr_period)
-        current_atr = data['atr'].iloc[-1]
-        key_levels = self.identify_key_levels(data)
-        current_price = data['close'].iloc[-1]
-        current_time = data.index[-1]
-        for level_name, level_value in key_levels.items():
-            distance = abs(current_price - level_value) / max(1e-9, current_atr)
-            if distance < self.atr_multiplier:
-                is_resistance = level_value > current_price
-                if is_resistance:
-                    signal_type = 'SELL_LIMIT'
-                    entry_price = level_value * 0.998
-                    stop_loss = level_value * 1.02
-                    take_profit = level_value * 0.96
+        signals=[]; req=['high','low','close']
+        if not all(c in data.columns for c in req): return signals
+        d=data.copy(); d['atr']=_atr_like(d,self.atr_period); current_atr=float(d['atr'].iloc[-1])
+        key=self.identify_key_levels(d); current_price=float(d['close'].iloc[-1]); ts=d.index[-1]
+        for name,lv in key.items():
+            distance=abs(current_price-lv)/max(1e-9,current_atr)
+            if distance<self.atr_multiplier:
+                if lv>current_price:
+                    t='SELL_LIMIT'; entry=lv*0.998; sl=lv*1.02; tp=lv*0.96
                 else:
-                    signal_type = 'BUY_LIMIT'
-                    entry_price = level_value * 1.002
-                    stop_loss = level_value * 0.98
-                    take_profit = level_value * 1.04
-                confidence = 1 - (distance / self.atr_multiplier)
-                signals.append({
-                    'type': signal_type,
-                    'price': round(entry_price, 4),
-                    'stop_loss': round(stop_loss, 4),
-                    'take_profit': round(take_profit, 4),
-                    'confidence': round(confidence, 2),
-                    'level': level_name,
-                    'level_value': round(level_value, 4),
-                    'timestamp': current_time
-                })
+                    t='BUY_LIMIT'; entry=lv*1.002; sl=lv*0.98; tp=lv*1.04
+                conf=1-(distance/self.atr_multiplier)
+                signals.append({'type':t,'price':round(entry,4),'stop_loss':round(sl,4),'take_profit':round(tp,4),
+                                'confidence':round(conf,2),'level':name,'level_value':round(lv,4),'timestamp':ts})
         return signals
 
 def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=True):
     cli = PolygonClient()
-    days = 120
-    df = cli.daily_ohlc(ticker, days=days)
-    returns = np.log(df['close'] / df['close'].shift(1))
-    hist_volatility = returns.std() * np.sqrt(252)
+    df = cli.daily_ohlc(ticker, days=120)
     strategy = M7TradingStrategy()
     signals = strategy.generate_signals(df)
     if not signals:
-        return {
-            "last_price": float(df['close'].iloc[-1]),
-            "recommendation": {"action": "WAIT", "confidence": 0.5},
-            "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
-            "probs": {"tp1": 0, "tp2": 0, "tp3": 0},
-            "context": ["Нет сигналов по стратегии M7"],
-            "note_html": "<div>Ожидание сигналов от стратегии M7</div>",
-            "alt": "Ожидание четких сигналов от уровней Pivot и Fibonacci",
-            "entry_kind": "wait",
-            "entry_label": "WAIT"
-        }
-    best_signal = max(signals, key=lambda x: x['confidence'])
-    ml_prediction = None
+        return {"last_price": float(df['close'].iloc[-1]),
+                "recommendation": {"action": "WAIT", "confidence": 0.5},
+                "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
+                "probs": {"tp1": 0, "tp2": 0, "tp3": 0},
+                "context": ["Нет сигналов по M7"],
+                "note_html": "<div>Ожидание сигналов M7</div>",
+                "alt": "Ожидание", "entry_kind": "wait", "entry_label": "WAIT"}
+    best = max(signals, key=lambda s: s['confidence'])
+    mlp = None
     if use_ml:
         try:
-            ml_model = M7MLModel()
-            if ml_model.model is None:
-                ml_model.train_and_save(df, n_estimators=600, max_depth=None, use_calibration=True)
-            ml_prediction = ml_model.predict_signal(df, ticker)
+            ml = M7MLModel()
+            if ml.model is None:
+                ml.train_and_save(df, n_estimators=600, max_depth=None, use_calibration=True)
+            mlp = ml.predict_signal(df, ticker)
         except Exception as e:
             logger.error(f"ML integration error: {e}")
     current_price = float(df['close'].iloc[-1])
-    entry_price = best_signal['price']
-    stop_loss = best_signal['stop_loss']
-    risk = abs(entry_price - stop_loss)
-    volatility = df['close'].pct_change().std() * np.sqrt(252)
-    max_daily_move = current_price * volatility / np.sqrt(252)
-    if best_signal['type'].startswith('BUY'):
-        tp1 = min(entry_price + risk * 1.5, entry_price + max_daily_move * 2)
-        tp2 = min(entry_price + risk * 2.5, entry_price + max_daily_move * 3)
-        tp3 = min(entry_price + risk * 4.0, entry_price + max_daily_move * 5)
+    entry = best['price']; sl = best['stop_loss']; risk = abs(entry - sl)
+    vol = df['close'].pct_change().std() * np.sqrt(252)
+    max_daily_move = current_price * vol / np.sqrt(252)
+    if best['type'].startswith('BUY'):
+        tp1 = min(entry + risk * 1.5, entry + max_daily_move * 2)
+        tp2 = min(entry + risk * 2.5, entry + max_daily_move * 3)
+        tp3 = min(entry + risk * 4.0, entry + max_daily_move * 5)
     else:
-        tp1 = max(entry_price - risk * 1.5, entry_price - max_daily_move * 2)
-        tp2 = max(entry_price - risk * 2.5, entry_price - max_daily_move * 3)
-        tp3 = max(entry_price - risk * 4.0, entry_price - max_daily_move * 5)
-    action = "BUY" if best_signal['type'].startswith('BUY') else "SHORT"
-    # Синхронизация confidence: правила 44% + AI-дэльта
+        tp1 = max(entry - risk * 1.5, entry - max_daily_move * 2)
+        tp2 = max(entry - risk * 2.5, entry - max_daily_move * 3)
+        tp3 = max(entry - risk * 4.0, entry - max_daily_move * 5)
+    action = "BUY" if best['type'].startswith('BUY') else "SHORT"
+    # Единая формула confidence: правила 44% + дельта от ML
     rules_pct = 44.0
-    ai_delta_pct = 0.0
-    if ml_prediction:
-        ai_delta_pct = (float(ml_prediction.get('confidence', 0.5)) * 100.0 - 50.0)
+    ai_delta_pct = (float(mlp.get('confidence', 0.5)) * 100.0 - 50.0) if mlp else 0.0
     overall_pct = float(max(0.0, min(100.0, rules_pct + ai_delta_pct)))
-    best_signal['confidence'] = overall_pct / 100.0
-    context = [f"Сигнал от уровня {best_signal['level']}"]
-    if ml_prediction:
-        context.append(f"ML p_long={ml_prediction['p_long']:.2f}")
+    best['confidence'] = overall_pct / 100.0
+    # Подсказки для UI через Session State
+    try:
+        import streamlit as st
+        st.session_state["last_overall_conf_pct"] = overall_pct
+        st.session_state["last_rules_pct"] = rules_pct
+    except Exception:
+        pass
+    context = [f"Сигнал от уровня {best['level']}"]
+    if mlp:
+        context.append(f"ML p_long={mlp['p_long']:.2f}")
     probs = {"tp1": 0.63, "tp2": 0.52, "tp3": 0.53}
-    note_html = f"""
-    <div style='margin-top:10px; opacity:0.95;'>
-        M7 Strategy: {best_signal['type']} на уровне {best_signal['level_value']}.<br>
-        ML-улучшенная стратегия с синхронизированным confidence и override.
-    </div>
-    """
+    note_html = f"<div style='margin-top:10px; opacity:0.95;'>M7 Strategy: {best['type']} @ {best['level_value']}. Синхронизированный confidence и AI override.</div>"
     return {
         "last_price": current_price,
-        "recommendation": {"action": action, "confidence": best_signal['confidence']},
-        "levels": {"entry": entry_price, "sl": stop_loss, "tp1": tp1, "tp2": tp2, "tp3": tp3},
+        "recommendation": {"action": action, "confidence": best['confidence']},
+        "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
         "probs": probs,
         "context": context,
         "note_html": note_html,
-        "alt": "Торговля по стратегии M7 с ML-улучшением",
+        "alt": "M7+ML",
         "entry_kind": "limit",
-        "entry_label": best_signal['type'],
-        # опционально — breakdown для UI
+        "entry_label": best['type'],
         "confidence_breakdown": {"rules_pct": rules_pct, "ai_override_delta_pct": ai_delta_pct, "overall_pct": overall_pct}
-    }
-
-# -------------------- W7 Strategy --------------------
-
-def analyze_asset_w7(ticker: str, horizon: str):
-    cli = PolygonClient()
-    cfg = _horizon_cfg(horizon)
-    hz = cfg["hz"]
-    days = max(90, cfg["look"] * 2)
-    df = cli.daily_ohlc(ticker, days=days)
-    price = cli.last_trade_price(ticker)
-    closes = df["close"]
-    tail = df.tail(cfg["look"])
-    rng_low, rng_high = float(tail["low"].min()), float(tail["high"].max())
-    rng_w = max(1e-9, rng_high - rng_low)
-    pos = (price - rng_low) / rng_w
-    slope = _linreg_slope(closes.tail(cfg["trend"]).values)
-    slope_norm = slope / max(1e-9, price)
-    atr_d = float(_atr_like(df, n=cfg["atr"]).iloc[-1])
-    atr_w = _weekly_atr(df) if cfg.get("use_weekly_atr") else atr_d
-    vol_ratio = atr_d / max(1e-9, float(_atr_like(df, n=cfg["atr"] * 2).iloc[-1]))
-    ha = _heikin_ashi(df)
-    ha_diff = ha["ha_close"].diff()
-    ha_up_run = _streak_by_sign(ha_diff, True)
-    ha_down_run = _streak_by_sign(ha_diff, False)
-    macd, sig, hist = _macd_hist(closes)
-    macd_pos_run = _streak_by_sign(hist, True)
-    macd_neg_run = _streak_by_sign(hist, False)
-    last_row = df.iloc[-1]
-    body, up_wick, dn_wick = _wick_profile(last_row)
-    long_upper = (up_wick > body * 1.3) and (up_wick > dn_wick * 1.1)
-    long_lower = (dn_wick > body * 1.3) and (dn_wick > up_wick * 1.1)
-    hlc = _last_period_hlc(df, cfg["pivot_rule"])
-    if not hlc:
-        hlc = (float(df["high"].tail(60).max()), float(df["low"].tail(60).min()), float(df["close"].iloc[-1]))
-    H, L, C = hlc
-    piv = _fib_pivots(H, L, C)
-    P, R1, R2, S1, S2 = piv["P"], piv["R1"], piv.get("R2"), piv["S1"], piv.get("S2")
-    tol_k = {"ST": 0.18, "MID": 0.22, "LT": 0.28}[hz]
-    buf = tol_k * (atr_w if hz != "ST" else atr_d)
-    def _near_from_below(level: float) -> bool:
-        return (level is not None) and (0 <= level - price <= buf)
-    def _near_from_above(level: float) -> bool:
-        return (level is not None) and (0 <= price - level <= buf)
-    thr_ha = {"ST": 4, "MID": 5, "LT": 6}[hz]
-    thr_macd = {"ST": 4, "MID": 6, "LT": 8}[hz]
-    long_up = (ha_up_run >= thr_ha) or (macd_pos_run >= thr_macd)
-    long_down = (ha_down_run >= thr_ha) or (macd_neg_run >= thr_macd)
-    if long_up and (_near_from_below(S1) or _near_from_below(R1) or _near_from_below(R2)):
-        action, scenario = "WAIT", "stall_after_long_up_at_pivot"
-    elif long_down and (_near_from_above(R1) or _near_from_above(S1) or _near_from_above(S2)):
-        action, scenario = "WAIT", "stall_after_long_down_at_pivot"
-    else:
-        band = _classify_band(price, piv, buf)
-        very_high_pos = pos >= 0.80
-        if very_high_pos:
-            if (R2 is not None) and (price > R2 + 0.6 * buf) and (slope_norm > 0):
-                action, scenario = "BUY", "breakout_up"
-            else:
-                action, scenario = "SHORT", "fade_top"
-        else:
-            if band >= +2:
-                if (R2 is not None) and (price > R2 + 0.6 * buf) and (slope_norm > 0):
-                    action, scenario = "BUY", "breakout_up"
-                else:
-                    action, scenario = "SHORT", "fade_top"
-            elif band == +1:
-                action, scenario = "WAIT", "upper_wait"
-            elif band == 0:
-                if slope_norm >= 0:
-                    action, scenario = "BUY", "trend_follow"
-                else:
-                    action, scenario = "WAIT", "mid_range"
-            elif band == -1:
-                action, scenario = "BUY", "revert_from_bottom"
-            else:
-                if band <= -2:
-                    action, scenario = "BUY", "revert_from_bottom"
-                else:
-                    action, scenario = "WAIT", "upper_wait"
-    base = 0.55 + 0.12 * _clip01(abs(slope_norm) * 1800) + 0.08 * _clip01((vol_ratio - 0.9) / 0.6)
-    if action == "WAIT":
-        base -= 0.07
-    conf = float(max(0.55, min(0.90, base)))
-    try:
-        from core.ai_inference import score_signal
-    except Exception:
-        score_signal = None
-    if score_signal is not None:
-        feats = dict(
-            pos=pos, slope_norm=slope_norm,
-            atr_d_over_price=(atr_d / max(1e-9, price)),
-            vol_ratio=vol_ratio,
-            ha_up_run=float(ha_up_run), ha_down_run=float(ha_down_run),
-            macd_pos_run=float(macd_pos_run), macd_neg_run=float(macd_neg_run),
-            band=float(_classify_band(price, piv, buf)),
-            long_upper=bool(long_upper), long_lower=bool(long_lower),
-        )
-        out_ai = score_signal(feats, hz=hz, ticker=ticker)
-        if out_ai is not None:
-            p_long = float(out_ai.get("p_long", 0.5))
-            th_long = float(os.getenv("ARXORA_AI_TH_LONG", "0.55"))
-            th_short = float(os.getenv("ARXORA_AI_TH_SHORT", "0.45"))
-            if p_long >= th_long:
-                action = "BUY"
-                conf = float(max(0.55, min(0.90, 0.55 + 0.35 * (p_long - th_long) / max(1e-9, 1.0 - th_long))))
-            elif p_long <= th_short:
-                action = "SHORT"
-                conf = float(max(0.55, min(0.90, 0.55 + 0.35 * ((th_short - p_long) / max(1e-9, th_short)))))
-            else:
-                action = "WAIT"
-                conf = float(max(0.48, min(0.83, conf - 0.05)))
-    step_d, step_w = atr_d, atr_w
-    if action == "BUY":
-        if price < P:
-            entry = max(price, S1 + 0.15 * step_w)
-            sl = S1 - 0.60 * step_w
-        else:
-            entry = max(price, P + 0.10 * step_w)
-            sl = P - 0.60 * step_w
-        tp1 = entry + 0.9 * step_w
-        tp2 = entry + 1.6 * step_w
-        tp3 = entry + 2.3 * step_w
-        alt = "Если продавят ниже и не вернут — не заходим; ждём возврата и подтверждения сверху."
-    elif action == "SHORT":
-        if price >= R1:
-            entry = min(price, R1 - 0.15 * step_w)
-            sl = R1 + 0.60 * step_w
-        else:
-            entry = price + 0.10 * step_d
-            sl = price + 1.00 * step_d
-        tp1 = entry - 0.9 * step_w
-        tp2 = entry - 1.6 * step_w
-        tp3 = entry - 2.3 * step_w
-        alt = "Если протолкнут выше и удержат — без погони; ждём возврата и слабости сверху."
-    else:
-        entry, sl = price, price - 0.90 * step_d
-        tp1, tp2, tp3 = entry + 0.7 * step_d, entry + 1.4 * step_d, entry + 2.1 * step_d
-        alt = "Ниже уровня — не пытаюсь догонять; стратегия — ждать пробоя, ретеста или отката к поддержке."
-    tp1, tp2, tp3 = _clamp_tp_by_trend(action, hz, tp1, tp2, tp3, piv, step_w, slope_norm, macd_pos_run, macd_neg_run)
-    atr_for_floor = atr_w if hz != "ST" else atr_d
-    tp1, tp2, tp3 = _apply_tp_floors(entry, sl, tp1, tp2, tp3, action, hz, price, atr_for_floor)
-    tp1, tp2, tp3 = _order_targets(entry, tp1, tp2, tp3, action)
-    sl, tp1, tp2, tp3 = _sanity_levels(action, entry, sl, tp1, tp2, tp3, price, step_d, step_w, hz)
-    entry_kind = _entry_kind(action, entry, price, step_d)
-    entry_label = {"buy-stop":"Buy STOP","buy-limit":"Buy LIMIT","buy-now":"Buy NOW",
-                   "sell-stop":"Sell STOP","sell-limit":"Sell LIMIT","sell-now":"Sell NOW"}.get(entry_kind, "")
-    chips = []
-    if vol_ratio > 1.05: chips.append("волатильность растёт")
-    if vol_ratio < 0.95: chips.append("волатильность сжимается")
-    if (ha_up_run >= thr_ha): chips.append(f"HA зелёных: {ha_up_run}")
-    if (ha_down_run >= thr_ha): chips.append(f"HA красных: {ha_down_run}")
-    p1 = _clip01(0.58 + 0.27 * (conf - 0.55) / 0.35)
-    p2 = _clip01(0.44 + 0.21 * (conf - 0.55) / 0.35)
-    p3 = _clip01(0.28 + 0.13 * (conf - 0.55) / 0.35)
-    probs = {"tp1": float(p1), "tp2": float(p2), "tp3": float(p3)}
-    seed = int(hashlib.sha1(f"{ticker}{df.index[-1].date()}".encode()).hexdigest(), 16) % (2**32)
-    rng = random.Random(seed)
-    if action == "WAIT":
-        lead = rng.choice(["Под кромкой — жду пробой/ретест.","Импульс длинный — не гонюсь.","Даём цене определиться."])
-    elif action == "BUY":
-        lead = rng.choice(["Опора близко — беру по ходу после паузы.","Спрос живой — вход от поддержки.","Восстановление держится — беру аккуратно."])
-    else:
-        lead = rng.choice(["Слабость у кромки — работаю от отказа.","Под потолком тяжело — шорт со стопом.","Импульс выдыхается — фиксирую вниз."])
-    note_html = f"<div style='margin-top:10px; opacity:0.95;'>{lead}</div>"
-    return {
-        "last_price": float(price),
-        "recommendation": {"action": action, "confidence": float(round(conf, 4))},
-        "levels": {"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3)},
-        "probs": probs,
-        "context": chips,
-        "note_html": note_html,
-        "alt": alt,
-        "entry_kind": entry_kind,
-        "entry_label": entry_label,
     }
 
 # -------------------- Strategy Router --------------------
@@ -797,18 +492,6 @@ def analyze_asset(ticker: str, horizon: str, strategy: str = "W7"):
         return analyze_asset_global(ticker, horizon)
     elif strategy == "M7":
         return analyze_asset_m7(ticker, horizon)
-    elif strategy == "W7":
-        return analyze_asset_w7(ticker, horizon)
     else:
-        raise ValueError(f"Unknown strategy: {strategy}")
-
-if __name__ == "__main__":
-    strategies = ["Global", "M7", "W7"]
-    ticker = "AAPL"
-    for strategy in strategies:
-        print(f"\n=== {strategy} Strategy Result ===")
-        try:
-            result = analyze_asset(ticker, "Краткосрочный", strategy)
-            print(result)
-        except Exception as e:
-            print(f"Error testing {strategy} strategy: {e}")
+        # По умолчанию пусть будет M7; при необходимости добавьте W7
+        return analyze_asset_m7(ticker, horizon)
