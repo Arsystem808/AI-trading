@@ -1,5 +1,7 @@
+# pages/1_Confidence_Breakdown.py
+
 import streamlit as st
-from core.confidence import ui_get_confidence_breakdown
+from core.ui_confidence import ui_get_confidence_breakdown
 
 st.title("Confidence Breakdown")
 
