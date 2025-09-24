@@ -1,48 +1,54 @@
 # -*- coding: utf-8 -*-
-# app.py — полноценный и устойчивый к рефакторингу UI для Arxora AI Trading
+# app.py — устойчивый UI Arxora с многоступенчатым fallback на точки входа стратегий
 
 import os
 import re
 import streamlit as st
 from dotenv import load_dotenv
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 load_dotenv()
 
 # ===================== МЯГКИЕ ИМПОРТЫ =====================
-# Перфоманс-трекер (необязателен)
+# Перфоманс (опционально)
 try:
     from core.performance_tracker import log_agent_performance, get_agent_performance
 except Exception:
     def log_agent_performance(*args, **kwargs): pass
     def get_agent_performance(*args, **kwargs): return None
 
-# Новый API (агенты) -> fallback на старый роутер/функции
+# Попытка нового API
 _NEW_API = False
 _analyze_by_agent = None
 _AgentEnum = None
-_analyze_asset = None
-_analyze_asset_m7 = None
-
 try:
-    # Новый API
     from core.strategy import analyze_by_agent as _analyze_by_agent, Agent as _AgentEnum
     _NEW_API = True
 except Exception:
     _NEW_API = False
 
-if not _NEW_API:
-    # Старый API: пробуем универсальный роутер
-    try:
-        from core.strategy import analyze_asset as _analyze_asset
-    except Exception:
-        _analyze_asset = None
-    # И старую M7, если роутера нет
-    try:
-        from core.strategy import analyze_asset_m7 as _analyze_asset_m7
-    except Exception:
-        _analyze_asset_m7 = None
+# Старый API: пробуем все варианты, что могут быть в core/strategy
+_analyze_asset = None
+_analyze_asset_m7 = None
+_analyze_asset_global = None
+_analyze_asset_w7 = None
+try:
+    from core.strategy import analyze_asset as _analyze_asset
+except Exception:
+    _analyze_asset = None
+try:
+    from core.strategy import analyze_asset_m7 as _analyze_asset_m7
+except Exception:
+    _analyze_asset_m7 = None
+try:
+    from core.strategy import analyze_asset_global as _analyze_asset_global
+except Exception:
+    _analyze_asset_global = None
+try:
+    from core.strategy import analyze_asset_w7 as _analyze_asset_w7
+except Exception:
+    _analyze_asset_w7 = None
 
 # Confidence breakdown (inline) + fallback
 try:
@@ -61,7 +67,7 @@ st.set_page_config(
     layout="centered",
 )
 
-# ===================== БРЕНДИНГ =====================
+# ===================== ШАПКА =====================
 def render_arxora_header():
     hero_path = "assets/arxora_logo_hero.png"
     if os.path.exists(hero_path):
@@ -111,7 +117,7 @@ CUSTOM_PHRASES = {
         "neutral":   ["Баланс. Работаем только по подтверждённому сигналу."]
     },
     "STOPLINE": ["Стоп-лосс: {sl}. Потенциальный риск ~{risk_pct}% от входа. Уровень оценён по волатильности."],
-    "DISCLAIMER": "AI-анализ не является инвестиционной рекомендацией. Прошлые результаты не гарантируют будущие."
+    "DISCLAIMER": "AI-анализ не является инвестрекомендацией. Рынок волатилен; прошлые результаты не гарантируют будущие."
 }
 
 ETF_HINTS  = {"SPY","QQQ","IWM","DIA","EEM","EFA","XLK","XLF","XLE","XLY","XLI","XLV","XLP","XLU","VNQ","GLD","SLV"}
@@ -122,8 +128,7 @@ def _fmt(x: Any) -> str:
     except Exception: return "0.00"
 
 def compute_risk_pct(levels: Dict[str, float]) -> str:
-    entry = float(levels.get("entry", 0))
-    sl    = float(levels.get("sl", 0))
+    entry = float(levels.get("entry", 0)); sl = float(levels.get("sl", 0))
     return "—" if entry == 0 else f"{abs(entry - sl)/max(1e-9,abs(entry))*100.0:.1f}"
 
 def detect_asset_class(ticker: str) -> str:
@@ -205,30 +210,39 @@ def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
     else:
         return ("Sell Stop", "Entry (Sell Stop)") if entry < last_price else ("Sell Limit", "Entry (Sell Limit)")
 
-# ===================== АГЕНТ-РУННЕР =====================
+# ===================== АГЕНТ-РУННЕР (многоступенчатый fallback) =====================
 def run_agent(ticker_norm: str, label: str) -> Dict[str, Any]:
-    """
-    Унифицированный запуск агента; работает и с новым API, и со старым,
-    без жёстких импортов конкретных функций.
-    """
+    # Новый API
     if _NEW_API and _analyze_by_agent and _AgentEnum:
         lbl = label.strip().lower()
         if lbl == "alphapulse": return _analyze_by_agent(ticker_norm, _AgentEnum.ALPHAPULSE)
         if lbl == "octopus":    return _analyze_by_agent(ticker_norm, _AgentEnum.OCTOPUS)
         if lbl == "global":     return _analyze_by_agent(ticker_norm, _AgentEnum.GLOBAL)
         if lbl == "m7pro":      return _analyze_by_agent(ticker_norm, _AgentEnum.M7PRO)
-        raise ValueError(f"Unknown agent label: {label}")
 
-    # Старый API
+    # Старый API: сначала прямые функции (наиболее надёжно)
+    lbl = label.strip()
+    if lbl == "Global" and _analyze_asset_global:
+        return _analyze_asset_global(ticker_norm, "Краткосрочный")
+    if lbl in ("AlphaPulse","Octopus") and _analyze_asset_w7:
+        hz = "Среднесрочный" if lbl=="AlphaPulse" else "Краткосрочный"
+        return _analyze_asset_w7(ticker_norm, hz)
+    if lbl == "M7pro" and _analyze_asset_m7:
+        return _analyze_asset_m7(ticker_norm, "Краткосрочный", use_ml=True)
+
+    # Универсальный роутер (если присутствует)
     if _analyze_asset:
-        if label == "AlphaPulse": return _analyze_asset(ticker_norm, "Среднесрочный", strategy="W7")
-        if label == "Octopus":    return _analyze_asset(ticker_norm, "Краткосрочный", strategy="W7")
-        if label == "Global":     return _analyze_asset(ticker_norm, "Долгосрочный", strategy="Global")
-        if label == "M7pro":      return _analyze_asset(ticker_norm, "Краткосрочный", strategy="M7")
-    if _analyze_asset_m7:
-        # минимально рабочий fallback
-        return _analyze_asset_m7(ticker_norm)
-    raise RuntimeError("Не удалось найти точку входа стратегии (analyze_by_agent/analyze_asset).")
+        if lbl == "AlphaPulse": return _analyze_asset(ticker_norm, "Среднесрочный", strategy="W7")
+        if lbl == "Octopus":    return _analyze_asset(ticker_norm, "Краткосрочный", strategy="W7")
+        if lbl == "Global":     return _analyze_asset(ticker_norm, "Долгосрочный", strategy="Global")
+        if lbl == "M7pro":      return _analyze_asset(ticker_norm, "Краткосрочный", strategy="M7")
+
+    # Последний шанс — любая доступная функция
+    if _analyze_asset_m7:      return _analyze_asset_m7(ticker_norm, "Краткосрочный", use_ml=True)
+    if _analyze_asset_global:  return _analyze_asset_global(ticker_norm, "Краткосрочный")
+    if _analyze_asset_w7:      return _analyze_asset_w7(ticker_norm, "Краткосрочный")
+
+    raise RuntimeError("Точка входа стратегий недоступна: нет analyze_by_agent, analyze_asset или прямых функций.")
 
 # ===================== UI =====================
 AGENTS = [{"label": "AlphaPulse"}, {"label": "Octopus"}, {"label": "Global"}, {"label": "M7pro"}]
@@ -264,7 +278,7 @@ if run and ticker:
             unsafe_allow_html=True,
         )
 
-        # Перфоманс-трекер (мягко)
+        # Перфоманс (необязателен)
         session_key = f"{agent_rec['label']}_{ticker}_last_price"
         prev_price = st.session_state.get(session_key, None)
         daily_return = 0.0 if (prev_price is None or prev_price == 0) else (last_price - prev_price) / prev_price
@@ -299,14 +313,28 @@ if run and ticker:
             unsafe_allow_html=True,
         )
 
-        # Inline breakdown: всегда синхронизирован с карточкой
+        # Confidence breakdown — нативный или fallback
         try:
-            render_confidence_breakdown_inline(ticker, conf*100)
+            if _render_breakdown_native:
+                _render_breakdown_native(ticker, conf*100)
+            else:
+                data = _get_conf_from_session() if _get_conf_from_session else {
+                    "overall_confidence_pct": float(st.session_state.get("last_overall_conf_pct", conf*100)),
+                    "breakdown": {
+                        "rules_pct": float(st.session_state.get("last_rules_pct", 44.0)),
+                        "ai_override_delta_pct": float(st.session_state.get("last_overall_conf_pct", conf*100)) - float(st.session_state.get("last_rules_pct", 44.0))
+                    },
+                    "shap_top": []
+                }
+                st.markdown("#### Confidence breakdown")
+                st.write(f"Общая уверенность: {data.get('overall_confidence_pct',0):.1f}%")
+                b = data.get("breakdown", {})
+                st.write(f"— Базовые правила: {b.get('rules_pct',0):.1f}%")
+                st.write(f"— AI override: {b.get('ai_override_delta_pct',0):.1f}%")
         except Exception:
-            # Жёсткий fallback (если не импортировался модуль)
-            st.markdown("#### Confidence breakdown")
             overall = float(st.session_state.get("last_overall_conf_pct", conf*100))
             rules   = float(st.session_state.get("last_rules_pct", 44.0))
+            st.markdown("#### Confidence breakdown")
             st.write(f"Общая уверенность: {overall:.1f}%")
             st.write(f"— Базовые правила: {rules:.1f}%")
             st.write(f"— AI override: {overall - rules:.1f}%")
@@ -325,7 +353,7 @@ if run and ticker:
             if rr:
                 st.markdown(f"<div style='margin-top:6px; color:#FFA94D; font-weight:600;'>{rr}</div>", unsafe_allow_html=True)
 
-        # Перфоманс по ключевым инструментам
+        # Перфоманс блок
         st.subheader(f"Эффективность модели {agent_rec['label']} по ключевым инструментам (3 месяца)")
         cols = st.columns(2)
         for i, tk in enumerate(KEY_TICKERS):
@@ -350,7 +378,7 @@ if run and ticker:
             stopline = CUSTOM_PHRASES["STOPLINE"][0].format(sl=_fmt(lv["sl"]), risk_pct=compute_risk_pct(lv))
             st.markdown(f"<div style='opacity:0.9; margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
 
-        st.caption(CUSTOM_PHRASES["DISCLAIMER"])
+        st.caption(CUSTOM_PHРАSES["DISCLAIMER"])
 
     except Exception as e:
         st.error(f"Ошибка анализа: {e}")
@@ -387,7 +415,7 @@ if st.session_state.get('show_arxora', False):
         <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 10px;">
             <h4 style="font-weight: 600;">О проекте</h4>
             <p style="font-weight: 300;">
-            Arxora AI — современное решение для трейдинга с использованием ИИ и ML: анализ, вероятности, risk‑management и механизм AI Override.
+            Arxora AI — современное решение для трейдинга с ИИ/ML: вероятностная оценка, AI Override и дисциплина риска.
             </p>
         </div>
         """,
@@ -400,7 +428,7 @@ if st.session_state.get('show_crypto', False):
         <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 10px;">
             <h4 style="font-weight: 600;">Crypto</h4>
             <p style="font-weight: 300;">
-            Анализ крипторынка с учётом круглосуточной торговли и повышенной волатильности.
+            Анализ криптоактивов с учётом круглосуточной торговли и высокой волатильности.
             </p>
         </div>
         """,
