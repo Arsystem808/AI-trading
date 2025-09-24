@@ -9,7 +9,6 @@ def train_m7pro(ticker: str, data_path: str):
     Обучение модели M7pro для тикера на основе исторических данных.
     data_path - путь к CSV с признаками и таргетом.
     """
-
     df = pd.read_csv(data_path)
 
     # Используйте ваши фичи с префиксом "feature_"
@@ -25,14 +24,9 @@ def train_m7pro(ticker: str, data_path: str):
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
     model = LGBMRegressor(n_estimators=1000, learning_rate=0.05)
-
-    model.fit(X_train, y_train,
-              eval_set=[(X_test, y_test)],
-              early_stopping_rounds=50,
-              verbose=20)
+    model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=20)  # <- early_stopping_rounds убран
 
     os.makedirs("models", exist_ok=True)
-
     model_path = f"models/arxora_m7pro_{ticker}.joblib"
     joblib.dump(model, model_path)
     print(f"Модель сохранена: {model_path}")
