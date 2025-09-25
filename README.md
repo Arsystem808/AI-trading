@@ -1,14 +1,23 @@
-# AI Trading — сигналы с Rules + AI Override
+[README_UPDATE.txt](https://github.com/user-attachments/files/22123685/README_UPDATE.txt)
 
-Инструмент для быстрого анализа тикеров и криптоактивов: комбинирует базовые торговые правила и вероятностную оценку модели (AI override), показывает уровни входа/выхода и прозрачную уверенность сигнала.
+ARXORA — PATCH PACK (не ломает существующий код)
 
-## Что внутри
+1) Скопируйте файлы в свой проект:
+   - assets/arxora_logo.png  -> в вашу папку ассетов (например, ./assets/)
+   - branding.py             -> в корень проекта (рядом с app.py)
+   - utils/tickers.py        -> в папку ./utils/ (создайте если нет)
 
-- Единая шкала уверенности: база правил 44% + AI override из модели (калиброванная `predict_proba`).  
-- Понятный breakdown в UI: вклад правил, вклад ИИ, общий процент.  
-- Уровни: Entry, Stop Loss, TP1–TP3, рассчитанные с учётом волатильности.  
-- Смоук‑тест без UI и единый загрузчик весов (`joblib/pkl`).
+2) В app.py:
+   2.1) Установите заголовок и favicon и подключите шапку Arxora:
 
-## Быстрый старт
+   from branding import render_header
+   st.set_page_config(page_title="Arxora", page_icon="assets/arxora_logo.png", layout="wide")
+   render_header("assets/arxora_logo.png", "trade smarter.")
 
-1) Клонировать репозиторий  
+   2.2) В месте ввода тикера добавьте placeholder:
+   ticker = st.text_input("Тикер", value="AAPL", placeholder="Примеры: AAPL, TSLA, X:BTCUSD, BINANCE:ETHUSDT")
+
+3) В вашем загрузчике данных нормализуйте тикер:
+   from utils.tickers import normalize_to_yf
+   yf_symbol = normalize_to_yf(ticker)
+   # дальше используйте yf_symbol в yfinance (или аналог)

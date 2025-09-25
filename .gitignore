@@ -1,7 +1,1 @@
-cat > .gitignore <<'IGN'
-__pycache__/
-*.pyc
-models/*.pkl
-models/*.joblib
-data/cache/*
-IGN
+.venv/
