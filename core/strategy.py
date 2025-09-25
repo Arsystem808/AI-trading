@@ -483,8 +483,8 @@ class M7TradingStrategy:
         price = float(data['close'].iloc[-1])
         tstamp = data.index[-1]
         for name, val in levels.items():
-            dist = abs(price - val) / max(1e-9, cur_atr)
-            if dist < self.atr_multiplier:
+            distance = abs(price - val) / max(1e-9, cur_atr)
+            if distance < self.atr_multiplier:
                 is_res = (val > price)
                 if is_res:
                     sig = 'SELL_LIMIT'
