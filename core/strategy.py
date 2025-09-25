@@ -125,6 +125,7 @@ class M7MLModel:
             if X is None or len(X) == 0:
                 return None
             x = X.iloc[[-1]]
+            X = X.reindex(columns=list(scaler.feature_names_in_))
             xs = self.scaler.transform(x)
             p = float(self.model.predict_proba(xs)[:,1][0])
             return _clip01(p)
