@@ -483,7 +483,7 @@ class M7TradingStrategy:
         price = float(data['close'].iloc[-1])
         tstamp = data.index[-1]
         for name, val in levels.items():
-            distance = abs(price - val) / max(1e-9, current_atr)
+            dist = abs(price - val) / max(1e-9, cur_atr)
             if dist < self.atr_multiplier:
                 is_res = (val > price)
                 if is_res:
@@ -496,7 +496,7 @@ class M7TradingStrategy:
                     entry = val * 1.002
                     sl    = val * 0.98
                     tp    = val * 1.04
-                conf = float(max(0.0, min(1.0, 1 - (distance / self.atr_multiplier))))
+                conf = float(max(0.0, min(1.0, 1 - (dist / self.atr_multiplier))))
                 signals.append({
                     'type': sig, 'price': round(entry,4), 'stop_loss': round(sl,4),
                     'take_profit': round(tp,4), 'confidence': conf,
