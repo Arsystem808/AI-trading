@@ -282,13 +282,14 @@ class M7MLModel:
     Безопасная интеграция ML для M7:
     - Не обучаем в проде, только грузим веса; при отсутствии — возвращаем None и стратегия уходит в правила.
     - Для уверенности используем predict_proba, иначе decision_function/predict как прокси.
-    - Перед predict жёстко выравниваем состав и порядок признаков под train.
+    - Перед predict жёстко выравниваем состав и порядок признаков под список обучения.
     """
     def __init__(self):
         self.model = None
         self.scaler = None  # опционально
         self.local_model_path = "models/m7_model.pkl"
         self.local_scaler_path = "models/m7_scaler.pkl"
+        self.train_feature_names: Optional[List[str]] = None
 
     def _try_local_load(self):
         try:
@@ -304,7 +305,10 @@ class M7MLModel:
         try:
             from core.model_loader import load_model_for
             m = load_model_for(ticker)
-            if m is not None:
+            if isinstance(m, dict) and "model" in m:
+                self.model = m["model"]
+                self.train_feature_names = m.get("feature_names")
+            else:
                 self.model = m
         except Exception as e:
             logger.warning("Repo model_loader failed: %s", e)
@@ -327,10 +331,18 @@ class M7MLModel:
             X = X.dropna().tail(1)
             if not len(X):
                 return None
-            for col in FEATURES_TRAIN:
+            feat_list = self.train_feature_names or FEATURES_TRAIN
+            for col in feat_list:
                 if col not in X.columns:
                     X[col] = 0.0
-            X = X[FEATURES_TRAIN]
+            X = X[feat_list]  # строгий порядок под обучение
+            # если нужен скейлер — применяем и сохраняем имена колонок
+            if self.scaler is not None:
+                try:
+                    X_np = self.scaler.transform(X.values)
+                    X = pd.DataFrame(X_np, columns=X.columns, index=X.index)
+                except Exception:
+                    pass
             return X
         except Exception as e:
             logger.warning("Feature build failed: %s", e)
@@ -480,8 +492,6 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=True):
     cli = PolygonClient()
     days = 120
     df = cli.daily_ohlc(ticker, days=days)
-    returns = np.log(df['close'] / df['close'].shift(1))
-    hist_volatility = returns.std() * np.sqrt(252)
 
     strategy = M7TradingStrategy()
     signals = strategy.generate_signals(df)
@@ -853,4 +863,3 @@ if __name__ == "__main__":
             print(result)
         except Exception as e:
             print(f"Error testing {strategy} strategy: {e}")
-
