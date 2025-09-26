@@ -1,10 +1,12 @@
 # core/strategy.py
+from __future__ import annotations
+
 import os
 import hashlib
 import random
 import numpy as np
 import pandas as pd
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, Callable
 import logging
 from datetime import datetime, timedelta
 
@@ -63,13 +65,14 @@ def _weekly_atr(df: pd.DataFrame, n_weeks: int = 8) -> float:
 
 # -------------------- Heikin Ashi & MACD --------------------
 def _heikin_ashi(df: pd.DataFrame) -> pd.DataFrame:
+    # Формулы соответствуют общепринятому определению Heikin Ashi: HA_Close=(O+H+L+C)/4; HA_Open=(prev_HA_Open+prev_HA_Close)/2 [1] [2]
     ha = pd.DataFrame(index=df.index.copy())
     ha["ha_close"] = (df["open"] + df["high"] + df["low"] + df["close"]) / 4.0
     ha_open = [(df["open"].iloc[0] + df["close"].iloc[0]) / 2.0]
     for i in range(1, len(df)):
         ha_open.append((ha_open[-1] + ha["ha_close"].iloc[i-1]) / 2.0)
     ha["ha_open"] = pd.Series(ha_open, index=df.index)
-    return ha
+    return ha  # [web:191][web:195]
 
 def _streak_by_sign(series: pd.Series, positive: bool = True) -> int:
     want_pos = 1 if positive else -1
@@ -228,12 +231,53 @@ def _sanity_levels(action: str, entry: float, sl: float,
     tp1, tp2, tp3 = _order_targets(entry, tp1, tp2, tp3, action)
     return sl, tp1, tp2, tp3
 
+# -------------------- Калибровка и ECE --------------------
+class ConfidenceCalibrator:
+    """
+    Плагин для калибровки уверенности: identity | sigmoid (Platt) | isotonic, совместимо со стандартной практикой [web:168].
+    """
+    def __init__(self, method: str = "identity", params: Optional[Dict[str, float]] = None):
+        self.method = method
+        self.params = params or {}
+
+    def __call__(self, p: float) -> float:
+        p = _clip01(float(p))
+        if self.method == "sigmoid":
+            a = float(self.params.get("a", 1.0))
+            b = float(self.params.get("b", 0.0))
+            return _clip01(float(1.0 / (1.0 + np.exp(-(a * p + b)))))
+        if self.method == "isotonic":
+            knots = sorted(self.params.get("knots", [(0.0, 0.0), (1.0, 1.0)]))
+            for i in range(1, len(knots)):
+                x0, y0 = knots[i - 1]; x1, y1 = knots[i]
+                if p <= x1:
+                    if x1 == x0:
+                        return _clip01(float(y1))
+                    t = (p - x0) / (x1 - x0)
+                    return _clip01(float(y0 + t * (y1 - y0)))
+            return _clip01(float(knots[-1][1]))
+        return p  # identity
+
+def _ece(probs: np.ndarray, labels: np.ndarray, bins: int = 10) -> float:
+    # Expected Calibration Error на равных бинах [web:168]
+    edges = np.linspace(0.0, 1.0, bins + 1)
+    N = len(labels)
+    ece = 0.0
+    for i in range(bins):
+        mask = (probs > edges[i]) & (probs <= edges[i + 1])
+        if not np.any(mask):
+            continue
+        conf = float(probs[mask].mean())
+        acc = float((labels[mask] == 1).mean())
+        ece += (mask.sum() / N) * abs(acc - conf)
+    return float(ece)
+
 # -------------------- ML Model для M7 Strategy --------------------
 class M7MLModel:
     """
     Безопасная интеграция ML для M7:
-    - Не обучаем в проде, только грузим веса; при отсутствии — возвращаем None и стратегия уходит в правила. 
-    - Для уверенности используем predict_proba, иначе decision_function/predict как прокси. 
+    - Не обучаем в проде, только грузим веса; при отсутствии — возвращаем None и стратегия уходит в правила.
+    - Для уверенности используем predict_proba, иначе decision_function/predict как прокси.
     """
     def __init__(self):
         self.model = None
@@ -268,7 +312,6 @@ class M7MLModel:
             X["momentum"]  = df["close"] / df["close"].shift(5) - 1
             X["sma_20"]    = df["close"].rolling(20).mean()
             X["sma_50"]    = df["close"].rolling(50).mean()
-            # простая оценка RSI
             delta = df["close"].diff()
             gain = (delta.where(delta > 0, 0)).rolling(14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
@@ -283,7 +326,6 @@ class M7MLModel:
             return None
 
     def predict_signal(self, df: pd.DataFrame, ticker: str) -> Optional[Dict[str, float]]:
-        # Ленивая загрузка модели
         if self.model is None:
             self._try_repo_loader(ticker)
             if self.model is None:
@@ -295,7 +337,6 @@ class M7MLModel:
         if X is None:
             return None
 
-        # Масштабирование (опционально)
         X_in = X.values
         if self.scaler is not None:
             try:
@@ -310,18 +351,16 @@ class M7MLModel:
                 p_long = float(np.ravel(proba[:, 1])[0])
             elif hasattr(self.model, "decision_function"):
                 margin = float(np.ravel(self.model.decision_function(X_in))[0])
-                # сигмоид для перевода margin -> [0..1]
                 p_long = float(1.0 / (1.0 + np.exp(-margin)))
             elif hasattr(self.model, "predict"):
                 point = float(np.ravel(self.model.predict(X_in))[0])
-                p_long = float(np.tanh(abs(point)))  # прокси уверенности
+                p_long = float(np.tanh(abs(point)))
             else:
                 return None
         except Exception as e:
             logger.warning("ML predict failed: %s", e)
             return None
 
-        # нормализованная уверенность ИИ (около 50% нейтраль)
         ai_conf = float(max(0.0, min(1.0, p_long)))
         return {"p_long": ai_conf, "confidence": float(0.5 + (ai_conf - 0.5))}
 
@@ -470,7 +509,6 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=True):
                 ml_confidence = ml_conf
                 combined = 0.7 * ml_conf + 0.3 * base_conf
                 best_signal['confidence'] = float(min(0.95, max(0.50, combined)))
-                # Конфликтный разворот по ML
                 if ml_prediction['p_long'] > 0.6 and best_signal['type'].startswith('SELL'):
                     best_signal['type'] = 'BUY_LIMIT'
                     best_signal['confidence'] = float(max(0.50, best_signal['confidence'] * 0.9))
@@ -479,7 +517,6 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=True):
                     best_signal['confidence'] = float(max(0.50, best_signal['confidence'] * 0.9))
         except Exception as e:
             logger.warning("M7pro ML integration warning: %s", e)
-            # продолжаем без ML
 
     current_price = float(df['close'].iloc[-1])
     entry_price = best_signal['price']
@@ -516,7 +553,7 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=True):
         "entry_label": best_signal['type']
     }
 
-# -------------------- W7 Strategy --------------------
+# -------------------- W7 Strategy (как было) --------------------
 def analyze_asset_w7(ticker: str, horizon: str):
     cli = PolygonClient()
     cfg = _horizon_cfg(horizon)
@@ -695,19 +732,99 @@ def analyze_asset_w7(ticker: str, horizon: str):
         "entry_label": entry_label,
     }
 
-# -------------------- Strategy Router --------------------
-def analyze_asset(ticker: str, horizon: str, strategy: str = "W7"):
-    if strategy == "Global":
-        return analyze_asset_global(ticker, horizon)
-    elif strategy == "M7":
-        return analyze_asset_m7(ticker, horizon)
-    elif strategy == "W7":
-        return analyze_asset_w7(ticker, horizon)
-    else:
+# -------------------- Оркестратор Octopus (агрегирует Global, M7, W7) --------------------
+OCTO_WEIGHTS: Dict[str, float] = {"Global": 0.33, "M7": 0.33, "W7": 0.34}
+OCTO_CALIBRATOR = ConfidenceCalibrator(method="sigmoid", params={"a": 1.2, "b": -0.1})  # можно заменить на isotonic
+
+def _act_to_num(a: str) -> int:
+    return 1 if a == "BUY" else (-1 if a == "SHORT" else 0)
+
+def _num_to_act(x: float) -> str:
+    if x > 0: return "BUY"
+    if x < 0: return "SHORT"
+    return "WAIT"
+
+def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
+    g = analyze_asset_global(ticker, horizon)
+    m = analyze_asset_m7(ticker, horizon)
+    w = analyze_asset_w7(ticker, horizon)
+
+    parts = {"Global": g, "M7": m, "W7": w}
+    votes = []
+    confs = []
+    for name, res in parts.items():
+        wgt = OCTO_WEIGHTS.get(name, 0.0)
+        act = str(res["recommendation"]["action"])
+        conf = float(res["recommendation"]["confidence"])
+        votes.append(wgt * _act_to_num(act))
+        confs.append(wgt * _clip01(conf))
+
+    raw_vote = float(sum(votes))
+    raw_conf = float(sum(confs) / max(1e-9, sum(OCTO_WEIGHTS.values())))
+    final_action = _num_to_act(raw_vote)
+    calibrated = float(OCTO_CALIBRATOR(raw_conf))
+
+    # выбрать уровни победителя (по весу и совпадению действия)
+    winner = "W7"
+    best_score = -1.0
+    for name, res in parts.items():
+        score = OCTO_WEIGHTS.get(name, 0.0) * (1.0 if res["recommendation"]["action"] == final_action else 0.0)
+        if score > best_score:
+            best_score = score
+            winner = name
+    levels = parts[winner]["levels"]
+
+    # ECE на подвыборке BUY/SHORT (WAIT исключаем)
+    probs_vec, labels_vec = [], []
+    for name, res in parts.items():
+        act = res["recommendation"]["action"]
+        if act == "WAIT":
+            continue
+        probs_vec.append(_clip01(res["recommendation"]["confidence"]))
+        labels_vec.append(1 if act == "BUY" else 0)
+    ece = _ece(np.array(probs_vec), np.array(labels_vec), bins=10) if len(probs_vec) >= 2 else 0.0  # [web:168]
+
+    context = [f"Orchestrated from Global/M7/W7 with weights {OCTO_WEIGHTS}"]
+
+    return {
+        "strategy": "Octopus",
+        "agents": ["Global", "M7", "W7"],
+        "weights": OCTO_WEIGHTS,
+        "signals": {
+            "Global": {"action": g["recommendation"]["action"], "confidence": float(g["recommendation"]["confidence"])},
+            "M7":     {"action": m["recommendation"]["action"], "confidence": float(m["recommendation"]["confidence"])},
+            "W7":     {"action": w["recommendation"]["action"], "confidence": float(w["recommendation"]["confidence"])},
+        },
+        "action": final_action,
+        "confidence_raw": float(raw_conf),
+        "confidence": float(calibrated),
+        "calibration": {"method": OCTO_CALIBRATOR.method, "params": OCTO_CALIBRATOR.params, "ece": float(ece)},
+        "levels": levels,
+        "last_price": float(w.get("last_price", g.get("last_price", 0.0))),
+        "context": context + g.get("context", [])[:2] + m.get("context", [])[:2],
+        "note_html": "<div style='margin-top:10px; opacity:0.95;'>Octopus: взвешенное голосование стратегий Global/M7/W7 с калиброванной уверенностью.</div>",
+        "alt": "Агрегированный сигнал Octopus",
+        "entry_kind": "market" if final_action != "WAIT" else "wait",
+        "entry_label": final_action if final_action != "WAIT" else "WAIT",
+        "probs": w.get("probs", {}),
+    }
+
+# -------------------- Strategy Router (Registry с алиасом Octopus) --------------------
+STRATEGY_REGISTRY: Dict[str, Callable[[str, str], Dict[str, Any]]] = {
+    "Global": analyze_asset_global,
+    "M7": analyze_asset_m7,
+    "W7": analyze_asset_w7,
+    "Octopus": analyze_asset_octopus,  # официальный алиас оркестратора по шаблону Registry
+}  # [web:137]
+
+def analyze_asset(ticker: str, horizon: str, strategy: str = "Octopus"):
+    fn = STRATEGY_REGISTRY.get(strategy)
+    if not fn:
         raise ValueError(f"Unknown strategy: {strategy}")
+    return fn(ticker, horizon)
 
 if __name__ == "__main__":
-    strategies = ["Global", "M7", "W7"]
+    strategies = ["Global", "M7", "W7", "Octopus"]
     ticker = "AAPL"
     for strategy in strategies:
         print(f"\n=== {strategy} Strategy Result ===")
@@ -716,3 +833,4 @@ if __name__ == "__main__":
             print(result)
         except Exception as e:
             print(f"Error testing {strategy} strategy: {e}")
+
