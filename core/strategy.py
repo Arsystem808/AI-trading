@@ -10,6 +10,7 @@ from typing import Dict, Any, Optional, List, Tuple, Callable
 import logging
 from datetime import datetime, timedelta
 
+# -------------------- инфраструктура --------------------
 # Мягкие импорты внешних модулей, чтобы UI не падал
 try:
     from core.polygon_client import PolygonClient
@@ -65,14 +66,14 @@ def _weekly_atr(df: pd.DataFrame, n_weeks: int = 8) -> float:
 
 # -------------------- Heikin Ashi & MACD --------------------
 def _heikin_ashi(df: pd.DataFrame) -> pd.DataFrame:
-    # Формулы соответствуют общепринятому определению Heikin Ashi: HA_Close=(O+H+L+C)/4; HA_Open=(prev_HA_Open+prev_HA_Close)/2 [1] [2]
+    # HA_Close=(O+H+L+C)/4; HA_Open=(prev_HA_Open+prev_HA_Close)/2
     ha = pd.DataFrame(index=df.index.copy())
     ha["ha_close"] = (df["open"] + df["high"] + df["low"] + df["close"]) / 4.0
     ha_open = [(df["open"].iloc[0] + df["close"].iloc[0]) / 2.0]
     for i in range(1, len(df)):
         ha_open.append((ha_open[-1] + ha["ha_close"].iloc[i-1]) / 2.0)
     ha["ha_open"] = pd.Series(ha_open, index=df.index)
-    return ha  # [web:191][web:195]
+    return ha
 
 def _streak_by_sign(series: pd.Series, positive: bool = True) -> int:
     want_pos = 1 if positive else -1
@@ -234,7 +235,7 @@ def _sanity_levels(action: str, entry: float, sl: float,
 # -------------------- Калибровка и ECE --------------------
 class ConfidenceCalibrator:
     """
-    Плагин для калибровки уверенности: identity | sigmoid (Platt) | isotonic, совместимо со стандартной практикой [web:168].
+    Плагин калибровки уверенности: identity | sigmoid (Platt) | isotonic.
     """
     def __init__(self, method: str = "identity", params: Optional[Dict[str, float]] = None):
         self.method = method
@@ -259,7 +260,6 @@ class ConfidenceCalibrator:
         return p  # identity
 
 def _ece(probs: np.ndarray, labels: np.ndarray, bins: int = 10) -> float:
-    # Expected Calibration Error на равных бинах [web:168]
     edges = np.linspace(0.0, 1.0, bins + 1)
     N = len(labels)
     ece = 0.0
@@ -273,11 +273,16 @@ def _ece(probs: np.ndarray, labels: np.ndarray, bins: int = 10) -> float:
     return float(ece)
 
 # -------------------- ML Model для M7 Strategy --------------------
+FEATURES_TRAIN = [
+    "returns","volatility","momentum","sma_20","sma_50","rsi","volume_ma","volume_ratio"
+]
+
 class M7MLModel:
     """
     Безопасная интеграция ML для M7:
     - Не обучаем в проде, только грузим веса; при отсутствии — возвращаем None и стратегия уходит в правила.
     - Для уверенности используем predict_proba, иначе decision_function/predict как прокси.
+    - Перед predict жёстко выравниваем состав и порядок признаков под train.
     """
     def __init__(self):
         self.model = None
@@ -307,20 +312,26 @@ class M7MLModel:
     def prepare_features(self, df: pd.DataFrame, ticker: str) -> Optional[pd.DataFrame]:
         try:
             X = pd.DataFrame(index=df.index.copy())
-            X["returns"]   = df["close"].pct_change()
-            X["volatility"]= X["returns"].rolling(20).std()
-            X["momentum"]  = df["close"] / df["close"].shift(5) - 1
-            X["sma_20"]    = df["close"].rolling(20).mean()
-            X["sma_50"]    = df["close"].rolling(50).mean()
+            X["returns"]    = df["close"].pct_change()
+            X["volatility"] = X["returns"].rolling(20).std()
+            X["momentum"]   = df["close"] / df["close"].shift(5) - 1
+            X["sma_20"]     = df["close"].rolling(20).mean()
+            X["sma_50"]     = df["close"].rolling(50).mean()
             delta = df["close"].diff()
             gain = (delta.where(delta > 0, 0)).rolling(14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
             rs   = gain / loss
             X["rsi"] = 100 - (100 / (1 + rs))
-            X["volume_ma"]   = df["volume"].rolling(20).mean()
-            X["volume_ratio"]= df["volume"] / X["volume_ma"]
+            X["volume_ma"]    = df["volume"].rolling(20).mean()
+            X["volume_ratio"] = df["volume"] / X["volume_ma"]
             X = X.dropna().tail(1)
-            return X if len(X) else None
+            if not len(X):
+                return None
+            for col in FEATURES_TRAIN:
+                if col not in X.columns:
+                    X[col] = 0.0
+            X = X[FEATURES_TRAIN]
+            return X
         except Exception as e:
             logger.warning("Feature build failed: %s", e)
             return None
@@ -337,23 +348,15 @@ class M7MLModel:
         if X is None:
             return None
 
-        X_in = X.values
-        if self.scaler is not None:
-            try:
-                X_in = self.scaler.transform(X.values)
-            except Exception:
-                pass
-
-        p_long = None
         try:
             if hasattr(self.model, "predict_proba"):
-                proba = self.model.predict_proba(X_in)
+                proba = self.model.predict_proba(X, validate_features=True)
                 p_long = float(np.ravel(proba[:, 1])[0])
             elif hasattr(self.model, "decision_function"):
-                margin = float(np.ravel(self.model.decision_function(X_in))[0])
+                margin = float(np.ravel(self.model.decision_function(X))[0])
                 p_long = float(1.0 / (1.0 + np.exp(-margin)))
             elif hasattr(self.model, "predict"):
-                point = float(np.ravel(self.model.predict(X_in))[0])
+                point = float(np.ravel(self.model.predict(X))[0])
                 p_long = float(np.tanh(abs(point)))
             else:
                 return None
@@ -361,7 +364,7 @@ class M7MLModel:
             logger.warning("ML predict failed: %s", e)
             return None
 
-        ai_conf = float(max(0.0, min(1.0, p_long)))
+        ai_conf = float(_clip01(p_long))
         return {"p_long": ai_conf, "confidence": float(0.5 + (ai_conf - 0.5))}
 
 # -------------------- Global Strategy --------------------
@@ -483,7 +486,7 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=True):
     strategy = M7TradingStrategy()
     signals = strategy.generate_signals(df)
     if not signals:
-        return {
+        res = {
             "last_price": float(df['close'].iloc[-1]),
             "recommendation": {"action": "WAIT", "confidence": 0.5},
             "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
@@ -494,11 +497,20 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=True):
             "entry_kind": "wait",
             "entry_label": "WAIT"
         }
+        res["meta"] = {"grey_zone": True, "source": "M7pro"}
+        return res
 
     best_signal = max(signals, key=lambda x: x['confidence'])
 
-    # Интеграция ML — безопасная, без обучения в проде
+    # Интеграция ML и калибровка
     ml_confidence = None
+    max_cap = 0.88
+    min_cap = 0.50
+    calibrator = ConfidenceCalibrator(
+        method=os.getenv("ARX_CALIB","sigmoid"),
+        params={"a": float(os.getenv("ARX_CAL_A","1.1")), "b": float(os.getenv("ARX_CAL_B","-0.05"))}
+    )
+
     if use_ml:
         try:
             ml_model = M7MLModel()
@@ -507,16 +519,15 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=True):
                 base_conf = float(best_signal['confidence'])
                 ml_conf   = float(ml_prediction['confidence'])
                 ml_confidence = ml_conf
-                combined = 0.7 * ml_conf + 0.3 * base_conf
-                best_signal['confidence'] = float(min(0.95, max(0.50, combined)))
-                if ml_prediction['p_long'] > 0.6 and best_signal['type'].startswith('SELL'):
-                    best_signal['type'] = 'BUY_LIMIT'
-                    best_signal['confidence'] = float(max(0.50, best_signal['confidence'] * 0.9))
-                elif ml_prediction['p_long'] < 0.4 and best_signal['type'].startswith('BUY'):
-                    best_signal['type'] = 'SELL_LIMIT'
-                    best_signal['confidence'] = float(max(0.50, best_signal['confidence'] * 0.9))
+                mixed = 0.6 * ml_conf + 0.4 * base_conf
+                best_signal['confidence'] = float(_clip01(mixed))
+            else:
+                logger.warning("M7pro ML missing/failed for %s, falling back to rules", ticker)
         except Exception as e:
             logger.warning("M7pro ML integration warning: %s", e)
+
+    best_signal['confidence'] = float(calibrator(best_signal['confidence']))
+    best_signal['confidence'] = float(min(max_cap, max(min_cap, best_signal['confidence'])))
 
     current_price = float(df['close'].iloc[-1])
     entry_price = best_signal['price']
@@ -541,7 +552,7 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=True):
     probs = {"tp1": 0.63, "tp2": 0.52, "tp3": 0.53}
     note_html = f"<div style='margin-top:10px; opacity:0.95;'>M7 Strategy: {best_signal['type']} на уровне {best_signal['level_value']}. ML-улучшенная стратегия с точными тейк-профитами.</div>"
 
-    return {
+    res = {
         "last_price": current_price,
         "recommendation": {"action": action, "confidence": float(best_signal['confidence'])},
         "levels": {"entry": entry_price, "sl": stop_loss, "tp1": tp1, "tp2": tp2, "tp3": tp3},
@@ -552,8 +563,10 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=True):
         "entry_kind": "limit",
         "entry_label": best_signal['type']
     }
+    res["meta"] = {"grey_zone": bool(0.48 <= res["recommendation"]["confidence"] <= 0.58), "source": "M7pro"}
+    return res
 
-# -------------------- W7 Strategy (как было) --------------------
+# -------------------- W7 Strategy --------------------
 def analyze_asset_w7(ticker: str, horizon: str):
     cli = PolygonClient()
     cfg = _horizon_cfg(horizon)
@@ -590,14 +603,17 @@ def analyze_asset_w7(ticker: str, horizon: str):
     P, R1, R2, S1, S2 = piv["P"], piv["R1"], piv.get("R2"), piv["S1"], piv.get("S2")
     tol_k = {"ST": 0.18, "MID": 0.22, "LT": 0.28}[hz]
     buf = tol_k * (atr_w if hz != "ST" else atr_d)
+
     def _near_from_below(level: float) -> bool:
         return (level is not None) and (0 <= level - price <= buf)
     def _near_from_above(level: float) -> bool:
         return (level is not None) and (0 <= price - level <= buf)
+
     thr_ha = {"ST": 4, "MID": 5, "LT": 6}[hz]
     thr_macd = {"ST": 4, "MID": 6, "LT": 8}[hz]
     long_up = (ha_up_run >= thr_ha) or (macd_pos_run >= thr_macd)
     long_down = (ha_down_run >= thr_ha) or (macd_neg_run >= thr_macd)
+
     if long_up and (_near_from_below(S1) or _near_from_below(R1) or _near_from_below(R2)):
         action, scenario = "WAIT", "stall_after_long_up_at_pivot"
     elif long_down and (_near_from_above(R1) or _near_from_above(S1) or _near_from_above(S2)):
@@ -630,6 +646,7 @@ def analyze_asset_w7(ticker: str, horizon: str):
                     action, scenario = "BUY", "revert_from_bottom"
                 else:
                     action, scenario = "WAIT", "upper_wait"
+
     base = 0.55 + 0.12 * _clip01(abs(slope_norm) * 1800) + 0.08 * _clip01((vol_ratio - 0.9) / 0.6)
     if action == "WAIT":
         base -= 0.07
@@ -720,7 +737,7 @@ def analyze_asset_w7(ticker: str, horizon: str):
         lead = rng.choice(["Слабость у кромки — работаю от отказа.", "Под потолком тяжело — шорт со стопом.", "Импульс выдыхается — фиксирую вниз."])
     note_html = f"<div style='margin-top:10px; opacity:0.95;'>{lead}</div>"
 
-    return {
+    res = {
         "last_price": float(price),
         "recommendation": {"action": action, "confidence": float(round(conf, 4))},
         "levels": {"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3)},
@@ -731,10 +748,12 @@ def analyze_asset_w7(ticker: str, horizon: str):
         "entry_kind": entry_kind,
         "entry_label": entry_label,
     }
+    res["meta"] = {"grey_zone": bool(0.48 <= res["recommendation"]["confidence"] <= 0.58), "source": "W7"}
+    return res
 
 # -------------------- Оркестратор Octopus (агрегирует Global, M7, W7) --------------------
 OCTO_WEIGHTS: Dict[str, float] = {"Global": 0.33, "M7": 0.33, "W7": 0.34}
-OCTO_CALIBRATOR = ConfidenceCalibrator(method="sigmoid", params={"a": 1.2, "b": -0.1})  # можно заменить на isotonic
+OCTO_CALIBRATOR = ConfidenceCalibrator(method="sigmoid", params={"a": 1.2, "b": -0.1})
 
 def _act_to_num(a: str) -> int:
     return 1 if a == "BUY" else (-1 if a == "SHORT" else 0)
@@ -782,7 +801,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
             continue
         probs_vec.append(_clip01(res["recommendation"]["confidence"]))
         labels_vec.append(1 if act == "BUY" else 0)
-    ece = _ece(np.array(probs_vec), np.array(labels_vec), bins=10) if len(probs_vec) >= 2 else 0.0  # [web:168]
+    ece = _ece(np.array(probs_vec), np.array(labels_vec), bins=10) if len(probs_vec) >= 2 else 0.0
 
     context = [f"Orchestrated from Global/M7/W7 with weights {OCTO_WEIGHTS}"]
 
@@ -807,6 +826,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         "entry_kind": "market" if final_action != "WAIT" else "wait",
         "entry_label": final_action if final_action != "WAIT" else "WAIT",
         "probs": w.get("probs", {}),
+        "meta": {"grey_zone": bool(0.48 <= calibrated <= 0.58), "source": "Octopus"}
     }
 
 # -------------------- Strategy Router (Registry с алиасом Octopus) --------------------
@@ -814,8 +834,8 @@ STRATEGY_REGISTRY: Dict[str, Callable[[str, str], Dict[str, Any]]] = {
     "Global": analyze_asset_global,
     "M7": analyze_asset_m7,
     "W7": analyze_asset_w7,
-    "Octopus": analyze_asset_octopus,  # официальный алиас оркестратора по шаблону Registry
-}  # [web:137]
+    "Octopus": analyze_asset_octopus,
+}
 
 def analyze_asset(ticker: str, horizon: str, strategy: str = "Octopus"):
     fn = STRATEGY_REGISTRY.get(strategy)
@@ -825,7 +845,7 @@ def analyze_asset(ticker: str, horizon: str, strategy: str = "Octopus"):
 
 if __name__ == "__main__":
     strategies = ["Global", "M7", "W7", "Octopus"]
-    ticker = "AAPL"
+    ticker = os.environ.get("TICKER", "AAPL")
     for strategy in strategies:
         print(f"\n=== {strategy} Strategy Result ===")
         try:
