@@ -863,3 +863,68 @@ if __name__ == "__main__":
             print(result)
         except Exception as e:
             print(f"Error testing {strategy} strategy: {e}")
+
+# ===== AlphaPulse (Mean Reversion) =====
+def analyze_asset_alphapulse(ticker: str, horizon: str):
+    import numpy as np, math
+    from services.data import load_ohlc  # ваш существующий загрузчик данных
+    from core.mean_reversion_signal_engine import MeanReversionSignalEngine
+    df = load_ohlc(ticker, days=240)
+    eng = MeanReversionSignalEngine()
+    sigs = eng.generate_signals(df, ticker)
+    if sigs.empty:
+        price = float(df["close"].iloc[-1])
+        return {"last_price": price, "recommendation":{"action":"WAIT","confidence":0.5},
+                "levels":{"entry":0.0,"sl":0.0,"tp1":0.0,"tp2":0.0,"tp3":0.0},
+                "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
+                "context":["AlphaPulse: сигналов нет"], "note_html":"<div>AlphaPulse (MR): ожидание</div>",
+                "alt":"WAIT","entry_kind":"wait","entry_label":"WAIT",
+                "meta":{"source":"AlphaPulse","grey_zone":True}}
+    row = sigs.iloc[-1]
+    action = "BUY" if str(row["side"])=="LONG" else "SHORT"
+    price = float(row["price"])
+    conf = 0.50 + 0.38 * max(0.0, min(1.0, float(row["confidence"])/100.0))
+    try: conf = float(1.0 / (1.0 + np.exp(-(1.1 * conf - 0.05))))
+    except Exception: pass
+    conf = float(min(0.88, max(0.50, conf)))
+    sl_d = float(row["sl_distance"]) if row["sl_distance"]==row["sl_distance"] else 0.0
+    tp_d = float(row["tp_distance"]) if row["tp_distance"]==row["tp_distance"] else 0.0
+    if action=="BUY":
+        entry=price; sl=max(0.0, price-sl_d); tp1, tp2, tp3 = price+tp_d, price+1.8*tp_d, price+2.6*tp_d
+    else:
+        entry=price; sl=price+sl_d; tp1, tp2, tp3 = price-tp_d, price-1.8*tp_d, price-2.6*tp_d
+    if action=="BUY": tp1, tp2, tp3 = sorted([tp1,tp2,tp3])
+    else:            tp1, tp2, tp3 = sorted([tp1,tp2,tp3], reverse=True)
+    return {"last_price": price,
+            "recommendation":{"action":action,"confidence":conf},
+            "levels":{"entry":entry,"sl":sl,"tp1":tp1,"tp2":tp2,"tp3":tp3},
+            "probs":{"tp1":0.60,"tp2":0.50,"tp3":0.45},
+            "context":[f"AlphaPulse MR: {row.get('reasons','')}"],
+            "note_html":"<div>AlphaPulse: MR signal</div>",
+            "alt":"MR",
+            "entry_kind":"limit" if str(row.get("order_hint","")).endswith("limit") else "stop",
+            "entry_label":"Buy LIMIT" if action=="BUY" else "Sell LIMIT",
+            "meta":{"source":"AlphaPulse","grey_zone":bool(0.48<=conf<=0.58)}}
+
+# ===== Registry and router =====
+try:
+    STRATEGY_REGISTRY
+except NameError:
+    STRATEGY_REGISTRY = {}
+try:
+    STRATEGY_REGISTRY["AlphaPulse"] = analyze_asset_alphapulse
+except Exception:
+    pass
+
+def decide(ticker: str, model: str="AlphaPulse", horizon: str="Кратко"):
+    fn = STRATEGY_REGISTRY.get(model) or STRATEGY_REGISTRY.get("AlphaPulse")
+    if fn is None:
+        return {"last_price":0.0,"recommendation":{"action":"WAIT","confidence":0.5},
+                "levels":{"entry":0.0,"sl":0.0,"tp1":0.0,"tp2":0.0,"tp3":0.0}}
+    try:
+        return fn(ticker, horizon)
+    except Exception as e:
+        return {"last_price":0.0,"recommendation":{"action":"WAIT","confidence":0.5},
+                "levels":{"entry":0.0,"sl":0.0,"tp1":0.0,"tp2":0.0,"tp3":0.0},
+                "context":[f"decide error: {e}"]}
+
