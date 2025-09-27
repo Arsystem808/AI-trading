@@ -92,7 +92,7 @@ def _macd_hist(close: pd.Series):
     hist = macd - signal
     return macd, signal, hist
 
-# -------------------- horizons (для совместимости W7) --------------------
+# -------------------- horizons (для W7) --------------------
 def _horizon_cfg(text: str):
     if "Кратко" in text:  return dict(look=60, trend=14, atr=14, pivot_rule="W-FRI", use_weekly_atr=False, hz="ST")
     if "Средне" in text:  return dict(look=120, trend=28, atr=14, pivot_rule="M",     use_weekly_atr=True,  hz="MID")
@@ -259,7 +259,8 @@ def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный
         "recommendation": {"action": action, "confidence": confidence},
         "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
         "probs": probs, "context": context, "note_html": note_html, "alt": alt,
-        "entry_kind": "market", "entry_label": f"{action} NOW"
+        "entry_kind": "market", "entry_label": f"{action} NOW",
+        "meta": {"source":"Global"}
     }
 
 # -------------------- M7 --------------------
@@ -310,9 +311,10 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
             "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
             "probs":{"tp1":0,"tp2":0,"tp3":0},
             "context":["Нет сигналов по стратегии M7"], "note_html":"<div>M7: ожидание</div>",
-            "alt":"Ожидание сигналов от уровней", "entry_kind":"wait","entry_label":"WAIT"
+            "alt":"Ожидание сигналов от уровней", "entry_kind":"wait","entry_label":"WAIT",
+            "meta":{"source":"M7","grey_zone":True}
         }
-        res["meta"] = {"grey_zone": True, "source": "M7"}; return res
+        return res
     best = max(signals, key=lambda x: x['confidence'])
     conf = float(_clip01(best['confidence'])); conf = float(min(0.88, max(0.50, conf)))
     price = float(df['close'].iloc[-1]); entry = float(best['price']); sl = float(best['stop_loss']); risk = abs(entry - sl)
@@ -334,9 +336,9 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
         "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
         "probs": probs, "context": [f"Сигнал от уровня {best['level']}"],
         "note_html": f"<div>M7: {best['type']} на уровне {best['level_value']}</div>",
-        "alt": "Торговля по M7", "entry_kind": "limit", "entry_label": best['type']
+        "alt": "Торговля по M7", "entry_kind": "limit", "entry_label": best['type'],
+        "meta":{"source":"M7","grey_zone": bool(0.48 <= conf <= 0.58)}
     }
-    res["meta"] = {"grey_zone": bool(0.48 <= res["recommendation"]["confidence"] <= 0.58), "source": "M7"}
     return res
 
 # -------------------- W7 --------------------
@@ -358,8 +360,10 @@ def analyze_asset_w7(ticker: str, horizon: str):
     hlc = _last_period_hlc(df, cfg["pivot_rule"]) or (float(df["high"].tail(60).max()), float(df["low"].tail(60).min()), float(df["close"].iloc[-1]))
     H, L, C = hlc; piv = _fib_pivots(H, L, C); P, R1, R2, S1, S2 = piv["P"], piv["R1"], piv.get("R2"), piv["S1"], piv.get("S2")
     tol_k = {"ST": 0.18, "MID": 0.22, "LT": 0.28}[hz]; buf = tol_k * (atr_w if hz != "ST" else atr_d)
+
     def _near_from_below(level: float) -> bool: return (level is not None) and (0 <= level - price <= buf)
     def _near_from_above(level: float) -> bool: return (level is not None) and (0 <= price - level <= buf)
+
     thr_ha = {"ST": 4, "MID": 5, "LT": 6}[hz]; thr_macd = {"ST": 4, "MID": 6, "LT": 8}[hz]
     long_up   = (ha_up_run >= thr_ha)  or (macd_pos_run >= thr_macd)
     long_down = (ha_down_run >= thr_ha) or (macd_neg_run >= thr_macd)
@@ -424,8 +428,8 @@ def analyze_asset_w7(ticker: str, horizon: str):
         "levels": {"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3)},
         "probs": probs, "context": [], "note_html": "<div>W7: контекст по волатильности и зонам</div>",
         "alt": alt, "entry_kind": entry_kind, "entry_label": entry_label,
+        "meta":{"source":"W7","grey_zone": bool(0.48 <= conf <= 0.58)}
     }
-    res["meta"] = {"grey_zone": bool(0.48 <= res["recommendation"]["confidence"] <= 0.58), "source": "W7"}
     return res
 
 # -------------------- AlphaPulse (Mean‑Reversion, безопасная интеграция) --------------------
@@ -591,16 +595,19 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         "levels":{"entry":0.0,"sl":0.0,"tp1":0.0,"tp2":0.0,"tp3":0.0},
         "last_price": last_price, "context": ctx,
         "note_html":"<div>Octopus: все агенты WAIT</div>",
-        "alt":"Octopus","entry_kind":"wait","
+        "alt":"Octopus","entry_kind":"wait","entry_label":"WAIT",
+        "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0}, "meta":{"grey_zone":True,"source":"Octopus"}
+    }
+    result["recommendation"] = {"action": "WAIT", "confidence": 0.0}
+    return result
 
-# -------------------- Strategy Router (публичная — только Octopus) --------------------
+# -------------------- Strategy Router (все модели для UI) --------------------
 STRATEGY_REGISTRY: Dict[str, Callable[[str, str], Dict[str, Any]]] = {
     "Octopus": analyze_asset_octopus,
-    # при необходимости можно временно открыть базовые агенты:
-    # "Global": analyze_asset_global,
-    # "M7": analyze_asset_m7,
-    # "W7": analyze_asset_w7,
-    # "AlphaPulse": analyze_asset_alphapulse,
+    "Global": analyze_asset_global,
+    "M7": analyze_asset_m7,
+    "W7": analyze_asset_w7,
+    "AlphaPulse": analyze_asset_alphapulse,
 }
 
 def analyze_asset(ticker: str, horizon: str, strategy: str = "Octopus") -> Dict[str, Any]:
@@ -610,9 +617,9 @@ def analyze_asset(ticker: str, horizon: str, strategy: str = "Octopus") -> Dict[
     return fn(ticker, horizon)
 
 if __name__ == "__main__":
-    # Быстрый самотест оркестратора
-    try:
-        print("=== Octopus ===")
-        print(analyze_asset("AAPL", "Краткосрочный", "Octopus"))
-    except Exception as e:
-        print("Octopus error:", e)
+    for s in ["Global","M7","W7","AlphaPulse","Octopus"]:
+        try:
+            print(f"\n=== {s} ===")
+            print(analyze_asset("AAPL", "Краткосрочный", s))
+        except Exception as e:
+            print(f"{s} error:", e)
