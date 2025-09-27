@@ -31,7 +31,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # -------------------- small utils --------------------
-def _clip01(x: float) -> float: return float(max(0.0, min(1.0, x)))
+def _clip01(x: float) -> float: 
+    return float(max(0.0, min(1.0, x)))
 
 def _linreg_slope(y: np.ndarray) -> float:
     n = len(y)
@@ -94,8 +95,8 @@ def _macd_hist(close: pd.Series):
 # -------------------- horizons (для совместимости W7) --------------------
 def _horizon_cfg(text: str):
     if "Кратко" in text:  return dict(look=60, trend=14, atr=14, pivot_rule="W-FRI", use_weekly_atr=False, hz="ST")
-    if "Средне" in text:  return dict(look=120, trend=28, atr=14, pivot_rule="M", use_weekly_atr=True,  hz="MID")
-    return dict(look=240, trend=56, atr=14, pivot_rule="M", use_weekly_atr=True,  hz="LT")
+    if "Средне" in text:  return dict(look=120, trend=28, atr=14, pivot_rule="M",     use_weekly_atr=True,  hz="MID")
+    return dict(look=240, trend=56, atr=14, pivot_rule="M", use_weekly_atr=True, hz="LT")
 
 def _last_period_hlc(df: pd.DataFrame, rule: str):
     g = df.resample(rule).agg({"high":"max","low":"min","close":"last"}).dropna()
@@ -105,10 +106,7 @@ def _last_period_hlc(df: pd.DataFrame, rule: str):
 
 def _fib_pivots(H: float, L: float, C: float):
     P = (H + L + C) / 3.0; d = H - L
-    return {
-        "P":P, "R1":P + 0.382 * d, "R2":P + 0.618 * d, "R3":P + 1.000 * d,
-        "S1":P - 0.382 * d, "S2":P - 0.618 * d, "S3":P - 1.000 * d
-    }
+    return {"P":P, "R1":P + 0.382*d, "R2":P + 0.618*d, "R3":P + 1.000*d, "S1":P - 0.382*d, "S2":P - 0.618*d, "S3":P - 1.000*d}
 
 def _classify_band(price: float, piv: dict, buf: float) -> int:
     P, R1 = piv["P"], piv["R1"]; R2, R3, S1, S2 = piv.get("R2"), piv.get("R3"), piv["S1"], piv.get("S2")
@@ -143,64 +141,61 @@ def _entry_kind(action: str, entry: float, price: float, step_d: float) -> str:
 
 # -------------------- TP/SL helpers --------------------
 def _apply_tp_floors(entry: float, sl: float, tp1: float, tp2: float, tp3: float,
-                    action: str, hz_tag: str, price: float, atr_val: float):
+                     action: str, hz_tag: str, price: float, atr_val: float):
     if action not in ("BUY", "SHORT"): return tp1, tp2, tp3
     risk = abs(entry - sl)
     if risk <= 1e-9: return tp1, tp2, tp3
     side = 1 if action == "BUY" else -1
-    min_rr = {"ST": 0.80, "MID": 1.00, "LT": 1.20}
+    min_rr  = {"ST": 0.80, "MID": 1.00, "LT": 1.20}
     min_pct = {"ST": 0.006, "MID": 0.012, "LT": 0.018}
     atr_mult = {"ST": 0.50, "MID": 0.80, "LT": 1.20}
-    floor1 = max(min_rr[hz_tag] * risk, min_pct[hz_tag] * price, atr_mult[hz_tag] * atr_val)
-    if abs(tp1 - entry) < floor1: tp1 = entry + side * floor1
-    floor2 = max(1.6 * floor1, min_rr[hz_tag] * 1.8 * risk)
-    if abs(tp2 - entry) < floor2: tp2 = entry + side * floor2
-    min_gap3 = max(0.8 * floor1, 0.6 * risk)
-    if abs(tp3 - tp2) < min_gap3: tp3 = tp2 + side * min_gap3
+    floor1 = max(min_rr[hz_tag]*risk, min_pct[hz_tag]*price, atr_mult[hz_tag]*atr_val)
+    if abs(tp1 - entry) < floor1: tp1 = entry + side*floor1
+    floor2 = max(1.6*floor1, min_rr[hz_tag]*1.8*risk)
+    if abs(tp2 - entry) < floor2: tp2 = entry + side*floor2
+    min_gap3 = max(0.8*floor1, 0.6*risk)
+    if abs(tp3 - tp2) < min_gap3: tp3 = tp2 + side*min_gap3
     return tp1, tp2, tp3
 
 def _order_targets(entry: float, tp1: float, tp2: float, tp3: float, action: str, eps: float = 1e-6):
     side = 1 if action == "BUY" else -1
     arr = sorted([float(tp1), float(tp2), float(tp3)], key=lambda x: side * (x - entry))
-    d0 = side * (arr[0] - entry); d1 = side * (arr[1] - entry); d2 = side * (arr[2] - entry)
-    if d1 - d0 < eps: arr[1] = entry + side * max(d0 + max(eps, 0.1 * abs(d0)), d1 + eps)
-    if side * (arr[2] - entry) - side * (arr[1] - entry) < eps:
-        d1 = side * (arr[1] - entry)
-        arr[2] = entry + side * max(d1 + max(eps, 0.1 * abs(d1)), d2 + eps)
+    d0 = side*(arr[0]-entry); d1 = side*(arr[1]-entry); d2 = side*(arr[2]-entry)
+    if d1 - d0 < eps: arr[1] = entry + side * max(d0 + max(eps, 0.1*abs(d0)), d1 + eps)
+    if side*(arr[2]-entry) - side*(arr[1]-entry) < eps:
+        d1 = side*(arr[1]-entry); arr[2] = entry + side * max(d1 + max(eps, 0.1*abs(d1)), d2 + eps)
     return arr[0], arr[1], arr[2]
 
 def _clamp_tp_by_trend(action: str, hz: str,
-                      tp1: float, tp2: float, tp3: float,
-                      piv: dict, step_w: float,
-                      slope_norm: float, macd_pos_run: int, macd_neg_run: int):
+                       tp1: float, tp2: float, tp3: float,
+                       piv: dict, step_w: float,
+                       slope_norm: float, macd_pos_run: int, macd_neg_run: int):
     thr_macd = {"ST": 3, "MID": 5, "LT": 6}[hz]
     bullish = (slope_norm > 0.0006) and (macd_pos_run >= thr_macd)
     bearish = (slope_norm < -0.0006) and (macd_neg_run >= thr_macd)
     P, R1, S1 = piv["P"], piv["R1"], piv["S1"]
     if action == "SHORT" and bullish:
-        limit = max(R1 - 1.2 * step_w, (P + R1) / 2.0)
-        tp1 = max(tp1, limit - 0.2 * step_w); tp2 = max(tp2, limit); tp3 = max(tp3, limit + 0.4 * step_w)
+        limit = max(R1 - 1.2*step_w, (P + R1)/2.0)
+        tp1 = max(tp1, limit - 0.2*step_w); tp2 = max(tp2, limit); tp3 = max(tp3, limit + 0.4*step_w)
     if action == "BUY" and bearish:
-        limit = min(S1 + 1.2 * step_w, (P + S1) / 2.0)
-        tp1 = min(tp1, limit + 0.2 * step_w); tp2 = min(tp2, limit); tp3 = min(tp3, limit - 0.4 * step_w)
+        limit = min(S1 + 1.2*step_w, (P + S1)/2.0)
+        tp1 = min(tp1, limit + 0.2*step_w); tp2 = min(tp2, limit); tp3 = min(tp3, limit - 0.4*step_w)
     return tp1, tp2, tp3
 
 def _sanity_levels(action: str, entry: float, sl: float,
-                  tp1: float, tp2: float, tp3: float,
-                  price: float, step_d: float, step_w: float, hz: str):
+                   tp1: float, tp2: float, tp3: float,
+                   price: float, step_d: float, step_w: float, hz: str):
     side = 1 if action == "BUY" else -1
     min_tp_gap = {"ST": 0.40, "MID": 0.70, "LT": 1.10}[hz] * step_w
     min_tp_pct = {"ST": 0.004, "MID": 0.009, "LT": 0.015}[hz] * price
-    floor_gap = max(min_tp_gap, min_tp_pct, 0.35 * abs(entry - sl) if sl != entry else 0.0)
-    if action == "BUY" and sl >= entry - 0.25 * step_d:
-        sl = entry - max(0.60 * step_w, 0.90 * step_d)
-    if action == "SHORT" and sl <= entry + 0.25 * step_d:
-        sl = entry + max(0.60 * step_w, 0.90 * step_d)
+    floor_gap = max(min_tp_gap, min_tp_pct, 0.35*abs(entry - sl) if sl != entry else 0.0)
+    if action == "BUY"  and sl >= entry - 0.25*step_d: sl = entry - max(0.60*step_w, 0.90*step_d)
+    if action == "SHORT" and sl <= entry + 0.25*step_d: sl = entry + max(0.60*step_w, 0.90*step_d)
     def _push(tp, rank):
-        need = floor_gap * (1.0 if rank == 1 else (1.6 if rank == 2 else 2.2))
-        want = entry + side * need
-        if side * (tp - entry) <= 0: return want
-        if abs(tp - entry) < need:   return want
+        need = floor_gap * (1.0 if rank==1 else (1.6 if rank==2 else 2.2))
+        want = entry + side*need
+        if side*(tp-entry) <= 0: return want
+        if abs(tp-entry) < need: return want
         return tp
     tp1 = _push(tp1, 1); tp2 = _push(tp2, 2); tp3 = _push(tp3, 3)
     tp1, tp2, tp3 = _order_targets(entry, tp1, tp2, tp3, action)
@@ -215,15 +210,15 @@ class ConfidenceCalibrator:
         p = _clip01(float(p))
         if self.method == "sigmoid":
             a = float(self.params.get("a", 1.0)); b = float(self.params.get("b", 0.0))
-            return _clip01(float(1.0 / (1.0 + np.exp(-(a * p + b)))))
+            return _clip01(float(1.0/(1.0+np.exp(-(a*p + b)))))
         if self.method == "isotonic":
-            knots = sorted(self.params.get("knots", [(0.0, 0.0), (1.0, 1.0)]))
+            knots = sorted(self.params.get("knots", [(0.0,0.0),(1.0,1.0)]))
             for i in range(1, len(knots)):
-                x0, y0 = knots[i - 1]; x1, y1 = knots[i]
+                x0,y0 = knots[i-1]; x1,y1 = knots[i]
                 if p <= x1:
                     if x1 == x0: return _clip01(float(y1))
-                    t = (p - x0) / (x1 - x0)
-                    return _clip01(float(y0 + t * (y1 - y0)))
+                    t = (p - x0)/(x1 - x0)
+                    return _clip01(float(y0 + t*(y1 - y0)))
             return _clip01(float(knots[-1][1]))
         return p
 
@@ -231,32 +226,32 @@ def _ece(probs: np.ndarray, labels: np.ndarray, bins: int = 10) -> float:
     edges = np.linspace(0.0, 1.0, bins + 1)
     N = len(labels); ece = 0.0
     for i in range(bins):
-        mask = (probs > edges[i]) & (probs <= edges[i + 1])
+        mask = (probs > edges[i]) & (probs <= edges[i+1])
         if not np.any(mask): continue
         conf = float(probs[mask].mean()); acc = float((labels[mask] == 1).mean())
-        ece += (mask.sum() / N) * abs(acc - conf)
+        ece += (mask.sum()/N) * abs(acc - conf)
     return float(ece)
 
 # -------------------- Global --------------------
 def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный"):
     cli = PolygonClient(); df = cli.daily_ohlc(ticker, days=90)
     current_price = float(df['close'].iloc[-1])
-    returns = np.log(df['close'] / df['close'].shift(1))
-    hist_volatility = returns.std() * np.sqrt(252)
+    returns = np.log(df['close']/df['close'].shift(1))
+    hist_volatility = returns.std()*np.sqrt(252)
     short_ma = df['close'].rolling(20).mean().iloc[-1]
     long_ma  = df['close'].rolling(50).mean().iloc[-1]
     if short_ma > long_ma: action, confidence = "BUY", 0.69
     else:                  action, confidence = "SHORT", 0.65
     atr = float(_atr_like(df, n=14).iloc[-1])
     if action == "BUY":
-        entry = current_price; sl = current_price - 2 * atr
-        tp1 = current_price + 1 * atr; tp2 = current_price + 2 * atr; tp3 = current_price + 3 * atr
+        entry = current_price; sl = current_price - 2*atr
+        tp1 = current_price + 1*atr; tp2 = current_price + 2*atr; tp3 = current_price + 3*atr
         alt = "Покупка по рынку с консервативными целями"
     else:
-        entry = current_price; sl = current_price + 2 * atr
-        tp1 = current_price - 1 * atr; tp2 = current_price - 2 * atr; tp3 = current_price - 3 * atr
+        entry = current_price; sl = current_price + 2*atr
+        tp1 = current_price - 1*atr; tp2 = current_price - 2*atr; tp3 = current_price - 3*atr
         alt = "Продажа по рынку с консервативными целями"
-    context = [f"Волатильность: {hist_volatility:.2%}", f"Тренд: {'Бычий' if action == 'BUY' else 'Медвежий'}"]
+    context = [f"Волатильность: {hist_volatility:.2%}", f"Тренд: {'Бычий' if action=='BUY' else 'Медвежий'}"]
     probs = {"tp1": 0.68, "tp2": 0.52, "tp3": 0.35}
     note_html = f"<div style='margin-top:10px; opacity:0.95;'>Global: {action} с уверенностью {confidence:.0%}.</div>"
     return {
@@ -267,7 +262,7 @@ def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный
         "entry_kind": "market", "entry_label": f"{action} NOW"
     }
 
-# -------------------- M7 (без «pro») --------------------
+# -------------------- M7 --------------------
 class M7TradingStrategy:
     def __init__(self, atr_period=14, atr_multiplier=1.5, pivot_period='D', fib_levels=[0.236,0.382,0.5,0.618,0.786]):
         self.atr_period = atr_period; self.atr_multiplier = atr_multiplier
@@ -305,7 +300,7 @@ class M7TradingStrategy:
                              'confidence':round(conf,2),'level':name,'level_value':round(val,4),'timestamp':ts})
         return sigs
 
-def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=True):
+def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False):
     cli = PolygonClient(); df = cli.daily_ohlc(ticker, days=120)
     strategy = M7TradingStrategy(); signals = strategy.generate_signals(df)
     if not signals:
@@ -319,23 +314,7 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=True):
         }
         res["meta"] = {"grey_zone": True, "source": "M7"}; return res
     best = max(signals, key=lambda x: x['confidence'])
-
-    # Лёгкая ML‑надстройка (опционально)
-    ml_confidence = None
-    calibrator = ConfidenceCalibrator(method=os.getenv("ARX_CALIB","sigmoid"),
-                                      params={"a": float(os.getenv("ARX_CAL_A","1.1")),
-                                              "b": float(os.getenv("ARX_CAL_B","-0.05"))})
-    if use_ml:
-        try:
-            class M7MLModel:
-                def __init__(self): self.model=None; self.train_feature_names=None; self.scaler=None
-            # Заглушка: оставить без внешних файлов
-        except Exception:
-            pass
-    # Базовая уверенность
-    conf = float(_clip01(best['confidence']))
-    conf = float(min(0.88, max(0.50, calibrator(conf))))
-
+    conf = float(_clip01(best['confidence'])); conf = float(min(0.88, max(0.50, conf)))
     price = float(df['close'].iloc[-1]); entry = float(best['price']); sl = float(best['stop_loss']); risk = abs(entry - sl)
     vol = df['close'].pct_change().std() * np.sqrt(252); max_move = price * vol / np.sqrt(252)
     if best['type'].startswith('BUY'):
@@ -348,7 +327,6 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=True):
         tp2 = max(entry - 2.5*risk, entry - 3*max_move)
         tp3 = max(entry - 4.0*risk, entry - 5*max_move)
         act = "SHORT"
-
     probs = {"tp1": 0.63, "tp2": 0.52, "tp3": 0.53}
     res = {
         "last_price": price,
@@ -383,7 +361,7 @@ def analyze_asset_w7(ticker: str, horizon: str):
     def _near_from_below(level: float) -> bool: return (level is not None) and (0 <= level - price <= buf)
     def _near_from_above(level: float) -> bool: return (level is not None) and (0 <= price - level <= buf)
     thr_ha = {"ST": 4, "MID": 5, "LT": 6}[hz]; thr_macd = {"ST": 4, "MID": 6, "LT": 8}[hz]
-    long_up = (ha_up_run >= thr_ha) or (macd_pos_run >= thr_macd)
+    long_up   = (ha_up_run >= thr_ha)  or (macd_pos_run >= thr_macd)
     long_down = (ha_down_run >= thr_ha) or (macd_neg_run >= thr_macd)
 
     if long_up and (_near_from_below(S1) or _near_from_below(R1) or _near_from_below(R2)):
@@ -393,10 +371,10 @@ def analyze_asset_w7(ticker: str, horizon: str):
     else:
         band = _classify_band(price, piv, buf); very_high_pos = pos >= 0.80
         if very_high_pos:
-            action = "BUY" if (R2 is not None and price > R2 + 0.6 * buf and slope_norm > 0) else "SHORT"
+            action = "BUY" if (R2 is not None and price > R2 + 0.6*buf and slope_norm > 0) else "SHORT"
         else:
             if band >= +2:
-                action = "BUY" if (R2 is not None and price > R2 + 0.6 * buf and slope_norm > 0) else "SHORT"
+                action = "BUY" if (R2 is not None and price > R2 + 0.6*buf and slope_norm > 0) else "SHORT"
             elif band == +1:
                 action = "WAIT"
             elif band == 0:
@@ -406,7 +384,7 @@ def analyze_asset_w7(ticker: str, horizon: str):
             else:
                 action = "BUY" if band <= -2 else "WAIT"
 
-    base = 0.55 + 0.12 * _clip01(abs(slope_norm) * 1800) + 0.08 * _clip01((vol_ratio - 0.9) / 0.6)
+    base = 0.55 + 0.12*_clip01(abs(slope_norm)*1800) + 0.08*_clip01((vol_ratio - 0.9)/0.6)
     if action == "WAIT": base -= 0.07
     conf = float(max(0.55, min(0.90, base)))
 
@@ -436,21 +414,15 @@ def analyze_asset_w7(ticker: str, horizon: str):
     entry_label = {"buy-stop":"Buy STOP","buy-limit":"Buy LIMIT","buy-now":"Buy NOW",
                    "sell-stop":"Sell STOP","sell-limit":"Sell LIMIT","sell-now":"Sell NOW"}.get(entry_kind, "")
 
-    chips = []
-    if (atr_d / max(1e-9, float(_atr_like(df, n=cfg["atr"] * 2).iloc[-1]))) > 1.05: chips.append("волатильность растёт")
-    if (atr_d / max(1e-9, float(_atr_like(df, n=cfg["atr"] * 2).iloc[-1]))) < 0.95: chips.append("волатильность сжимается")
-
-    p1 = _clip01(0.58 + 0.27 * (conf - 0.55) / 0.35)
-    p2 = _clip01(0.44 + 0.21 * (conf - 0.55) / 0.35)
-    p3 = _clip01(0.28 + 0.13 * (conf - 0.55) / 0.35)
-    probs = {"tp1": float(p1), "tp2": float(p2), "tp3": float(p3)}
+    probs = {"tp1": float(_clip01(0.58 + 0.27*(conf - 0.55)/0.35)),
+             "tp2": float(_clip01(0.44 + 0.21*(conf - 0.55)/0.35)),
+             "tp3": float(_clip01(0.28 + 0.13*(conf - 0.55)/0.35))}
 
     res = {
         "last_price": float(price),
         "recommendation": {"action": action, "confidence": float(round(conf, 4))},
         "levels": {"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3)},
-        "probs": probs, "context": chips,
-        "note_html": "<div>W7: контекст по волатильности и зонам</div>",
+        "probs": probs, "context": [], "note_html": "<div>W7: контекст по волатильности и зонам</div>",
         "alt": alt, "entry_kind": entry_kind, "entry_label": entry_label,
     }
     res["meta"] = {"grey_zone": bool(0.48 <= res["recommendation"]["confidence"] <= 0.58), "source": "W7"}
@@ -548,7 +520,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
             logger.warning("Agent %s failed: %s", name, e)
 
     if not parts:
-        return {
+        result = {
             "strategy":"Octopus","agents":[], "weights": OCTO_WEIGHTS, "signals":{},
             "action":"WAIT","confidence_raw":0.0,"confidence":0.0,
             "calibration":{"method":OCTO_CALIBRATOR.method,"params":OCTO_CALIBRATOR.params,"ece":0.0},
@@ -557,6 +529,8 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
             "note_html":"<div>Octopus: WAIT</div>","alt":"Octopus","entry_kind":"wait","entry_label":"WAIT",
             "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0}, "meta":{"grey_zone":True,"source":"Octopus"}
         }
+        result["recommendation"] = {"action": result["action"], "confidence": result["confidence"]}
+        return result
 
     # Активные голоса (BUY/SHORT)
     active = []; votes_txt = []
@@ -570,36 +544,27 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         sgn_sum = sum(w * _act_to_num(act) for (_, act, _, w) in active)
         w_sum   = sum(w for (_,_,_,w) in active) or 1e-9
         raw_conf = sum(w * _clip01(conf) for (_,_,conf,w) in active) / w_sum
-
         if abs(sgn_sum) < 1e-9:
             name_best, act_best, conf_best, w_best = sorted(active, key=lambda t: t[2]*t[3], reverse=True)[0]
             final_action = act_best
         else:
             final_action = _num_to_act(sgn_sum)
-
         calibrated = float(OCTO_CALIBRATOR(raw_conf))
-
         cand = [t for t in active if t[1] == final_action]
         if cand:
             win_name = sorted(cand, key=lambda t: t[2]*t[3], reverse=True)[0][0]
         else:
             win_name = sorted(active, key=lambda t: t[2]*t[3], reverse=True)[0][0]
         levels = parts[win_name].get("levels", {"entry":0.0,"sl":0.0,"tp1":0.0,"tp2":0.0,"tp3":0.0})
-
         probs_vec = np.array([_clip01(conf) for (_,_,conf,_) in active], dtype=float)
         labels_vec = np.array([1 if act=="BUY" else 0 for (_,act,_,_) in active], dtype=int)
         ece = _ece(probs_vec, labels_vec, bins=10) if len(active) >= 2 else 0.0
-
         signals = {n: {"action": parts[n]["recommendation"]["action"],
                        "confidence": float(parts[n]["recommendation"]["confidence"])}
                    for n in parts.keys()}
         ctx = [f"Orchestrated: {'; '.join(votes_txt)}; chosen={final_action}"]
-
-        last_price = 0.0
-        if win_name in parts: last_price = float(parts[win_name].get("last_price", 0.0))
-        if not last_price: last_price = float(parts.get("W7", parts.get("Global", {})).get("last_price", 0.0))
-
-        return {
+        last_price = float(parts.get(win_name, {}).get("last_price", 0.0)) or float(parts.get("W7", parts.get("Global", {})).get("last_price", 0.0))
+        result = {
             "strategy": "Octopus",
             "agents": list(parts.keys()), "weights": OCTO_WEIGHTS, "signals": signals,
             "action": final_action, "confidence_raw": float(raw_conf), "confidence": float(calibrated),
@@ -611,11 +576,13 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
             "probs": parts.get("W7", {}).get("probs", {}),
             "meta": {"grey_zone": bool(0.48 <= calibrated <= 0.58), "source": "Octopus"}
         }
+        result["recommendation"] = {"action": result["action"], "confidence": result["confidence"]}
+        return result
 
     # Все WAIT
     ctx = [f"Orchestrated: {'; '.join(votes_txt)}; chosen=WAIT"]
     last_price = float(parts.get("W7", parts.get("Global", {})).get("last_price", 0.0))
-    return {
+    result = {
         "strategy":"Octopus","agents": list(parts.keys()), "weights": OCTO_WEIGHTS,
         "signals": {n: {"action": parts[n]["recommendation"]["action"],
                         "confidence": float(parts[n]["recommendation"]["confidence"])} for n in parts.keys()},
@@ -624,27 +591,28 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         "levels":{"entry":0.0,"sl":0.0,"tp1":0.0,"tp2":0.0,"tp3":0.0},
         "last_price": last_price, "context": ctx,
         "note_html":"<div>Octopus: все агенты WAIT</div>",
-        "alt":"Octopus","entry_kind":"wait","entry_label":"WAIT",
-        "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0}, "meta":{"grey_zone":True,"source":"Octopus"}
-    }
+        "alt":"Octopus","entry_kind":"wait","
 
-# -------------------- Strategy Router --------------------
+# -------------------- Strategy Router (публичная — только Octopus) --------------------
 STRATEGY_REGISTRY: Dict[str, Callable[[str, str], Dict[str, Any]]] = {
-    "Global": analyze_asset_global,
-    "M7": analyze_asset_m7,
-    "W7": analyze_asset_w7,
-    "AlphaPulse": analyze_asset_alphapulse,
     "Octopus": analyze_asset_octopus,
+    # при необходимости можно временно открыть базовые агенты:
+    # "Global": analyze_asset_global,
+    # "M7": analyze_asset_m7,
+    # "W7": analyze_asset_w7,
+    # "AlphaPulse": analyze_asset_alphapulse,
 }
 
-def analyze_asset(ticker: str, horizon: str, strategy: str = "Octopus"):
+def analyze_asset(ticker: str, horizon: str, strategy: str = "Octopus") -> Dict[str, Any]:
     fn = STRATEGY_REGISTRY.get(strategy)
-    if not fn: raise ValueError(f"Unknown strategy: {strategy}")
+    if not fn:
+        raise ValueError(f"Unknown strategy: {strategy}")
     return fn(ticker, horizon)
 
 if __name__ == "__main__":
-    for s in ["Global","M7","W7","AlphaPulse","Octopus"]:
-        try:
-            print(f"\n=== {s} ==="); print(analyze_asset("AAPL","Краткосрочный", s))
-        except Exception as e:
-            print(f"{s} error: {e}")
+    # Быстрый самотест оркестратора
+    try:
+        print("=== Octopus ===")
+        print(analyze_asset("AAPL", "Краткосрочный", "Octopus"))
+    except Exception as e:
+        print("Octopus error:", e)
