@@ -6,7 +6,7 @@ import hashlib
 import random
 import numpy as np
 import pandas as pd
-from typing import Dict, Any, Optional, List, Tuple, Callable
+from typing import Dict, Any, Optional, List, Callable
 import logging
 from datetime import datetime, timedelta
 
@@ -66,7 +66,6 @@ def _weekly_atr(df: pd.DataFrame, n_weeks: int = 8) -> float:
 
 # -------------------- Heikin Ashi & MACD --------------------
 def _heikin_ashi(df: pd.DataFrame) -> pd.DataFrame:
-    # HA_Close=(O+H+L+C)/4; HA_Open=(prev_HA_Open+prev_HA_Close)/2
     ha = pd.DataFrame(index=df.index.copy())
     ha["ha_close"] = (df["open"] + df["high"] + df["low"] + df["close"]) / 4.0
     ha_open = [(df["open"].iloc[0] + df["close"].iloc[0]) / 2.0]
@@ -99,6 +98,7 @@ def _macd_hist(close: pd.Series):
 
 # -------------------- horizons & pivots --------------------
 def _horizon_cfg(text: str):
+    # Сохраняем для обратной совместимости: оркестратор может передавать "Кратко"/"Средне"/"Долго"
     if "Кратко" in text:
         return dict(look=60, trend=14, atr=14, pivot_rule="W-FRI", use_weekly_atr=False, hz="ST")
     if "Средне" in text:
@@ -278,15 +278,9 @@ FEATURES_TRAIN = [
 ]
 
 class M7MLModel:
-    """
-    Безопасная интеграция ML для M7:
-    - Не обучаем в проде, только грузим веса; при отсутствии — возвращаем None и стратегия уходит в правила.
-    - Для уверенности используем predict_proba, иначе decision_function/predict как прокси.
-    - Перед predict жёстко выравниваем состав и порядок признаков под список обучения.
-    """
     def __init__(self):
         self.model = None
-        self.scaler = None  # опционально
+        self.scaler = None
         self.local_model_path = "models/m7_model.pkl"
         self.local_scaler_path = "models/m7_scaler.pkl"
         self.train_feature_names: Optional[List[str]] = None
@@ -335,8 +329,7 @@ class M7MLModel:
             for col in feat_list:
                 if col not in X.columns:
                     X[col] = 0.0
-            X = X[feat_list]  # строгий порядок под обучение
-            # если нужен скейлер — применяем и сохраняем имена колонок
+            X = X[feat_list]
             if self.scaler is not None:
                 try:
                     X_np = self.scaler.transform(X.values)
@@ -507,7 +500,7 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=True):
             "entry_kind": "wait",
             "entry_label": "WAIT"
         }
-        res["meta"] = {"grey_zone": True, "source": "M7pro"}
+        res["meta"] = {"grey_zone": True, "source": "M7"}
         return res
 
     best_signal = max(signals, key=lambda x: x['confidence'])
@@ -530,401 +523,4 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=True):
                 ml_conf   = float(ml_prediction['confidence'])
                 ml_confidence = ml_conf
                 mixed = 0.6 * ml_conf + 0.4 * base_conf
-                best_signal['confidence'] = float(_clip01(mixed))
-            else:
-                logger.warning("M7pro ML missing/failed for %s, falling back to rules", ticker)
-        except Exception as e:
-            logger.warning("M7pro ML integration warning: %s", e)
-
-    best_signal['confidence'] = float(calibrator(best_signal['confidence']))
-    best_signal['confidence'] = float(min(max_cap, max(min_cap, best_signal['confidence'])))
-
-    current_price = float(df['close'].iloc[-1])
-    entry_price = best_signal['price']
-    stop_loss   = best_signal['stop_loss']
-    risk = abs(entry_price - stop_loss)
-    volatility = df['close'].pct_change().std() * np.sqrt(252)
-    max_daily_move = current_price * volatility / np.sqrt(252)
-
-    if best_signal['type'].startswith('BUY'):
-        tp1 = min(entry_price + risk * 1.5, entry_price + max_daily_move * 2)
-        tp2 = min(entry_price + risk * 2.5, entry_price + max_daily_move * 3)
-        tp3 = min(entry_price + risk * 4.0, entry_price + max_daily_move * 5)
-    else:
-        tp1 = max(entry_price - risk * 1.5, entry_price - max_daily_move * 2)
-        tp2 = max(entry_price - risk * 2.5, entry_price - max_daily_move * 3)
-        tp3 = max(entry_price - risk * 4.0, entry_price - max_daily_move * 5)
-
-    action = "BUY" if best_signal['type'].startswith('BUY') else "SHORT"
-    context = [f"Сигнал от уровня {best_signal['level']}"]
-    if ml_confidence is not None:
-        context.append(f"ML уверенность: {ml_confidence:.0%}")
-    probs = {"tp1": 0.63, "tp2": 0.52, "tp3": 0.53}
-    note_html = f"<div style='margin-top:10px; opacity:0.95;'>M7 Strategy: {best_signal['type']} на уровне {best_signal['level_value']}. ML-улучшенная стратегия с точными тейк-профитами.</div>"
-
-    res = {
-        "last_price": current_price,
-        "recommendation": {"action": action, "confidence": float(best_signal['confidence'])},
-        "levels": {"entry": entry_price, "sl": stop_loss, "tp1": tp1, "tp2": tp2, "tp3": tp3},
-        "probs": probs,
-        "context": context,
-        "note_html": note_html,
-        "alt": "Торговля по стратегии M7 с ML-улучшением",
-        "entry_kind": "limit",
-        "entry_label": best_signal['type']
-    }
-    res["meta"] = {"grey_zone": bool(0.48 <= res["recommendation"]["confidence"] <= 0.58), "source": "M7pro"}
-    return res
-
-# -------------------- W7 Strategy --------------------
-def analyze_asset_w7(ticker: str, horizon: str):
-    cli = PolygonClient()
-    cfg = _horizon_cfg(horizon)
-    hz = cfg["hz"]
-    days = max(90, cfg["look"] * 2)
-    df = cli.daily_ohlc(ticker, days=days)
-    price = cli.last_trade_price(ticker)
-    closes = df["close"]
-    tail = df.tail(cfg["look"])
-    rng_low, rng_high = float(tail["low"].min()), float(tail["high"].max())
-    rng_w = max(1e-9, rng_high - rng_low)
-    pos = (price - rng_low) / rng_w
-    slope = _linreg_slope(closes.tail(cfg["trend"]).values)
-    slope_norm = slope / max(1e-9, price)
-    atr_d = float(_atr_like(df, n=cfg["atr"]).iloc[-1])
-    atr_w = _weekly_atr(df) if cfg.get("use_weekly_atr") else atr_d
-    vol_ratio = atr_d / max(1e-9, float(_atr_like(df, n=cfg["atr"] * 2).iloc[-1]))
-    ha = _heikin_ashi(df)
-    ha_diff = ha["ha_close"].diff()
-    ha_up_run = _streak_by_sign(ha_diff, True)
-    ha_down_run = _streak_by_sign(ha_diff, False)
-    macd, sig, hist = _macd_hist(closes)
-    macd_pos_run = _streak_by_sign(hist, True)
-    macd_neg_run = _streak_by_sign(hist, False)
-    last_row = df.iloc[-1]
-    body, up_wick, dn_wick = _wick_profile(last_row)
-    long_upper = (up_wick > body * 1.3) and (up_wick > dn_wick * 1.1)
-    long_lower = (dn_wick > body * 1.3) and (dn_wick > up_wick * 1.1)
-    hlc = _last_period_hlc(df, cfg["pivot_rule"])
-    if not hlc:
-        hlc = (float(df["high"].tail(60).max()), float(df["low"].tail(60).min()), float(df["close"].iloc[-1]))
-    H, L, C = hlc
-    piv = _fib_pivots(H, L, C)
-    P, R1, R2, S1, S2 = piv["P"], piv["R1"], piv.get("R2"), piv["S1"], piv.get("S2")
-    tol_k = {"ST": 0.18, "MID": 0.22, "LT": 0.28}[hz]
-    buf = tol_k * (atr_w if hz != "ST" else atr_d)
-
-    def _near_from_below(level: float) -> bool:
-        return (level is not None) and (0 <= level - price <= buf)
-    def _near_from_above(level: float) -> bool:
-        return (level is not None) and (0 <= price - level <= buf)
-
-    thr_ha = {"ST": 4, "MID": 5, "LT": 6}[hz]
-    thr_macd = {"ST": 4, "MID": 6, "LT": 8}[hz]
-    long_up = (ha_up_run >= thr_ha) or (macd_pos_run >= thr_macd)
-    long_down = (ha_down_run >= thr_ha) or (macd_neg_run >= thr_macd)
-
-    if long_up and (_near_from_below(S1) or _near_from_below(R1) or _near_from_below(R2)):
-        action, scenario = "WAIT", "stall_after_long_up_at_pivot"
-    elif long_down and (_near_from_above(R1) or _near_from_above(S1) or _near_from_above(S2)):
-        action, scenario = "WAIT", "stall_after_long_down_at_pivot"
-    else:
-        band = _classify_band(price, piv, buf)
-        very_high_pos = pos >= 0.80
-        if very_high_pos:
-            if (R2 is not None) and (price > R2 + 0.6 * buf) and (slope_norm > 0):
-                action, scenario = "BUY", "breakout_up"
-            else:
-                action, scenario = "SHORT", "fade_top"
-        else:
-            if band >= +2:
-                if (R2 is not None) and (price > R2 + 0.6 * buf) and (slope_norm > 0):
-                    action, scenario = "BUY", "breakout_up"
-                else:
-                    action, scenario = "SHORT", "fade_top"
-            elif band == +1:
-                action, scenario = "WAIT", "upper_wait"
-            elif band == 0:
-                if slope_norm >= 0:
-                    action, scenario = "BUY", "trend_follow"
-                else:
-                    action, scenario = "WAIT", "mid_range"
-            elif band == -1:
-                action, scenario = "BUY", "revert_from_bottom"
-            else:
-                if band <= -2:
-                    action, scenario = "BUY", "revert_from_bottom"
-                else:
-                    action, scenario = "WAIT", "upper_wait"
-
-    base = 0.55 + 0.12 * _clip01(abs(slope_norm) * 1800) + 0.08 * _clip01((vol_ratio - 0.9) / 0.6)
-    if action == "WAIT":
-        base -= 0.07
-    conf = float(max(0.55, min(0.90, base)))
-
-    # optional AI override
-    try:
-        from core.ai_inference import score_signal
-    except Exception:
-        score_signal = None
-    if score_signal is not None:
-        feats = dict(
-            pos=pos, slope_norm=slope_norm,
-            atr_d_over_price=(atr_d / max(1e-9, price)),
-            vol_ratio=vol_ratio,
-            ha_up_run=float(ha_up_run), ha_down_run=float(ha_down_run),
-            macd_pos_run=float(macd_pos_run), macd_neg_run=float(macd_neg_run),
-            band=float(_classify_band(price, piv, buf)),
-            long_upper=bool(long_upper), long_lower=bool(long_lower),
-        )
-        out_ai = score_signal(feats, hz=hz, ticker=ticker)
-        if out_ai is not None:
-            p_long = float(out_ai.get("p_long", 0.5))
-            th_long = float(os.getenv("ARXORA_AI_TH_LONG", "0.55"))
-            th_short = float(os.getenv("ARXORA_AI_TH_SHORT", "0.45"))
-            if p_long >= th_long:
-                action = "BUY"
-                conf = float(max(0.55, min(0.90, 0.55 + 0.35 * (p_long - th_long) / max(1e-9, 1.0 - th_long))))
-            elif p_long <= th_short:
-                action = "SHORT"
-                conf = float(max(0.55, min(0.90, 0.55 + 0.35 * ((th_short - p_long) / max(1e-9, th_short)))))
-            else:
-                action = "WAIT"
-                conf = float(max(0.48, min(0.83, conf - 0.05)))
-
-    step_d, step_w = atr_d, atr_w
-    if action == "BUY":
-        if price < P:
-            entry = max(price, S1 + 0.15 * step_w); sl = S1 - 0.60 * step_w
-        else:
-            entry = max(price, P + 0.10 * step_w); sl = P - 0.60 * step_w
-        tp1 = entry + 0.9 * step_w; tp2 = entry + 1.6 * step_w; tp3 = entry + 2.3 * step_w
-        alt = "Если продавят ниже и не вернут — не заходим; ждём возврата и подтверждения сверху."
-    elif action == "SHORT":
-        if price >= R1:
-            entry = min(price, R1 - 0.15 * step_w); sl = R1 + 0.60 * step_w
-        else:
-            entry = price + 0.10 * step_d; sl = price + 1.00 * step_d
-        tp1 = entry - 0.9 * step_w; tp2 = entry - 1.6 * step_w; tp3 = entry - 2.3 * step_w
-        alt = "Если протолкнут выше и удержат — без погони; ждём возврата и слабости сверху."
-    else:
-        entry, sl = price, price - 0.90 * step_d
-        tp1, tp2, tp3 = entry + 0.7 * step_d, entry + 1.4 * step_d, entry + 2.1 * step_d
-        alt = "Ниже уровня — не пытаюсь догонять; стратегия — ждать пробоя, ретеста или отката к поддержке."
-
-    tp1, tp2, tp3 = _clamp_tp_by_trend(action, hz, tp1, tp2, tp3, piv, step_w, slope_norm, macd_pos_run, macd_neg_run)
-    atr_for_floor = atr_w if hz != "ST" else atr_d
-    tp1, tp2, tp3 = _apply_tp_floors(entry, sl, tp1, tp2, tp3, action, hz, price, atr_for_floor)
-    tp1, tp2, tp3 = _order_targets(entry, tp1, tp2, tp3, action)
-    sl, tp1, tp2, tp3 = _sanity_levels(action, entry, sl, tp1, tp2, tp3, price, step_d, step_w, hz)
-
-    entry_kind = _entry_kind(action, entry, price, step_d)
-    entry_label = {
-        "buy-stop": "Buy STOP", "buy-limit": "Buy LIMIT", "buy-now": "Buy NOW",
-        "sell-stop": "Sell STOP","sell-limit": "Sell LIMIT","sell-now": "Sell NOW"
-    }.get(entry_kind, "")
-
-    chips = []
-    if (atr_d / max(1e-9, float(_atr_like(df, n=cfg["atr"] * 2).iloc[-1]))) > 1.05: chips.append("волатильность растёт")
-    if (atr_d / max(1e-9, float(_atr_like(df, n=cfg["atr"] * 2).iloc[-1]))) < 0.95: chips.append("волатильность сжимается")
-
-    thr_ha = {"ST": 4, "MID": 5, "LT": 6}[hz]
-    if (_streak_by_sign(_heikin_ashi(df)["ha_close"].diff(), True)  >= thr_ha): chips.append(f"HA зелёных: {_streak_by_sign(_heikin_ashi(df)['ha_close'].diff(), True)}")
-    if (_streak_by_sign(_heikin_ashi(df)["ha_close"].diff(), False) >= thr_ha): chips.append(f"HA красных: {_streak_by_sign(_heikin_ashi(df)['ha_close'].diff(), False)}")
-
-    p1 = _clip01(0.58 + 0.27 * (conf - 0.55) / 0.35)
-    p2 = _clip01(0.44 + 0.21 * (conf - 0.55) / 0.35)
-    p3 = _clip01(0.28 + 0.13 * (conf - 0.55) / 0.35)
-    probs = {"tp1": float(p1), "tp2": float(p2), "tp3": float(p3)}
-
-    seed = int(hashlib.sha1(f"{ticker}{df.index[-1].date()}".encode()).hexdigest(), 16) % (2**32)
-    rng = random.Random(seed)
-    if action == "WAIT":
-        lead = rng.choice(["Под кромкой — жду пробой/ретест.", "Импульс длинный — не гонюсь.", "Даём цене определиться."])
-    elif action == "BUY":
-        lead = rng.choice(["Опора близко — беру по ходу после паузы.", "Спрос живой — вход от поддержки.", "Восстановление держится — беру аккуратно."])
-    else:
-        lead = rng.choice(["Слабость у кромки — работаю от отказа.", "Под потолком тяжело — шорт со стопом.", "Импульс выдыхается — фиксирую вниз."])
-    note_html = f"<div style='margin-top:10px; opacity:0.95;'>{lead}</div>"
-
-    res = {
-        "last_price": float(price),
-        "recommendation": {"action": action, "confidence": float(round(conf, 4))},
-        "levels": {"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3)},
-        "probs": probs,
-        "context": chips,
-        "note_html": note_html,
-        "alt": alt,
-        "entry_kind": entry_kind,
-        "entry_label": entry_label,
-    }
-    res["meta"] = {"grey_zone": bool(0.48 <= res["recommendation"]["confidence"] <= 0.58), "source": "W7"}
-    return res
-
-# -------------------- Оркестратор Octopus (агрегирует Global, M7, W7) --------------------
-OCTO_WEIGHTS: Dict[str, float] = {"Global": 0.33, "M7": 0.33, "W7": 0.34}
-OCTO_CALIBRATOR = ConfidenceCalibrator(method="sigmoid", params={"a": 1.2, "b": -0.1})
-
-def _act_to_num(a: str) -> int:
-    return 1 if a == "BUY" else (-1 if a == "SHORT" else 0)
-
-def _num_to_act(x: float) -> str:
-    if x > 0: return "BUY"
-    if x < 0: return "SHORT"
-    return "WAIT"
-
-def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
-    g = analyze_asset_global(ticker, horizon)
-    m = analyze_asset_m7(ticker, horizon)
-    w = analyze_asset_w7(ticker, horizon)
-
-    parts = {"Global": g, "M7": m, "W7": w}
-    votes = []
-    confs = []
-    for name, res in parts.items():
-        wgt = OCTO_WEIGHTS.get(name, 0.0)
-        act = str(res["recommendation"]["action"])
-        conf = float(res["recommendation"]["confidence"])
-        votes.append(wgt * _act_to_num(act))
-        confs.append(wgt * _clip01(conf))
-
-    raw_vote = float(sum(votes))
-    raw_conf = float(sum(confs) / max(1e-9, sum(OCTO_WEIGHTS.values())))
-    final_action = _num_to_act(raw_vote)
-    calibrated = float(OCTO_CALIBRATOR(raw_conf))
-
-    # выбрать уровни победителя (по весу и совпадению действия)
-    winner = "W7"
-    best_score = -1.0
-    for name, res in parts.items():
-        score = OCTO_WEIGHTS.get(name, 0.0) * (1.0 if res["recommendation"]["action"] == final_action else 0.0)
-        if score > best_score:
-            best_score = score
-            winner = name
-    levels = parts[winner]["levels"]
-
-    # ECE на подвыборке BUY/SHORT (WAIT исключаем)
-    probs_vec, labels_vec = [], []
-    for name, res in parts.items():
-        act = res["recommendation"]["action"]
-        if act == "WAIT":
-            continue
-        probs_vec.append(_clip01(res["recommendation"]["confidence"]))
-        labels_vec.append(1 if act == "BUY" else 0)
-    ece = _ece(np.array(probs_vec), np.array(labels_vec), bins=10) if len(probs_vec) >= 2 else 0.0
-
-    context = [f"Orchestrated from Global/M7/W7 with weights {OCTO_WEIGHTS}"]
-
-    return {
-        "strategy": "Octopus",
-        "agents": ["Global", "M7", "W7"],
-        "weights": OCTO_WEIGHTS,
-        "signals": {
-            "Global": {"action": g["recommendation"]["action"], "confidence": float(g["recommendation"]["confidence"])},
-            "M7":     {"action": m["recommendation"]["action"], "confidence": float(m["recommendation"]["confidence"])},
-            "W7":     {"action": w["recommendation"]["action"], "confidence": float(w["recommendation"]["confidence"])},
-        },
-        "action": final_action,
-        "confidence_raw": float(raw_conf),
-        "confidence": float(calibrated),
-        "calibration": {"method": OCTO_CALIBRATOR.method, "params": OCTO_CALIBRATOR.params, "ece": float(ece)},
-        "levels": levels,
-        "last_price": float(w.get("last_price", g.get("last_price", 0.0))),
-        "context": context + g.get("context", [])[:2] + m.get("context", [])[:2],
-        "note_html": "<div style='margin-top:10px; opacity:0.95;'>Octopus: взвешенное голосование стратегий Global/M7/W7 с калиброванной уверенностью.</div>",
-        "alt": "Агрегированный сигнал Octopus",
-        "entry_kind": "market" if final_action != "WAIT" else "wait",
-        "entry_label": final_action if final_action != "WAIT" else "WAIT",
-        "probs": w.get("probs", {}),
-        "meta": {"grey_zone": bool(0.48 <= calibrated <= 0.58), "source": "Octopus"}
-    }
-
-# -------------------- Strategy Router (Registry с алиасом Octopus) --------------------
-STRATEGY_REGISTRY: Dict[str, Callable[[str, str], Dict[str, Any]]] = {
-    "Global": analyze_asset_global,
-    "M7": analyze_asset_m7,
-    "W7": analyze_asset_w7,
-    "Octopus": analyze_asset_octopus,
-}
-
-def analyze_asset(ticker: str, horizon: str, strategy: str = "Octopus"):
-    fn = STRATEGY_REGISTRY.get(strategy)
-    if not fn:
-        raise ValueError(f"Unknown strategy: {strategy}")
-    return fn(ticker, horizon)
-
-if __name__ == "__main__":
-    strategies = ["Global", "M7", "W7", "Octopus"]
-    ticker = os.environ.get("TICKER", "AAPL")
-    for strategy in strategies:
-        print(f"\n=== {strategy} Strategy Result ===")
-        try:
-            result = analyze_asset(ticker, "Краткосрочный", strategy)
-            print(result)
-        except Exception as e:
-            print(f"Error testing {strategy} strategy: {e}")
-
-# ===== AlphaPulse (Mean Reversion) =====
-def analyze_asset_alphapulse(ticker: str, horizon: str):
-    import numpy as np, math
-    from services.data import load_ohlc  # ваш существующий загрузчик данных
-    from core.mean_reversion_signal_engine import MeanReversionSignalEngine
-    df = load_ohlc(ticker, days=240)
-    eng = MeanReversionSignalEngine()
-    sigs = eng.generate_signals(df, ticker)
-    if sigs.empty:
-        price = float(df["close"].iloc[-1])
-        return {"last_price": price, "recommendation":{"action":"WAIT","confidence":0.5},
-                "levels":{"entry":0.0,"sl":0.0,"tp1":0.0,"tp2":0.0,"tp3":0.0},
-                "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
-                "context":["AlphaPulse: сигналов нет"], "note_html":"<div>AlphaPulse (MR): ожидание</div>",
-                "alt":"WAIT","entry_kind":"wait","entry_label":"WAIT",
-                "meta":{"source":"AlphaPulse","grey_zone":True}}
-    row = sigs.iloc[-1]
-    action = "BUY" if str(row["side"])=="LONG" else "SHORT"
-    price = float(row["price"])
-    conf = 0.50 + 0.38 * max(0.0, min(1.0, float(row["confidence"])/100.0))
-    try: conf = float(1.0 / (1.0 + np.exp(-(1.1 * conf - 0.05))))
-    except Exception: pass
-    conf = float(min(0.88, max(0.50, conf)))
-    sl_d = float(row["sl_distance"]) if row["sl_distance"]==row["sl_distance"] else 0.0
-    tp_d = float(row["tp_distance"]) if row["tp_distance"]==row["tp_distance"] else 0.0
-    if action=="BUY":
-        entry=price; sl=max(0.0, price-sl_d); tp1, tp2, tp3 = price+tp_d, price+1.8*tp_d, price+2.6*tp_d
-    else:
-        entry=price; sl=price+sl_d; tp1, tp2, tp3 = price-tp_d, price-1.8*tp_d, price-2.6*tp_d
-    if action=="BUY": tp1, tp2, tp3 = sorted([tp1,tp2,tp3])
-    else:            tp1, tp2, tp3 = sorted([tp1,tp2,tp3], reverse=True)
-    return {"last_price": price,
-            "recommendation":{"action":action,"confidence":conf},
-            "levels":{"entry":entry,"sl":sl,"tp1":tp1,"tp2":tp2,"tp3":tp3},
-            "probs":{"tp1":0.60,"tp2":0.50,"tp3":0.45},
-            "context":[f"AlphaPulse MR: {row.get('reasons','')}"],
-            "note_html":"<div>AlphaPulse: MR signal</div>",
-            "alt":"MR",
-            "entry_kind":"limit" if str(row.get("order_hint","")).endswith("limit") else "stop",
-            "entry_label":"Buy LIMIT" if action=="BUY" else "Sell LIMIT",
-            "meta":{"source":"AlphaPulse","grey_zone":bool(0.48<=conf<=0.58)}}
-
-# ===== Registry and router =====
-try:
-    STRATEGY_REGISTRY
-except NameError:
-    STRATEGY_REGISTRY = {}
-try:
-    STRATEGY_REGISTRY["AlphaPulse"] = analyze_asset_alphapulse
-except Exception:
-    pass
-
-def decide(ticker: str, model: str="AlphaPulse", horizon: str="Кратко"):
-    fn = STRATEGY_REGISTRY.get(model) or STRATEGY_REGISTRY.get("AlphaPulse")
-    if fn is None:
-        return {"last_price":0.0,"recommendation":{"action":"WAIT","confidence":0.5},
-                "levels":{"entry":0.0,"sl":0.0,"tp1":0.0,"tp2":0.0,"tp3":0.0}}
-    try:
-        return fn(ticker, horizon)
-    except Exception as e:
-        return {"last_price":0.0,"recommendation":{"action":"WAIT","confidence":0.5},
-                "levels":{"entry":0.0,"sl":0.0,"tp1":0.0,"tp2":0.0,"tp3":0.0},
-                "context":[f"decide error: {e}"]}
 
