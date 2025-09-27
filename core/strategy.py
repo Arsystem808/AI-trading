@@ -623,3 +623,4 @@ if __name__ == "__main__":
             print(analyze_asset("AAPL", "Краткосрочный", s))
         except Exception as e:
             print(f"{s} error:", e)
+
