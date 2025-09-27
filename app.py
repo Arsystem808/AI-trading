@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-# app.py — устойчивый UI Arxora: все модели из реестра, корректный показ note_html+context, alias для AlphaPulse
+# app.py — устойчивый UI Arxora: все модели из реестра, корректный показ note_html+context, фильтрация внутренних подробностей, alias для AlphaPulse
 
-import os, re, json, hashlib, traceback, importlib, sys
+import os, re, traceback, importlib, sys
 from typing import Any, Dict, Optional, List
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 
 import streamlit as st
 try:
@@ -13,7 +13,7 @@ except Exception:
     pass
 
 # ===== Page / Branding =====
-st.set_page_config(page_title="Arxora — трейд-ИИ (MVP)", page_icon="assets/arxora_favicon_512.png", layout="centered")
+st.set_page_config(page_title="Arxora — трейд‑ИИ (MVP)", page_icon="assets/arxora_favicon_512.png", layout="centered")
 
 def render_arxora_header():
     hero_path = "assets/arxora_logo_hero.png"
@@ -41,9 +41,8 @@ def render_arxora_header():
         """, unsafe_allow_html=True)
 
 render_arxora_header()
-st.markdown("Arxora — ансамбль торговых агентов; Octopus объединяет Global, M7, W7 и AlphaPulse и калибрует уверенность в единый сигнал.", unsafe_allow_html=True)
 
-# ===== Optional performance (safe) =====
+# ===== Optional performance (safe imports) =====
 try:
     from core.performance_tracker import log_agent_performance, get_agent_performance
 except Exception:
@@ -108,7 +107,6 @@ def card_html(title: str, value: str, sub: Optional[str]=None, color: Optional[s
     """
 
 # ===== AlphaPulse import compatibility alias =====
-# Если strategy импортирует services.data, но данные лежат в core.data — создаём alias для совместимости.
 try:
     import services.data  # noqa
 except Exception:
@@ -154,7 +152,7 @@ def run_model_by_name(ticker_norm: str, model_name: str) -> Dict[str, Any]:
         return getattr(mod, fname)(ticker_norm, "Краткосрочный")
     raise RuntimeError(f"Стратегия {model_name} недоступна.")
 
-# ===== Confidence breakdown fallback =====
+# ===== Confidence breakdown (fallback) =====
 try:
     from core.ui_confidence import render_confidence_breakdown_inline as _render_breakdown_native
     from core.ui_confidence import get_confidence_breakdown_from_session as _get_conf_from_session
@@ -186,6 +184,23 @@ def render_confidence_breakdown_inline(ticker: str, conf_pct: float):
     b = data.get("breakdown", {})
     st.write(f"— Базовые правила: {b.get('rules_pct',0):.1f}%")
     st.write(f"— AI override: {b.get('ai_override_delta_pct',0):.1f}%")
+
+# ===== Internal text filter for user‑facing UI =====
+def _is_internal_line(s: str) -> bool:
+    if not isinstance(s, str): return False
+    s_low = s.lower()
+    bad_keys = [
+        "orchestrated", "global=", "m7=", "w7=", "alphapulse=",
+        "fib_", "на уровне", "level", "pivot"
+    ]
+    return any(k in s_low for k in bad_keys)
+
+def _sanitize_html(html: str) -> Optional[str]:
+    if not isinstance(html, str) or not html.strip():
+        return None
+    if _is_internal_line(html):
+        return None
+    return html
 
 # ===== Main UI =====
 st.subheader("AI agents")
@@ -236,20 +251,22 @@ if run and ticker:
         </div>
         """, unsafe_allow_html=True)
 
-        # Время/модель
+        # As-of / Valid
         now_iso = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
         ttl_h = int(os.getenv("ARXORA_TTL_HOURS", "24"))
         valid_until = (datetime.utcnow() + timedelta(hours=ttl_h)).strftime("%Y-%m-%dT%H:%M:%SZ")
         st.caption(f"As‑of: {now_iso} UTC • Valid until: {valid_until} • Model: {model}")
 
-        # Пояснение: сначала note_html, затем весь context построчно
-        if out.get("note_html"):
-            st.markdown(out["note_html"], unsafe_allow_html=True)
+        # Пояснения: сначала note_html (если не внутренний), затем внешний context
+        note_html = _sanitize_html(out.get("note_html", ""))
+        if note_html:
+            st.markdown(note_html, unsafe_allow_html=True)
         ctx = out.get("context", [])
         if isinstance(ctx, list) and ctx:
             for line in ctx:
-                st.caption(str(line))
-        elif isinstance(ctx, str) and ctx:
+                if not _is_internal_line(str(line)):
+                    st.caption(str(line))
+        elif isinstance(ctx, str) and ctx and not _is_internal_line(ctx):
             st.caption(ctx)
 
         # Breakdown
@@ -310,7 +327,7 @@ if st.session_state.get('show_arxora', False):
         <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 10px;">
             <h4 style="font-weight: 600;">О проекте</h4>
             <p style="font-weight: 300;">
-            Arxora AI — современное решение, которое помогает принимать обоснованные решения 
+            Arxora AI — современное решение, которое помогает принимать обоснованные решения
             на финансовых рынках с помощью ансамбля моделей и калибровки уверенности Octopus.
             </p>
         </div>
