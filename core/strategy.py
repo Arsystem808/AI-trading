@@ -434,8 +434,30 @@ def analyze_asset_w7(ticker: str, horizon: str):
 
 # -------------------- AlphaPulse (Mean‑Reversion, безопасная интеграция) --------------------
 def analyze_asset_alphapulse(ticker: str, horizon: str = "Краткосрочный") -> Dict[str, Any]:
+    # Универсальный загрузчик OHLC: services.data → core.data → PolygonClient
+    def _safe_load_ohlc(sym: str, days: int):
+        # 1) services.data.load_ohlc
+        try:
+            from services.data import load_ohlc as _ld
+            return _ld(sym, days)
+        except Exception:
+            pass
+        # 2) core.data.load_ohlc
+        try:
+            from core.data import load_ohlc as _ld
+            return _ld(sym, days)
+        except Exception:
+            pass
+        # 3) PolygonClient — минимальный фолбэк
+        try:
+            cli = PolygonClient()
+            df = cli.daily_ohlc(sym, days=days)
+            return df
+        except Exception:
+            return None
+
+    # 1) MeanReversion движок
     try:
-        from services.data import load_ohlc
         from core.mean_reversion_signal_engine import MeanReversionSignalEngine
     except Exception as e:
         return {
@@ -449,7 +471,8 @@ def analyze_asset_alphapulse(ticker: str, horizon: str = "Краткосрочн
             "meta":{"source":"AlphaPulse","grey_zone":True,"unavailable":True}
         }
 
-    df = load_ohlc(ticker, days=240)
+    # 2) Данные
+    df = _safe_load_ohlc(ticker, days=240)
     if df is None or len(df) < 50:
         price = float(df["close"].iloc[-1]) if (df is not None and len(df)) else 0.0
         return {
@@ -462,6 +485,7 @@ def analyze_asset_alphapulse(ticker: str, horizon: str = "Краткосрочн
             "meta":{"source":"AlphaPulse","grey_zone":True}
         }
 
+    # 3) Генерация сигналов (как было)
     eng = MeanReversionSignalEngine()
     sigs = eng.generate_signals(df, ticker)
     price = float(df["close"].iloc[-1])
@@ -475,6 +499,31 @@ def analyze_asset_alphapulse(ticker: str, horizon: str = "Краткосрочн
             "alt":"WAIT","entry_kind":"wait","entry_label":"WAIT",
             "meta":{"source":"AlphaPulse","grey_zone":True}
         }
+
+    row = sigs.iloc[-1]
+    side = "BUY" if str(row.get("side","")).upper() in ("LONG","BUY") else "SHORT"
+    base_conf = float(max(0.0, min(1.0, float(row.get("confidence", 50.0))/100.0)))
+    cal = ConfidenceCalibrator(method="sigmoid", params={"a":1.1,"b":-0.05})
+    conf = float(min(0.88, max(0.50, cal(0.50 + (base_conf - 0.5)))))
+
+    sl_d = float(row.get("sl_distance", 0.0)); tp_d = float(row.get("tp_distance", 0.0))
+    entry = float(row.get("price", price))
+    if side == "BUY":
+        sl  = max(0.0, entry - sl_d); tp1, tp2, tp3 = entry + tp_d, entry + 1.8*tp_d, entry + 2.6*tp_d
+    else:
+        sl  = entry + sl_d;         tp1, tp2, tp3 = entry - tp_d, entry - 1.8*tp_d, entry - 2.6*tp_d
+
+    return {
+        "last_price": price,
+        "recommendation":{"action": side, "confidence": conf},
+        "levels":{"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
+        "probs":{"tp1":0.60,"tp2":0.50,"tp3":0.45},
+        "context":[f"AlphaPulse MR: side={side}, base_conf={base_conf:.2f}"],
+        "note_html":"<div>AlphaPulse (Mean‑Reversion): сигнал сформирован</div>",
+        "alt":"Mean‑Reversion","entry_kind":"limit","entry_label": side,
+        "meta":{"source":"AlphaPulse","grey_zone": bool(0.48 <= conf <= 0.58)}
+    }
+
 
     row = sigs.iloc[-1]
     side = "BUY" if str(row.get("side","")).upper() in ("LONG","BUY") else "SHORT"
