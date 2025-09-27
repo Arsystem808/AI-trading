@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
-# app.py — устойчивый UI Arxora: все модели из реестра, корректный показ note_html+context, фильтрация внутренних подробностей, alias для AlphaPulse
+# app.py — Arxora UI: все модели из STRATEGY_REGISTRY, скрыты внутренние детали, возвращены ваши Custom phrases
 
 import os, re, traceback, importlib, sys
 from typing import Any, Dict, Optional, List
 from datetime import datetime, timedelta
-
 import streamlit as st
 try:
     from dotenv import load_dotenv
@@ -12,9 +11,8 @@ try:
 except Exception:
     pass
 
-# ===== Page / Branding =====
+# ===== Header =====
 st.set_page_config(page_title="Arxora — трейд‑ИИ (MVP)", page_icon="assets/arxora_favicon_512.png", layout="centered")
-
 def render_arxora_header():
     hero_path = "assets/arxora_logo_hero.png"
     if os.path.exists(hero_path):
@@ -39,10 +37,9 @@ def render_arxora_header():
           </div>
         </div>
         """, unsafe_allow_html=True)
-
 render_arxora_header()
 
-# ===== Optional performance (safe imports) =====
+# ===== Optional performance =====
 try:
     from core.performance_tracker import log_agent_performance, get_agent_performance
 except Exception:
@@ -106,7 +103,7 @@ def card_html(title: str, value: str, sub: Optional[str]=None, color: Optional[s
         </div>
     """
 
-# ===== AlphaPulse import compatibility alias =====
+# ===== AlphaPulse alias (services.data -> core.data) =====
 try:
     import services.data  # noqa
 except Exception:
@@ -139,20 +136,17 @@ def run_model_by_name(ticker_norm: str, model_name: str) -> Dict[str, Any]:
     mod, err = _load_strategy_module()
     if not mod:
         raise RuntimeError("Не удалось импортировать core.strategy:\n" + (err or ""))
-    # Универсальный роутер — предпочтительно
     if hasattr(mod, "analyze_asset"):
         return mod.analyze_asset(ticker_norm, "Краткосрочный", model_name)
-    # Реестр как запасной вариант
     reg = getattr(mod, "STRATEGY_REGISTRY", {}) or {}
     if model_name in reg and callable(reg[model_name]):
         return reg[model_name](ticker_norm, "Краткосрочный")
-    # Прямые функции
     fname = f"analyze_asset_{model_name.lower()}"
     if hasattr(mod, fname):
         return getattr(mod, fname)(ticker_norm, "Краткосрочный")
     raise RuntimeError(f"Стратегия {model_name} недоступна.")
 
-# ===== Confidence breakdown (fallback) =====
+# ===== Confidence breakdown fallback =====
 try:
     from core.ui_confidence import render_confidence_breakdown_inline as _render_breakdown_native
     from core.ui_confidence import get_confidence_breakdown_from_session as _get_conf_from_session
@@ -185,13 +179,13 @@ def render_confidence_breakdown_inline(ticker: str, conf_pct: float):
     st.write(f"— Базовые правила: {b.get('rules_pct',0):.1f}%")
     st.write(f"— AI override: {b.get('ai_override_delta_pct',0):.1f}%")
 
-# ===== Internal text filter for user‑facing UI =====
+# ===== Internal text filter (UI only) =====
 def _is_internal_line(s: str) -> bool:
     if not isinstance(s, str): return False
     s_low = s.lower()
     bad_keys = [
         "orchestrated", "global=", "m7=", "w7=", "alphapulse=",
-        "fib_", "на уровне", "level", "pivot"
+        "fib_", "на уровне", "level", "pivot", "mr:"
     ]
     return any(k in s_low for k in bad_keys)
 
@@ -208,7 +202,11 @@ models = get_available_models()
 if not models: models = ["Octopus"]
 model = st.radio("Выберите модель", options=models, index=0, horizontal=False, key="agent_radio")
 
-ticker_input = st.text_input("Тикер", value="SPY", placeholder="Примеры: AAPL · TSLA · X:BTCUSD · BTCUSDT · C:EURUSD · O:SPY240920C500")
+ticker_input = st.text_input(
+    "Тикер",
+    value="SPY",
+    placeholder="Примеры: AAPL · TSLA · X:BTCUSD · BTCUSDT · C:EURUSD · O:SPY240920C500"
+)
 ticker = ticker_input.strip().upper()
 symbol_for_engine = normalize_for_polygon(ticker)
 
@@ -219,7 +217,6 @@ if run and ticker:
     try:
         out = run_model_by_name(symbol_for_engine, model)
 
-        # Совместимость: если нет recommendation — собрать из верхнего уровня
         rec = out.get("recommendation")
         if not rec and ("action" in out or "confidence" in out):
             rec = {"action": out.get("action","WAIT"), "confidence": float(out.get("confidence",0.0))}
@@ -251,13 +248,12 @@ if run and ticker:
         </div>
         """, unsafe_allow_html=True)
 
-        # As-of / Valid
         now_iso = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
         ttl_h = int(os.getenv("ARXORA_TTL_HOURS", "24"))
         valid_until = (datetime.utcnow() + timedelta(hours=ttl_h)).strftime("%Y-%m-%dT%H:%M:%SZ")
         st.caption(f"As‑of: {now_iso} UTC • Valid until: {valid_until} • Model: {model}")
 
-        # Пояснения: сначала note_html (если не внутренний), затем внешний context
+        # Пояснения: показываем только внешние строки
         note_html = _sanitize_html(out.get("note_html", ""))
         if note_html:
             st.markdown(note_html, unsafe_allow_html=True)
@@ -285,7 +281,6 @@ if run and ticker:
             if rr:
                 st.markdown(f"<div style='margin-top:6px; color:#FFA94D; font-weight:600;'>{rr}</div>", unsafe_allow_html=True)
 
-        # Лёгкий перфоманс (если доступен)
         try:
             log_agent_performance(model, ticker, datetime.today(), 0.0)
         except Exception:
@@ -298,37 +293,35 @@ if run and ticker:
 elif not ticker:
     st.info("Введите тикер и нажмите «Проанализировать». Примеры формата показаны в placeholder.")
 
-# ===== Footer / Info toggles =====
+# ===== Footer toggles =====
 st.markdown("---")
-st.markdown("""
-<style>
-    .stButton > button { font-weight: 600; }
-</style>
-""", unsafe_allow_html=True)
+st.markdown("<style>.stButton > button { font-weight: 600; }</style>", unsafe_allow_html=True)
 
 col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
-
 with col2:
     if st.button("Arxora", use_container_width=True):
         st.session_state.show_arxora = not st.session_state.get('show_arxora', False)
         st.session_state.show_crypto = False
-
 with col3:
     st.button("US Stocks", use_container_width=True)
-
 with col4:
     if st.button("Crypto", use_container_width=True):
         st.session_state.show_crypto = not st.session_state.get('show_crypto', False)
         st.session_state.show_arxora = False
 
+# Ваши Custom phrases (как в прошлой версии)
 if st.session_state.get('show_arxora', False):
     st.markdown(
         """
         <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 10px;">
             <h4 style="font-weight: 600;">О проекте</h4>
             <p style="font-weight: 300;">
-            Arxora AI — современное решение, которое помогает принимать обоснованные решения
-            на финансовых рынках с помощью ансамбля моделей и калибровки уверенности Octopus.
+            Arxora AI — это современное решение, которое помогает трейдерам принимать точные и обоснованные решения 
+            на финансовых рынках с помощью передовых технологий искусственного интеллекта и машинного обучения. 
+            Arxora помогает трейдерам автоматизировать анализ, повышать качество входов и управлять рисками, 
+            делая торговлю проще, эффективнее и разумнее. Благодаря высокой скорости обработки данных Arxora может быстро предоставить анализ большого количества активов за очень короткое время. Это упрощает торговлю, позволяя трейдерам легко осуществлять самопроверку и рассматривать альтернативные варианты решений. Ключевые особенности платформы: AI Override — это встроенный механизм, который позволяет искусственному интеллекту вмешиваться в работу базовых алгоритмов и принимать более точные решения в моменты, когда рынок ведёт себя нестандартно.
+            Вероятностный анализ: Используя мощные алгоритмы машинного обучения, система рассчитывает вероятность успеха каждой сделки и присваивает уровень confidence (%), что дает прозрачность и помогает управлять рисками.
+            Машинное обучение (ML): Система постоянно обучается на исторических данных и поведении рынка, совершенствуя модели и адаптируясь к изменениям рыночной конъюнктуры. Попробуйте мощь искусственного интеллекта в трейдинге уже сегодня!
             </p>
         </div>
         """,
