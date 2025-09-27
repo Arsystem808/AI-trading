@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# app.py — Arxora MVP: все модели из реестра + Octopus, снапшоты с valid_until, стабильный UI
+# app.py — Arxora MVP: все модели из реестра + Octopus, снапшоты с valid_until, устойчивый UI
 
 import os, re, json, csv, hashlib, traceback, importlib
 from typing import Any, Dict, Optional, List
@@ -42,6 +42,9 @@ def render_arxora_header():
         """, unsafe_allow_html=True)
 
 render_arxora_header()
+
+# Короткое постоянное описание проекта под шапкой
+st.markdown("Arxora — ансамбль торговых агентов; Octopus объединяет Global, M7, W7 и AlphaPulse и калибрует уверенность, чтобы дать один интегрированный сигнал.", unsafe_allow_html=True)
 
 # ===== Optional features (safe imports) =====
 try:
@@ -125,21 +128,20 @@ def get_available_models() -> List[str]:
     if not mod: return ["Octopus"]
     reg = getattr(mod, "STRATEGY_REGISTRY", {}) or {}
     keys = list(reg.keys())
-    # Octopus первым, затем остальные по алфавиту
     return (["Octopus"] if "Octopus" in keys else []) + [k for k in sorted(keys) if k != "Octopus"]
 
 def run_model_by_name(ticker_norm: str, model_name: str) -> Dict[str, Any]:
     mod, err = _load_strategy_module()
     if not mod:
         raise RuntimeError("Не удалось импортировать core.strategy:\n" + (err or ""))
-    # Универсальный роутер (если есть)
+    # Универсальный роутер
     if hasattr(mod, "analyze_asset"):
         return mod.analyze_asset(ticker_norm, "Кратко", model_name)
-    # Прямой вызов из реестра
+    # Через реестр
     reg = getattr(mod, "STRATEGY_REGISTRY", {}) or {}
     if model_name in reg and callable(reg[model_name]):
         return reg[model_name](ticker_norm, "Кратко")
-    # Прямые функции по именам
+    # Прямое имя
     fname = f"analyze_asset_{model_name.lower()}"
     if hasattr(mod, fname):
         return getattr(mod, fname)(ticker_norm, "Кратко")
@@ -293,11 +295,15 @@ if run and ticker:
         valid_until = _add_hours_iso(_now_iso(), ttl_h)
         st.caption(f"As‑of: {_now_iso()} UTC • Valid until: {valid_until} • Model: {model}")
 
-        # Пояснение
+        # Пояснение: сначала note_html (если есть), затем весь context построчно
         if out.get("note_html"):
             st.markdown(out["note_html"], unsafe_allow_html=True)
-        elif out.get("context"):
-            st.caption(str(out["context"][0] if isinstance(out["context"], list) and out["context"] else out["context"]))
+        ctx = out.get("context", [])
+        if isinstance(ctx, list) and ctx:
+            for line in ctx:
+                st.caption(str(line))
+        elif isinstance(ctx, str) and ctx:
+            st.caption(ctx)
 
         # Breakdown
         render_confidence_breakdown_inline(ticker, conf_pct_val)
