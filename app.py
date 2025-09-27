@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
-# app.py — Arxora MVP: все модели из реестра + Octopus, снапшоты с valid_until, устойчивый UI
+# app.py — устойчивый UI Arxora: все модели из реестра, корректный показ note_html+context, alias для AlphaPulse
 
-import os, re, json, csv, hashlib, traceback, importlib
+import os, re, json, hashlib, traceback, importlib, sys
 from typing import Any, Dict, Optional, List
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import datetime, timezone, timedelta
 
 import streamlit as st
 try:
@@ -14,7 +13,7 @@ except Exception:
     pass
 
 # ===== Page / Branding =====
-st.set_page_config(page_title="Arxora — трейд‑ИИ (MVP)", page_icon="assets/arxora_favicon_512.png", layout="centered")
+st.set_page_config(page_title="Arxora — трейд-ИИ (MVP)", page_icon="assets/arxora_favicon_512.png", layout="centered")
 
 def render_arxora_header():
     hero_path = "assets/arxora_logo_hero.png"
@@ -42,48 +41,26 @@ def render_arxora_header():
         """, unsafe_allow_html=True)
 
 render_arxora_header()
+st.markdown("Arxora — ансамбль торговых агентов; Octopus объединяет Global, M7, W7 и AlphaPulse и калибрует уверенность в единый сигнал.", unsafe_allow_html=True)
 
-# Короткое постоянное описание проекта под шапкой
-st.markdown("Arxora — ансамбль торговых агентов; Octopus объединяет Global, M7, W7 и AlphaPulse и калибрует уверенность, чтобы дать один интегрированный сигнал.", unsafe_allow_html=True)
-
-# ===== Optional features (safe imports) =====
+# ===== Optional performance (safe) =====
 try:
     from core.performance_tracker import log_agent_performance, get_agent_performance
 except Exception:
     def log_agent_performance(*args, **kwargs): pass
     def get_agent_performance(*args, **kwargs): return None
 
-# ===== Config / Helpers =====
+# ===== Helpers =====
 ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))
-MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT", "0.0010"))
-
-def _ttl_hours_default() -> int:
-    v = os.getenv("ARXORA_TTL_HOURS")
-    if v and str(v).isdigit():
-        return int(v)
-    return 24
-
-def _now_iso() -> str:
-    return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-
-def _add_hours_iso(iso_utc: str, hours: int) -> str:
-    dt = datetime.strptime(iso_utc, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-    return (dt + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT",  "0.0010"))
 
 def _fmt(x: Any) -> str:
     try: return f"{float(x):.2f}"
     except Exception: return "0.00"
 
-def normalize_for_polygon(symbol: str) -> str:
-    s = (symbol or "").strip().upper().replace(" ", "")
-    if s.startswith(("X:", "C:", "O:")):
-        head, tail = s.split(":", 1)
-        tail = tail.replace("USDT", "USD").replace("USDC", "USD")
-        return f"{head}:{tail}"
-    if re.match(r"^[A-Z]{2,10}USD(T|C)?$", s):
-        s = s.replace("USDT", "USD").replace("USDC", "USD")
-        return f"X:{s}"
-    return s
+def compute_risk_pct(levels: Dict[str, float]) -> str:
+    entry = float(levels.get("entry", 0)); sl = float(levels.get("sl", 0))
+    return "—" if entry == 0 else f"{abs(entry - sl)/max(1e-9,abs(entry))*100.0:.1f}"
 
 def sanitize_targets(action: str, entry: float, tp1: float, tp2: float, tp3: float):
     step = max(MIN_TP_STEP_PCT * max(1.0, abs(entry)), 1e-6 * max(1.0, abs(entry)))
@@ -99,6 +76,25 @@ def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
     if action == "BUY":  return ("Buy Stop","Entry (Buy Stop)") if entry > last_price else ("Buy Limit","Entry (Buy Limit)")
     else:                return ("Sell Stop","Entry (Sell Stop)") if entry < last_price else ("Sell Limit","Entry (Sell Limit)")
 
+def normalize_for_polygon(symbol: str) -> str:
+    s = (symbol or "").strip().upper().replace(" ", "")
+    if s.startswith(("X:", "C:", "O:")):
+        head, tail = s.split(":", 1)
+        tail = tail.replace("USDT", "USD").replace("USDC", "USD")
+        return f"{head}:{tail}"
+    if re.match(r"^[A-Z]{2,10}USD(T|C)?$", s):
+        s = s.replace("USDT", "USD").replace("USDC", "USD")
+        return f"X:{s}"
+    return s
+
+def rr_line(levels: Dict[str, float]) -> str:
+    risk = abs(levels["entry"] - levels["sl"])
+    if risk <= 1e-9: return ""
+    rr1 = abs(levels["tp1"] - levels["entry"]) / risk
+    rr2 = abs(levels["tp2"] - levels["entry"]) / risk
+    rr3 = abs(levels["tp3"] - levels["entry"]) / risk
+    return f"RR ≈ 1:{rr1:.1f} (TP1) · 1:{rr2:.1f} (TP2) · 1:{rr3:.1f} (TP3)"
+
 def card_html(title: str, value: str, sub: Optional[str]=None, color: Optional[str]=None) -> str:
     bg = "#141a20"
     if color == "green": bg = "#006f6f"
@@ -111,7 +107,18 @@ def card_html(title: str, value: str, sub: Optional[str]=None, color: Optional[s
         </div>
     """
 
-# ===== Dynamic strategy import =====
+# ===== AlphaPulse import compatibility alias =====
+# Если strategy импортирует services.data, но данные лежат в core.data — создаём alias для совместимости.
+try:
+    import services.data  # noqa
+except Exception:
+    try:
+        import core.data as _core_data
+        sys.modules['services.data'] = _core_data
+    except Exception:
+        pass
+
+# ===== Dynamic import of strategy =====
 def _load_strategy_module():
     try:
         mod = importlib.import_module("core.strategy")
@@ -134,74 +141,20 @@ def run_model_by_name(ticker_norm: str, model_name: str) -> Dict[str, Any]:
     mod, err = _load_strategy_module()
     if not mod:
         raise RuntimeError("Не удалось импортировать core.strategy:\n" + (err or ""))
-    # Универсальный роутер
+    # Универсальный роутер — предпочтительно
     if hasattr(mod, "analyze_asset"):
-        return mod.analyze_asset(ticker_norm, "Кратко", model_name)
-    # Через реестр
+        return mod.analyze_asset(ticker_norm, "Краткосрочный", model_name)
+    # Реестр как запасной вариант
     reg = getattr(mod, "STRATEGY_REGISTRY", {}) or {}
     if model_name in reg and callable(reg[model_name]):
-        return reg[model_name](ticker_norm, "Кратко")
-    # Прямое имя
+        return reg[model_name](ticker_norm, "Краткосрочный")
+    # Прямые функции
     fname = f"analyze_asset_{model_name.lower()}"
     if hasattr(mod, fname):
-        return getattr(mod, fname)(ticker_norm, "Кратко")
+        return getattr(mod, fname)(ticker_norm, "Краткосрочный")
     raise RuntimeError(f"Стратегия {model_name} недоступна.")
 
-# ===== Snapshots with valid_until =====
-SNAP_STORE = Path("snapshots_store"); SNAP_STORE.mkdir(exist_ok=True)
-SNAP_INDEX = SNAP_STORE / "index.csv"
-
-def _hash_weights(weights: Dict[str, float] | None) -> str:
-    if not weights: return "none"
-    s = json.dumps(weights, sort_keys=True)
-    return hashlib.sha256(s.encode()).hexdigest()[:12]
-
-def save_snapshot_local(payload: Dict[str, Any]) -> str:
-    gen_at = _now_iso(); ttl_h = _ttl_hours_default(); valid_until = _add_hours_iso(gen_at, ttl_h)
-    meta = {
-        "generated_at": gen_at, "valid_until": valid_until, "ttl_hours": ttl_h,
-        "ticker": payload.get("ticker"), "horizon": "Кратко",
-        "model": payload.get("model","Octopus"), "model_version": "v1",
-        "weights_hash": _hash_weights(payload.get("weights")), "data_window": payload.get("data_window", {})
-    }
-    raw = {"meta": meta, "body": {
-        "recommendation": payload.get("recommendation"), "levels": payload.get("levels"),
-        "context": payload.get("context", []), "agents": payload.get("agents", []),
-        "weights": payload.get("weights", {}), "last_price": payload.get("last_price", 0.0),
-        "note_html": payload.get("note_html",""), "alt": payload.get("alt",""),
-    }}
-    sid = hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest()[:12]
-    raw["snapshot_id"] = sid
-    (SNAP_STORE / f"{sid}.json").write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
-    if not SNAP_INDEX.exists():
-        with open(SNAP_INDEX, "w", newline="", encoding="utf-8") as f:
-            csv.writer(f).writerow(["snapshot_id","generated_at","valid_until","ttl_hours","ticker","horizon","model","model_version","weights_hash"])
-    with open(SNAP_INDEX, "a", newline="", encoding="utf-8") as f:
-        csv.writer(f).writerow([sid, meta["generated_at"], meta["valid_until"], ttl_h, meta["ticker"], meta["horizon"], meta["model"], meta["model_version"], meta["weights_hash"]])
-    return sid
-
-def load_snapshot_local(sid: str) -> Dict[str, Any]:
-    p = SNAP_STORE / f"{sid}.json"
-    if not p.exists(): raise FileNotFoundError(f"Snapshot {sid} not found")
-    return json.loads(p.read_text(encoding="utf-8"))
-
-def compare_snapshots_local(a_id: str, b_id: str) -> Dict[str, Any]:
-    a = load_snapshot_local(a_id); b = load_snapshot_local(b_id)
-    rec_a = a["body"].get("recommendation", {}) or {}
-    rec_b = b["body"].get("recommendation", {}) or {}
-    lv_a  = a["body"].get("levels", {}) or {}
-    lv_b  = b["body"].get("levels", {}) or {}
-    return {
-        "a": a, "b": b,
-        "delta": {
-            "action": {"a": rec_a.get("action","WAIT"), "b": rec_b.get("action","WAIT")},
-            "confidence": {"a": float(rec_a.get("confidence",0.0)), "b": float(rec_b.get("confidence",0.0)), "diff": float(rec_b.get("confidence",0.0))-float(rec_a.get("confidence",0.0))},
-            "levels": {"a": lv_a, "b": lv_b},
-            "meta": {"a": a["meta"], "b": b["meta"]},
-        }
-    }
-
-# ===== Confidence breakdown (fallback) =====
+# ===== Confidence breakdown fallback =====
 try:
     from core.ui_confidence import render_confidence_breakdown_inline as _render_breakdown_native
     from core.ui_confidence import get_confidence_breakdown_from_session as _get_conf_from_session
@@ -236,17 +189,11 @@ def render_confidence_breakdown_inline(ticker: str, conf_pct: float):
 
 # ===== Main UI =====
 st.subheader("AI agents")
-
 models = get_available_models()
 if not models: models = ["Octopus"]
 model = st.radio("Выберите модель", options=models, index=0, horizontal=False, key="agent_radio")
 
-ticker_input = st.text_input(
-    "Тикер",
-    value="",
-    placeholder="Примеры: AAPL • TSLA • X:BTCUSD • BTCUSDT • C:EURUSD • O:SPY240920C500",
-    help="Поддерживаются: акции/ETF (AAPL), крипто (X:BTCUSD или BTCUSDT), FX (C:EURUSD), опционы (O:<...>)"
-)
+ticker_input = st.text_input("Тикер", value="SPY", placeholder="Примеры: AAPL · TSLA · X:BTCUSD · BTCUSDT · C:EURUSD · O:SPY240920C500")
 ticker = ticker_input.strip().upper()
 symbol_for_engine = normalize_for_polygon(ticker)
 
@@ -256,7 +203,6 @@ st.write(f"Mode: AI · Model: {model}")
 if run and ticker:
     try:
         out = run_model_by_name(symbol_for_engine, model)
-        st.session_state["last_result"] = {"out": out, "ticker": ticker, "model": model}
 
         # Совместимость: если нет recommendation — собрать из верхнего уровня
         rec = out.get("recommendation")
@@ -271,8 +217,7 @@ if run and ticker:
         st.session_state["last_overall_conf_pct"] = conf_pct_val
 
         last_price = float(out.get("last_price", 0.0) or 0.0)
-        price_text = ("—" if last_price <= 0 else f"${last_price:.2f}")
-        st.markdown(f"<div style='font-size:3rem; font-weight:800; text-align:center; margin:6px 0 14px 0;'>{price_text}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='font-size:3rem; font-weight:800; text-align:center; margin:6px 0 14px 0;'>${last_price:.2f}</div>", unsafe_allow_html=True)
 
         lv = {k: float(out.get("levels", {}).get(k, 0.0)) for k in ("entry","sl","tp1","tp2","tp3")}
         if action in ("BUY", "SHORT"):
@@ -291,11 +236,13 @@ if run and ticker:
         </div>
         """, unsafe_allow_html=True)
 
-        ttl_h = _ttl_hours_default()
-        valid_until = _add_hours_iso(_now_iso(), ttl_h)
-        st.caption(f"As‑of: {_now_iso()} UTC • Valid until: {valid_until} • Model: {model}")
+        # Время/модель
+        now_iso = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        ttl_h = int(os.getenv("ARXORA_TTL_HOURS", "24"))
+        valid_until = (datetime.utcnow() + timedelta(hours=ttl_h)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        st.caption(f"As‑of: {now_iso} UTC • Valid until: {valid_until} • Model: {model}")
 
-        # Пояснение: сначала note_html (если есть), затем весь context построчно
+        # Пояснение: сначала note_html, затем весь context построчно
         if out.get("note_html"):
             st.markdown(out["note_html"], unsafe_allow_html=True)
         ctx = out.get("context", [])
@@ -313,12 +260,15 @@ if run and ticker:
             c1, c2, c3 = st.columns(3)
             with c1: st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
             with c2: st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
-            with c3: st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}"), unsafe_allow_html=True)
+            with c3: st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}", sub=f"Probability {int(round(out.get('probs', {}).get('tp1', 0)*100))}%"), unsafe_allow_html=True)
             c4, c5 = st.columns(2)
-            with c4: st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}"), unsafe_allow_html=True)
-            with c5: st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}"), unsafe_allow_html=True)
+            with c4: st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}", sub=f"Probability {int(round(out.get('probs', {}).get('tp2', 0)*100))}%"), unsafe_allow_html=True)
+            with c5: st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}", sub=f"Probability {int(round(out.get('probs', {}).get('tp3', 0)*100))}%"), unsafe_allow_html=True)
+            rr = rr_line(lv)
+            if rr:
+                st.markdown(f"<div style='margin-top:6px; color:#FFA94D; font-weight:600;'>{rr}</div>", unsafe_allow_html=True)
 
-        # Мягкий перфоманс (если доступен)
+        # Лёгкий перфоманс (если доступен)
         try:
             log_agent_performance(model, ticker, datetime.today(), 0.0)
         except Exception:
@@ -331,54 +281,52 @@ if run and ticker:
 elif not ticker:
     st.info("Введите тикер и нажмите «Проанализировать». Примеры формата показаны в placeholder.")
 
-# ===== Share / Compare =====
-with st.expander("Share snapshot / Compare", expanded=False):
-    lr = st.session_state.get("last_result")
-    if not lr:
-        st.info("Сначала выполните анализ — затем можно сохранить снимок или сравнить два снимка.")
-    else:
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("Share snapshot", key="btn_share_snapshot"):
-                payload = {
-                    "ticker": lr["ticker"],
-                    "model": lr["model"],
-                    "recommendation": lr["out"].get("recommendation") or {"action": lr["out"].get("action","WAIT"), "confidence": lr["out"].get("confidence",0.0)},
-                    "levels": lr["out"].get("levels"),
-                    "context": lr["out"].get("context", []),
-                    "agents": lr["out"].get("agents", []),
-                    "weights": lr["out"].get("weights", {}),
-                    "last_price": lr["out"].get("last_price", 0.0),
-                    "note_html": lr["out"].get("note_html",""),
-                    "alt": lr["out"].get("alt",""),
-                    "data_window": lr["out"].get("data_window", {}),
-                }
-                sid = save_snapshot_local(payload)
-                st.success(f"Snapshot saved: {sid}")
-                st.code(sid)
-        with c2:
-            a_id = st.text_input("Snapshot A ID")
-            b_id = st.text_input("Snapshot B ID")
-            if st.button("Compare", key="btn_compare"):
-                try:
-                    out_cmp = compare_snapshots_local(a_id.strip(), b_id.strip())
-                    st.json(out_cmp["delta"])
-                    ma = out_cmp["delta"]["meta"]["a"]; mb = out_cmp["delta"]["meta"]["b"]
-                    st.write(f"A: as‑of {ma.get('generated_at')} UTC → valid until {ma.get('valid_until')} (TTL {ma.get('ttl_hours')}h)")
-                    st.write(f"B: as‑of {mb.get('generated_at')} UTC → valid until {mb.get('valid_until')} (TTL {mb.get('ttl_hours')}h)")
-                except Exception as e:
-                    st.error(f"Compare error: {e}")
-
-# ===== Footer =====
+# ===== Footer / Info toggles =====
 st.markdown("---")
 st.markdown("""
 <style>
     .stButton > button { font-weight: 600; }
-    footer {visibility: hidden;}
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown(
-    "<div style='text-align:center; opacity:.75; font-size:.9rem; padding:8px 0;'>© Arxora. All rights reserved.</div>",
-    unsafe_allow_html=True
-)
+col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
+
+with col2:
+    if st.button("Arxora", use_container_width=True):
+        st.session_state.show_arxora = not st.session_state.get('show_arxora', False)
+        st.session_state.show_crypto = False
+
+with col3:
+    st.button("US Stocks", use_container_width=True)
+
+with col4:
+    if st.button("Crypto", use_container_width=True):
+        st.session_state.show_crypto = not st.session_state.get('show_crypto', False)
+        st.session_state.show_arxora = False
+
+if st.session_state.get('show_arxora', False):
+    st.markdown(
+        """
+        <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 10px;">
+            <h4 style="font-weight: 600;">О проекте</h4>
+            <p style="font-weight: 300;">
+            Arxora AI — современное решение, которое помогает принимать обоснованные решения 
+            на финансовых рынках с помощью ансамбля моделей и калибровки уверенности Octopus.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+if st.session_state.get('show_crypto', False):
+    st.markdown(
+        """
+        <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 10px;">
+            <h4 style="font-weight: 600;">Crypto</h4>
+            <p style="font-weight: 300;">
+            Анализ криптоактивов с учётом круглосуточной торговли и высокой волатильности.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
