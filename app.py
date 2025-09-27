@@ -1,11 +1,9 @@
 # -*- coding: utf-8 -*-
-# app.py — Arxora UI (final): все модели из STRATEGY_REGISTRY, скрыты внутренние подписи,
-# возвращены Custom phrases и график эффективности, примеры тикеров в placeholder,
-# совместимость AlphaPulse через alias services.data -> core.data
+# app.py — Arxora UI (final EOD): Valid until = конец дня (UTC), примеры тикеров, блок «О проекте» внизу
 
 import os, re, traceback, importlib, sys
 from typing import Any, Dict, Optional, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import streamlit as st
 
 try:
@@ -44,7 +42,7 @@ def render_arxora_header():
 
 render_arxora_header()
 
-# ===== Optional performance (safe imports) =====
+# ===== Optional performance =====
 try:
     from core.performance_tracker import log_agent_performance, get_agent_performance
 except Exception:
@@ -58,10 +56,6 @@ MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT",  "0.0010"))
 def _fmt(x: Any) -> str:
     try: return f"{float(x):.2f}"
     except Exception: return "0.00"
-
-def compute_risk_pct(levels: Dict[str, float]) -> str:
-    entry = float(levels.get("entry", 0)); sl = float(levels.get("sl", 0))
-    return "—" if entry == 0 else f"{abs(entry - sl)/max(1e-9,abs(entry))*100.0:.1f}"
 
 def sanitize_targets(action: str, entry: float, tp1: float, tp2: float, tp3: float):
     step = max(MIN_TP_STEP_PCT * max(1.0, abs(entry)), 1e-6 * max(1.0, abs(entry)))
@@ -193,7 +187,7 @@ model = st.radio("Выберите модель", options=models, index=0, horiz
 ticker_input = st.text_input(
     "Тикер",
     value="SPY",
-    placeholder="Примеры: AAPL · TSLA · X:BTCUSD · BTCUSDT · C:EURUSD · O:SPY240920C500"
+    placeholder="Примеры ввода: AAPL • TSLA • X:BTCUSD • BTCUSDT • C:EURUSD • O:SPY240920C500"
 )
 ticker = ticker_input.strip().upper()
 symbol_for_engine = normalize_for_polygon(ticker)
@@ -205,7 +199,6 @@ if run and ticker:
     try:
         out = run_model_by_name(symbol_for_engine, model)
 
-        # Унифицированный сигнал
         rec = out.get("recommendation")
         if not rec and ("action" in out or "confidence" in out):
             rec = {"action": out.get("action","WAIT"), "confidence": float(out.get("confidence",0.0))}
@@ -222,7 +215,8 @@ if run and ticker:
 
         lv = {k: float(out.get("levels", {}).get(k, 0.0)) for k in ("entry","sl","tp1","tp2","tp3")}
         if action in ("BUY", "SHORT"):
-            t1, t2, t3 = sanitize_targets(action, lv["entry"], lv["tp1"], lv["tp2"], lv["tp3"])
+            tp1, tp2, tp3 = lv["tp1"], lv["tp2"], lv["tp3"]
+            t1, t2, t3 = sanitize_targets(action, lv["entry"], tp1, tp2, tp3)
             lv["tp1"], lv["tp2"], lv["tp3"] = float(t1), float(t2), float(t3)
 
         mode_text, entry_title = entry_mode_labels(action, lv.get("entry", last_price), last_price, ENTRY_MARKET_EPS)
@@ -237,18 +231,15 @@ if run and ticker:
         </div>
         """, unsafe_allow_html=True)
 
-        # Время/модель
-        now_iso = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-        ttl_h = int(os.getenv("ARXORA_TTL_HOURS", "24"))
-        valid_until = (datetime.utcnow() + timedelta(hours=ttl_h)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        st.caption(f"As‑of: {now_iso} UTC • Valid until: {valid_until} • Model: {model}")
-
-        # ВАЖНО: скрываем любые внутренние подписи (orchestrated/fib/levels/mean‑reversion) — ничего лишнего не показываем
+        # As‑of / Valid until = конец дня UTC
+        now_utc = datetime.now(timezone.utc)
+        eod_utc = now_utc.replace(hour=23, minute=59, second=59, microsecond=0)
+        st.caption(f"As‑of: {now_utc.strftime('%Y-%m-%dT%H:%M:%SZ')} UTC • Valid until: {eod_utc.strftime('%Y-%m-%dT%H:%M:%SZ')} • Model: {model}")
 
         # Breakdown
         render_confidence_breakdown_inline(ticker, conf_pct_val)
 
-        # Таргеты
+        # Targets
         if action in ("BUY", "SHORT"):
             c1, c2, c3 = st.columns(3)
             with c1: st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
@@ -261,10 +252,10 @@ if run and ticker:
             if rr:
                 st.markdown(f"<div style='margin-top:6px; color:#FFA94D; font-weight:600;'>{rr}</div>", unsafe_allow_html=True)
 
-        # Ваши Custom phrases (контекст + стоп‑линия + дисклеймер)
+        # Custom phrases (ваши тексты)
         CUSTOM_PHRASES = {
             "CONTEXT": {
-                "support":["Цена у уровня покупательской активности. Оптимально — вход по ордеру из AI‑анализа с акцентом на рост; важно контролировать риск и пересматривать план при закреплении ниже зоны."],
+                "support":["Цена у уровня покупательской активности. Оптимально — вход по ордеру из AI‑анализа с акцентом на рост; важен контроль риска и пересмотр плана при закреплении ниже зоны."],
                 "resistance":["Риск коррекции повышен. Оптимально — короткий сценарий по ордеру из AI‑анализа; при прорыве и закреплении выше зоны — план пересмотреть."],
                 "neutral":["Баланс. Действовать только по подтверждённому сигналу."]
             },
@@ -274,11 +265,11 @@ if run and ticker:
         ctx_key = "support" if action == "BUY" else ("resistance" if action == "SHORT" else "neutral")
         st.markdown(f"<div style='opacity:0.9'>{CUSTOM_PHRASES['CONTEXT'][ctx_key][0]}</div>", unsafe_allow_html=True)
         if action in ("BUY", "SHORT"):
-            stopline = CUSTOM_PHRASES["STOPLINE"][0].format(sl=_fmt(lv["sl"]), risk_pct=compute_risk_pct(lv))
+            stopline = CUSTOM_PHRASES["STOPLINE"][0].format(sl=_fmt(lv["sl"]), risk_pct=f"{abs(lv['entry']-lv['sl'])/max(1e-9,abs(lv['entry']))*100.0:.1f}")
             st.markdown(f"<div style='opacity:0.9; margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
         st.caption(CUSTOM_PHRASES["DISCLAIMER"])
 
-        # Эффективность модели за 3 месяца (как было)
+        # Performance chart (3 месяца)
         st.subheader(f"Эффективность модели {model} по ключевым инструментам (3 месяца)")
         cols = st.columns(2)
         for i, tk in enumerate(["SPY","QQQ","BTCUSD","ETHUSD"]):
@@ -293,7 +284,6 @@ if run and ticker:
                 else:
                     st.info("Данных пока нет")
 
-        # Лёгкий лог
         try:
             log_agent_performance(model, ticker, datetime.today(), 0.0)
         except Exception:
@@ -306,6 +296,20 @@ if run and ticker:
 elif not ticker:
     st.info("Введите тикер и нажмите «Проанализировать». Примеры формата показаны в поле ввода.")
 
-# ===== Footer =====
+# ===== Footer / About =====
 st.markdown("---")
 st.markdown("<style>.stButton > button { font-weight: 600; }</style>", unsafe_allow_html=True)
+
+st.markdown(
+    """
+    <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 6px;">
+        <h4 style="font-weight: 600; margin-top: 0;">О проекте</h4>
+        <p style="font-weight: 300; margin-bottom: 0;">
+        Arxora AI — современное решение, которое помогает трейдерам принимать точные и обоснованные решения
+        с помощью ансамбля моделей и калибровки уверенности. Система автоматизирует анализ, повышает качество входов
+        и помогает управлять рисками. Прошлые результаты не гарантируют будущие.
+        </p>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
