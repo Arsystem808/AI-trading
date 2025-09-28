@@ -186,8 +186,7 @@ model = st.radio("Выберите модель", options=models, index=0, horiz
 
 ticker_input = st.text_input(
     "Тикер",
-    value="SPY",
-    placeholder="Примеры ввода: AAPL • TSLA • X:BTCUSD • BTCUSDT • C:EURUSD • O:SPY240920C500"
+    placeholder="Примеры ввода: AAPL • BTCUSD • SPY • C:EURUSD • O:SPY240920C500"
 )
 ticker = ticker_input.strip().upper()
 symbol_for_engine = normalize_for_polygon(ticker)
