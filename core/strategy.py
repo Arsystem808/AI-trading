@@ -660,6 +660,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     return res
 
 # -------------------- Strategy Router (для UI) --------------------
+from core.agents.alphapulse import analyze_asset_alphapulse
 STRATEGY_REGISTRY = {
     "Octopus": analyze_asset_octopus,
     "Global": analyze_asset_global,
