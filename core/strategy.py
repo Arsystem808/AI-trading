@@ -22,21 +22,103 @@ except Exception:
     def log_agent_performance(*args, **kwargs): pass
     def get_agent_performance(*args, **kwargs): return None
 
-# AlphaPulse: безопасный импорт с фолбэком
+# AlphaPulse: безопасный импорт с расширенным фолбэком
 try:
     from core.agents.alphapulse import analyze_asset_alphapulse as _alphapulse_impl
     def analyze_asset_alphapulse(ticker: str, horizon: str = "Краткосрочный") -> Dict[str, Any]:
         return _alphapulse_impl(ticker, horizon)
 except Exception:
     def analyze_asset_alphapulse(ticker: str, horizon: str = "Краткосрочный") -> Dict[str, Any]:
+        def _norm_symbol(sym: str) -> str:
+            s = str(sym).lower().replace("-", "").replace("_", "")
+            if s in ("btc", "btcusd", "btcusdt"): return "X:BTCUSD"
+            if s in ("eth", "ethusd", "ethusdt"): return "X:ETHUSD"
+            return sym
+
+        def _safe_load_ohlc(sym: str, days: int = 240):
+            try:
+                from services.data import load_ohlc as _ld
+                df = _ld(sym, days)
+                if df is not None and len(df): return df
+            except Exception:
+                pass
+            try:
+                from core.data import load_ohlc as _ld
+                df = _ld(sym, days)
+                if df is not None and len(df): return df
+            except Exception:
+                pass
+            try:
+                cli = PolygonClient()
+                return cli.daily_ohlc(_norm_symbol(sym), days=days)
+            except Exception:
+                return None
+
+        df = _safe_load_ohlc(ticker, days=240)
+        price = float(df["close"].iloc[-1]) if (isinstance(df, pd.DataFrame) and len(df) and "close" in df.columns) else 0.0
+        if df is None or len(df) < 50 or "close" not in df.columns:
+            return {
+                "last_price": price,
+                "recommendation":{"action":"WAIT","confidence":0.50},
+                "levels":{"entry":0.0,"sl":0.0,"tp1":0.0,"tp2":0.0,"tp3":0.0},
+                "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
+                "context":[f"AlphaPulse: данных недостаточно для {ticker}"],
+                "note_html":"<div>AlphaPulse: ожидание</div>",
+                "alt":"WAIT","entry_kind":"wait","entry_label":"WAIT",
+                "meta":{"source":"AlphaPulse","grey_zone":True,"fallback":True}
+            }
+
+        # Простая Mean‑Reversion fallback (Bollinger + ATR)
+        close = df["close"].astype(float)
+        ma = close.rolling(20).mean()
+        sd = close.rolling(20).std()
+        z = float((close.iloc[-1] - ma.iloc[-1]) / max(1e-9, sd.iloc[-1]))
+        atr = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
+
+        if z <= -1.5:
+            side = "BUY"
+            entry = price; sl = max(0.0, entry - 1.2*atr)
+            tp1, tp2, tp3 = entry + 1.2*atr, entry + 2.0*atr, entry + 3.0*atr
+        elif z >= 1.5:
+            side = "SHORT"
+            entry = price; sl = entry + 1.2*atr
+            tp1, tp2, tp3 = entry - 1.2*atr, entry - 2.0*atr, entry - 3.0*atr
+        else:
+            return {
+                "last_price": price,
+                "recommendation":{"action":"WAIT","confidence":0.50},
+                "levels":{"entry":0.0,"sl":0.0,"tp1":0.0,"tp2":0.0,"tp3":0.0},
+                "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
+                "context":[f"AlphaPulse: z={z:.2f} в нейтральной зоне"],
+                "note_html":"<div>AlphaPulse: нейтрально</div>",
+                "alt":"WAIT","entry_kind":"wait","entry_label":"WAIT",
+                "meta":{"source":"AlphaPulse","grey_zone":True,"fallback":True}
+            }
+
+        import math
+        conf = 0.55 + 0.18 * _clip01((abs(z) - 1.5) / 1.0)
+        conf = float(max(0.55, min(0.82, conf)))
+
+        def _dyn_probs(entry, tp1, tp2, tp3, atr, conf):
+            k = 0.18
+            u1 = abs(tp1 - entry)/atr; u2 = abs(tp2 - entry)/atr; u3 = abs(tp3 - entry)/atr
+            b1, b2, b3 = conf, max(0.50, conf-0.08), max(0.45, conf-0.16)
+            p1 = _clip01(b1 * math.exp(-k*(u1 - 1.0)))
+            p2 = _clip01(b2 * math.exp(-k*(u2 - 1.5)))
+            p3 = _clip01(b3 * math.exp(-k*(u3 - 2.2)))
+            return _monotone_tp_probs({"tp1": p1, "tp2": p2, "tp3": p3})
+
+        probs = _dyn_probs(entry, tp1, tp2, tp3, atr, conf)
+
         return {
-            "last_price": 0.0,
-            "recommendation":{"action":"WAIT","confidence":0.50},
-            "levels":{"entry":0.0,"sl":0.0,"tp1":0.0,"tp2":0.0,"tp3":0.0},
-            "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
-            "context":["AlphaPulse недоступен"], "note_html":"<div>AlphaPulse: ожидание</div>",
-            "alt":"WAIT","entry_kind":"wait","entry_label":"WAIT",
-            "meta":{"source":"AlphaPulse","grey_zone":True,"unavailable":True}
+            "last_price": price,
+            "recommendation":{"action": side, "confidence": conf},
+            "levels":{"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3)},
+            "probs": probs,
+            "context":[f"AlphaPulse MR(fallback): z={z:.2f}, ATR={atr:.4f}"],
+            "note_html":"<div>AlphaPulse: mean‑reversion fallback</div>",
+            "alt":"Mean‑Reversion","entry_kind":"market","entry_label": side,
+            "meta":{"source":"AlphaPulse","grey_zone": bool(0.48 <= conf <= 0.58), "fallback":True}
         }
 
 logging.basicConfig(level=logging.INFO)
@@ -88,12 +170,9 @@ def _streak_by_sign(series: pd.Series, positive: bool = True) -> int:
     vals = series.values
     for i in range(len(vals) - 1, -1, -1):
         v = vals[i]
-        if (v > 0 and want_pos == 1) or (v < 0 and want_pos == -1):
-            run += 1
-        elif v == 0:
-            continue
-        else:
-            break
+        if (v > 0 and want_pos == 1) or (v < 0 and want_pos == -1): run += 1
+        elif v == 0: continue
+        else: break
     return run
 
 def _macd_hist(close: pd.Series):
@@ -329,7 +408,6 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
     strategy = M7TradingStrategy()
     signals = strategy.generate_signals(df)
 
-    # WAIT, если нет сигнала
     if not signals:
         return {
             "last_price": price,
@@ -341,11 +419,9 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
             "meta":{"source":"M7","grey_zone":True}
         }
 
-    # лучший сигнал по близости к ключевому уровню
     best = max(signals, key=lambda x: x['confidence'])
     raw = float(_clip01(best['confidence']))  # 0..1
 
-    # нейтральная зона — честный WAIT
     if raw < 0.58:
         return {
             "last_price": price,
@@ -357,7 +433,6 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
             "meta":{"source":"M7","grey_zone":True}
         }
 
-    # уровни и направление
     entry = float(best['price']); sl = float(best['stop_loss']); risk = abs(entry - sl)
     vol = df['close'].pct_change().std() * np.sqrt(252)
     max_move = price * max(1e-9, vol) / np.sqrt(252)
@@ -373,7 +448,6 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
         tp3 = max(entry - 4.0*risk, entry - 5.0*max_move)
         act = "SHORT"
 
-    # честная confidence: сигмоида вокруг 0.5 + мягкие штрафы, верхний кап ~0.82
     import math
     base = 0.50 + 0.34 * math.tanh((raw - 0.65) / 0.20)
     penalty = 0.0
@@ -384,7 +458,6 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
     if risk_u_atr > 3.5: penalty += 0.03
     conf = max(0.52, min(0.82, base * (1.0 - penalty)))
 
-    # динамические TP‑probabilities от дистанции в ATR и текущего conf
     def _dynamic_tp_probs(entry, tp1, tp2, tp3, atr, conf):
         k = 0.18
         u1 = abs(tp1 - entry)/atr
@@ -519,7 +592,6 @@ def _median_levels(parts: Dict[str, Dict[str,Any]], direction: str) -> Dict[str,
     return {"entry": med("entry"), "sl": med("sl"), "tp1": med("tp1"), "tp2": med("tp2"), "tp3": med("tp3")}
 
 def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
-    # 1) собрать сигналы синхронно
     parts: Dict[str, Dict[str,Any]] = {}
     for name, fn in {
         "Global": analyze_asset_global,
@@ -532,7 +604,6 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         except Exception as e:
             logger.warning("Agent %s failed: %s", name, e)
 
-    # если все недоступны
     if not parts:
         res = {
             "strategy":"Octopus","agents":[], "weights": OCTO_WEIGHTS, "signals":{},
@@ -546,7 +617,6 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         res["recommendation"] = {"action": res["action"], "confidence": res["confidence"]}
         return res
 
-    # 2) активные голоса
     active = []
     votes_txt = []
     for name, res in parts.items():
@@ -557,7 +627,6 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         if act in ("BUY","SHORT"):
             active.append((name, act, conf, w))
 
-    # если активных нет
     if not active:
         last_price = float(parts.get("W7", parts.get("Global", {})).get("last_price", 0.0))
         signals = {n: {"action": parts[n]["recommendation"]["action"],
@@ -574,7 +643,6 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         res["recommendation"] = {"action": "WAIT", "confidence": 0.0}
         return res
 
-    # 3) скоринг направлений и консенсус
     score_long  = sum(w * _clip01(c) for (n,a,c,w) in active if a == "BUY")
     score_short = sum(w * _clip01(c) for (n,a,c,w) in active if a == "SHORT")
     total_side  = score_long + score_short
@@ -585,7 +653,6 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     count_long  = sum(1 for (_,a,_,_) in active if a=="BUY")
     count_short = sum(1 for (_,a,_,_) in active if a=="SHORT")
 
-    # 4) правило большинства + относительный порог
     if count_long >= 3:
         final_action = "BUY"
     elif count_short >= 3:
@@ -596,12 +663,9 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         else:
             final_action = "BUY" if score_long > score_short else "SHORT"
 
-    # 5) выбор уровней
     if final_action in ("BUY","SHORT"):
-        # победитель по вес*уверенность текущего направления
         cand = [t for t in active if t[1] == final_action]
         win_name = max(cand, key=lambda t: t[2]*t[3])[0] if cand else max(active, key=lambda t: t[2]*t[3])[0]
-        # при слабом консенсусе используем медианные уровни, иначе — победителя
         if ratio < 0.25:
             levels_out = _median_levels(parts, final_action)
         else:
@@ -644,7 +708,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     return res
 
 # -------------------- Strategy Router (для UI) --------------------
-STRATEGY_REGISTRY = {
+STRATEGY_REGISTRY: Dict[str, Callable[[str, str], Dict[str, Any]]] = {
     "Octopus": analyze_asset_octopus,
     "Global": analyze_asset_global,
     "M7": analyze_asset_m7,
@@ -665,4 +729,3 @@ if __name__ == "__main__":
             print(analyze_asset("AAPL", "Краткосрочный", s))
         except Exception as e:
             print(f"{s} error:", e)
-
