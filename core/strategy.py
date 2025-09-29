@@ -708,7 +708,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     return res
 
 # -------------------- Strategy Router (для UI) --------------------
-STRATEGY_REGISTRY: Dict[str, Callable[[str, str], Dict[str, Any]]] = {
+STRATEGY_REGISTRY = {
     "Octopus": analyze_asset_octopus,
     "Global": analyze_asset_global,
     "M7": analyze_asset_m7,
