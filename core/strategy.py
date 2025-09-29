@@ -1,10 +1,9 @@
 # core/strategy.py
 from __future__ import annotations
 
-import os
 import numpy as np
 import pandas as pd
-from typing import Dict, Any, Optional, List, Callable
+from typing import Dict, Any, Optional, Callable
 import logging
 
 # -------------------- инфраструктура --------------------
@@ -22,6 +21,23 @@ try:
 except Exception:
     def log_agent_performance(*args, **kwargs): pass
     def get_agent_performance(*args, **kwargs): return None
+
+# AlphaPulse: безопасный импорт с фолбэком
+try:
+    from core.agents.alphapulse import analyze_asset_alphapulse as _alphapulse_impl
+    def analyze_asset_alphapulse(ticker: str, horizon: str = "Краткосрочный") -> Dict[str, Any]:
+        return _alphapulse_impl(ticker, horizon)
+except Exception:
+    def analyze_asset_alphapulse(ticker: str, horizon: str = "Краткосрочный") -> Dict[str, Any]:
+        return {
+            "last_price": 0.0,
+            "recommendation":{"action":"WAIT","confidence":0.50},
+            "levels":{"entry":0.0,"sl":0.0,"tp1":0.0,"tp2":0.0,"tp3":0.0},
+            "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
+            "context":["AlphaPulse недоступен"], "note_html":"<div>AlphaPulse: ожидание</div>",
+            "alt":"WAIT","entry_kind":"wait","entry_label":"WAIT",
+            "meta":{"source":"AlphaPulse","grey_zone":True,"unavailable":True}
+        }
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -301,17 +317,19 @@ class M7TradingStrategy:
                 is_res = val > price
                 if is_res: typ='SELL_LIMIT'; entry=val*0.998; sl=val*1.02; tp=val*0.96
                 else:      typ='BUY_LIMIT';  entry=val*1.002; sl=val*0.98; tp=val*1.04
-                conf = 1 - (dist / self.atr_multiplier)
+                conf = 1 - (dist / self.atr_multiplier)  # 0..1
                 sigs.append({'type':typ,'price':round(entry,4),'stop_loss':round(sl,4),'take_profit':round(tp,4),
                              'confidence':round(conf,3),'level':name,'level_value':round(val,4),'timestamp':ts})
         return sigs
 
 def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False):
     cli = PolygonClient(); df = cli.daily_ohlc(ticker, days=120)
-    strategy = M7TradingStrategy(); signals = strategy.generate_signals(df)
     price = float(df['close'].iloc[-1])
 
-    # честный WAIT, если сигналов нет
+    strategy = M7TradingStrategy()
+    signals = strategy.generate_signals(df)
+
+    # WAIT, если нет сигнала
     if not signals:
         return {
             "last_price": price,
@@ -319,14 +337,16 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
             "levels":{"entry":0.0,"sl":0.0,"tp1":0.0,"tp2":0.0,"tp3":0.0},
             "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
             "context":["M7: сигналов нет"], "note_html":"<div>M7: ожидание</div>",
-            "alt":"Ожидание сигналов", "entry_kind":"wait","entry_label":"WAIT",
+            "alt":"WAIT","entry_kind":"wait","entry_label":"WAIT",
             "meta":{"source":"M7","grey_zone":True}
         }
 
-    # нейтральная зона по «качеству уровня»
+    # лучший сигнал по близости к ключевому уровню
     best = max(signals, key=lambda x: x['confidence'])
     raw = float(_clip01(best['confidence']))  # 0..1
-    if raw < 0.55:
+
+    # нейтральная зона — честный WAIT
+    if raw < 0.58:
         return {
             "last_price": price,
             "recommendation": {"action":"WAIT","confidence":0.50},
@@ -340,34 +360,53 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
     # уровни и направление
     entry = float(best['price']); sl = float(best['stop_loss']); risk = abs(entry - sl)
     vol = df['close'].pct_change().std() * np.sqrt(252)
-    max_move = price * vol / np.sqrt(252)
+    max_move = price * max(1e-9, vol) / np.sqrt(252)
+
     if best['type'].startswith('BUY'):
-        tp1 = min(entry + 1.5*risk, entry + 2*max_move)
-        tp2 = min(entry + 2.5*risk, entry + 3*max_move)
-        tp3 = min(entry + 4.0*risk, entry + 5*max_move)
+        tp1 = min(entry + 1.5*risk, entry + 2.0*max_move)
+        tp2 = min(entry + 2.5*risk, entry + 3.0*max_move)
+        tp3 = min(entry + 4.0*risk, entry + 5.0*max_move)
         act = "BUY"
     else:
-        tp1 = max(entry - 1.5*risk, entry - 2*max_move)
-        tp2 = max(entry - 2.5*risk, entry - 3*max_move)
-        tp3 = max(entry - 4.0*risk, entry - 5*max_move)
+        tp1 = max(entry - 1.5*risk, entry - 2.0*max_move)
+        tp2 = max(entry - 2.5*risk, entry - 3.0*max_move)
+        tp3 = max(entry - 4.0*risk, entry - 5.0*max_move)
         act = "SHORT"
 
-    # честная шкала confidence (сигмоида + мягкие штрафы)
+    # честная confidence: сигмоида вокруг 0.5 + мягкие штрафы, верхний кап ~0.82
     import math
-    base = 0.50 + 0.38 * math.tanh((raw - 0.55) / 0.20)
+    base = 0.50 + 0.34 * math.tanh((raw - 0.65) / 0.20)
     penalty = 0.0
-    if vol > 0.40: penalty += 0.05
-    conf = max(0.52, min(0.85, base * (1.0 - penalty)))
+    atr14 = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
+    risk_u_atr = risk / atr14
+    if vol > 0.35:       penalty += 0.05
+    if risk_u_atr < 0.8: penalty += 0.04
+    if risk_u_atr > 3.5: penalty += 0.03
+    conf = max(0.52, min(0.82, base * (1.0 - penalty)))
 
-    probs = _monotone_tp_probs({"tp1": 0.63, "tp2": 0.52, "tp3": 0.47})
+    # динамические TP‑probabilities от дистанции в ATR и текущего conf
+    def _dynamic_tp_probs(entry, tp1, tp2, tp3, atr, conf):
+        k = 0.18
+        u1 = abs(tp1 - entry)/atr
+        u2 = abs(tp2 - entry)/atr
+        u3 = abs(tp3 - entry)/atr
+        b1 = conf
+        b2 = max(0.50, conf - 0.08)
+        b3 = max(0.45, conf - 0.16)
+        p1 = _clip01(b1 * math.exp(-k*(u1 - 1.0)))
+        p2 = _clip01(b2 * math.exp(-k*(u2 - 1.5)))
+        p3 = _clip01(b3 * math.exp(-k*(u3 - 2.2)))
+        return _monotone_tp_probs({"tp1": p1, "tp2": p2, "tp3": p3})
+
+    probs = _dynamic_tp_probs(entry, tp1, tp2, tp3, atr14, conf)
 
     return {
         "last_price": price,
-        "recommendation": {"action": act, "confidence": float(conf)},
-        "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
+        "recommendation": {"action": act, "confidence": float(round(conf, 4))},
+        "levels": {"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3)},
         "probs": probs,
-        "context": [f"M7: {best['type']} @ {best['level']} (raw={raw:.2f})"],
-        "note_html": f"<div>M7: {best['type']} на уровне {best['level_value']}</div>",
+        "context": [f"M7: {best['type']} @ {best.get('level','')} (raw={raw:.2f}, riskATR={risk_u_atr:.2f})"],
+        "note_html": f"<div>M7: {best['type']} на уровне {best.get('level_value','')}</div>",
         "alt": "Торговля по M7", "entry_kind": "limit", "entry_label": best['type'],
         "meta":{"source":"M7","grey_zone": bool(0.48 <= conf <= 0.58)}
     }
@@ -462,91 +501,8 @@ def analyze_asset_w7(ticker: str, horizon: str):
         "meta":{"source":"W7","grey_zone": bool(0.48 <= conf <= 0.58)}
     }
 
-# -------------------- AlphaPulse (Mean‑Reversion) --------------------
-def analyze_asset_alphapulse(ticker: str, horizon: str = "Краткосрочный") -> Dict[str, Any]:
-    def _safe_load_ohlc(sym: str, days: int):
-        try:
-            from services.data import load_ohlc as _ld
-            return _ld(sym, days)
-        except Exception:
-            pass
-        try:
-            from core.data import load_ohlc as _ld
-            return _ld(sym, days)
-        except Exception:
-            pass
-        try:
-            cli = PolygonClient()
-            return cli.daily_ohlc(sym, days=days)
-        except Exception:
-            return None
-
-    try:
-        from core.mean_reversion_signal_engine import MeanReversionSignalEngine
-    except Exception as e:
-        return {
-            "last_price": 0.0,
-            "recommendation":{"action":"WAIT","confidence":0.50},
-            "levels":{"entry":0.0,"sl":0.0,"tp1":0.0,"tp2":0.0,"tp3":0.0},
-            "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
-            "context":[f"AlphaPulse недоступен: {type(e).__name__}"],
-            "note_html":"<div>AlphaPulse: модуль недоступен</div>",
-            "alt":"WAIT","entry_kind":"wait","entry_label":"WAIT",
-            "meta":{"source":"AlphaPulse","grey_zone":True,"unavailable":True}
-        }
-
-    df = _safe_load_ohlc(ticker, days=240)
-    price = float(df["close"].iloc[-1]) if (df is not None and len(df)) else 0.0
-    if df is None or len(df) < 50:
-        return {
-            "last_price": price,
-            "recommendation":{"action":"WAIT","confidence":0.50},
-            "levels":{"entry":0.0,"sl":0.0,"tp1":0.0,"tp2":0.0,"tp3":0.0},
-            "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
-            "context":["AlphaPulse: недостаточно данных"], "note_html":"<div>AlphaPulse: ожидание</div>",
-            "alt":"WAIT","entry_kind":"wait","entry_label":"WAIT",
-            "meta":{"source":"AlphaPulse","grey_zone":True}
-        }
-
-    eng = MeanReversionSignalEngine()
-    sigs = eng.generate_signals(df, ticker)
-    if getattr(sigs, "empty", True):
-        return {
-            "last_price": price,
-            "recommendation":{"action":"WAIT","confidence":0.50},
-            "levels":{"entry":0.0,"sl":0.0,"tp1":0.0,"tp2":0.0,"tp3":0.0},
-            "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
-            "context":["AlphaPulse: сигналов нет"], "note_html":"<div>AlphaPulse: ожидание</div>",
-            "alt":"WAIT","entry_kind":"wait","entry_label":"WAIT",
-            "meta":{"source":"AlphaPulse","grey_zone":True}
-        }
-
-    row = sigs.iloc[-1]
-    side = "BUY" if str(row.get("side","")).upper() in ("LONG","BUY") else "SHORT"
-    base_conf = float(max(0.0, min(1.0, float(row.get("confidence", 50.0))/100.0)))
-    cal = ConfidenceCalibrator(method="sigmoid", params={"a":1.1,"b":-0.05})
-    conf = float(min(0.88, max(0.50, cal(0.50 + (base_conf - 0.5)))))
-
-    sl_d = float(row.get("sl_distance", 0.0)); tp_d = float(row.get("tp_distance", 0.0))
-    entry = float(row.get("price", price))
-    if side == "BUY":
-        sl  = max(0.0, entry - sl_d); tp1, tp2, tp3 = entry + tp_d, entry + 1.8*tp_d, entry + 2.6*tp_d
-    else:
-        sl  = entry + sl_d;         tp1, tp2, tp3 = entry - tp_d, entry - 1.8*tp_d, entry - 2.6*tp_d
-
-    return {
-        "last_price": price,
-        "recommendation":{"action": side, "confidence": conf},
-        "levels":{"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
-        "probs": _monotone_tp_probs({"tp1":0.60,"tp2":0.50,"tp3":0.45}),
-        "context":[f"AlphaPulse MR: side={side}, base_conf={base_conf:.2f}"],
-        "note_html":"<div>AlphaPulse (Mean‑Reversion): сигнал сформирован</div>",
-        "alt":"Mean‑Reversion","entry_kind":"limit","entry_label": side,
-        "meta":{"source":"AlphaPulse","grey_zone": bool(0.48 <= conf <= 0.58)}
-    }
-
 # -------------------- Оркестратор Octopus --------------------
-OCTO_WEIGHTS: Dict[str, float] = {"Global": 0.28, "M7": 0.26, "W7": 0.26, "AlphaPulse": 0.20}
+OCTO_WEIGHTS: Dict[str, float] = {"Global": 0.25, "M7": 0.25, "W7": 0.25, "AlphaPulse": 0.25}
 OCTO_CALIBRATOR = ConfidenceCalibrator(method="sigmoid", params={"a": 1.2, "b": -0.10})
 
 def _act_to_num(a: str) -> int: return 1 if a == "BUY" else (-1 if a == "SHORT" else 0)
@@ -555,7 +511,15 @@ def _num_to_act(x: float) -> str:
     if x < 0: return "SHORT"
     return "WAIT"
 
+def _median_levels(parts: Dict[str, Dict[str,Any]], direction: str) -> Dict[str, float]:
+    L = [p.get("levels", {}) for p in parts.values()
+         if str(p.get("recommendation", {}).get("action","")).upper() == direction]
+    if not L: return {"entry":0.0,"sl":0.0,"tp1":0.0,"tp2":0.0,"tp3":0.0}
+    med = lambda k: float(np.median([x.get(k,0.0) for x in L if k in x and isinstance(x[k], (int,float))]))
+    return {"entry": med("entry"), "sl": med("sl"), "tp1": med("tp1"), "tp2": med("tp2"), "tp3": med("tp3")}
+
 def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
+    # 1) собрать сигналы синхронно
     parts: Dict[str, Dict[str,Any]] = {}
     for name, fn in {
         "Global": analyze_asset_global,
@@ -568,6 +532,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         except Exception as e:
             logger.warning("Agent %s failed: %s", name, e)
 
+    # если все недоступны
     if not parts:
         res = {
             "strategy":"Octopus","agents":[], "weights": OCTO_WEIGHTS, "signals":{},
@@ -581,15 +546,18 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         res["recommendation"] = {"action": res["action"], "confidence": res["confidence"]}
         return res
 
-    # собрать активные голоса
+    # 2) активные голоса
     active = []
+    votes_txt = []
     for name, res in parts.items():
         rec = res.get("recommendation", {}); act = str(rec.get("action","WAIT")).upper()
-        conf = float(rec.get("confidence", 0.0)); w = float(OCTO_WEIGHTS.get(name, 0.0))
+        conf = float(rec.get("confidence", 0.0))
+        w = float(OCTO_WEIGHTS.get(name, 0.0))
+        votes_txt.append(f"{name}={act}@{conf:.2f}*{w:.2f}")
         if act in ("BUY","SHORT"):
             active.append((name, act, conf, w))
 
-    # если нет активных — WAIT
+    # если активных нет
     if not active:
         last_price = float(parts.get("W7", parts.get("Global", {})).get("last_price", 0.0))
         signals = {n: {"action": parts[n]["recommendation"]["action"],
@@ -606,43 +574,59 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         res["recommendation"] = {"action": "WAIT", "confidence": 0.0}
         return res
 
-    # взвешенные скоры направлений
+    # 3) скоринг направлений и консенсус
     score_long  = sum(w * _clip01(c) for (n,a,c,w) in active if a == "BUY")
     score_short = sum(w * _clip01(c) for (n,a,c,w) in active if a == "SHORT")
     total_side  = score_long + score_short
     delta = abs(score_long - score_short)
-    disagreement = 0.0 if total_side <= 1e-9 else float(max(0.0, 1.0 - (delta / total_side)))
+    ratio = (delta / max(1e-6, total_side))
+    disagreement = 0.0 if total_side <= 1e-6 else float(max(0.0, 1.0 - ratio))
 
-    CONSENSUS_DELTA = 0.12
-    if delta < CONSENSUS_DELTA:
-        final_action = "WAIT"
-        levels_out = {"entry":0.0,"sl":0.0,"tp1":0.0,"tp2":0.0,"tp3":0.0}
-        probs_out  = {"tp1":0.0,"tp2":0.0,"tp3":0.0}
-        raw_conf = 0.50
+    count_long  = sum(1 for (_,a,_,_) in active if a=="BUY")
+    count_short = sum(1 for (_,a,_,_) in active if a=="SHORT")
+
+    # 4) правило большинства + относительный порог
+    if count_long >= 3:
+        final_action = "BUY"
+    elif count_short >= 3:
+        final_action = "SHORT"
     else:
-        final_action = "BUY" if score_long > score_short else "SHORT"
-        # победитель по направлению
+        if ratio < 0.20:
+            final_action = "WAIT"
+        else:
+            final_action = "BUY" if score_long > score_short else "SHORT"
+
+    # 5) выбор уровней
+    if final_action in ("BUY","SHORT"):
+        # победитель по вес*уверенность текущего направления
         cand = [t for t in active if t[1] == final_action]
         win_name = max(cand, key=lambda t: t[2]*t[3])[0] if cand else max(active, key=lambda t: t[2]*t[3])[0]
-        lv = parts[win_name].get("levels", {}) or {}
-        levels_out = {
-            "entry": float(lv.get("entry", 0.0)), "sl": float(lv.get("sl", 0.0)),
-            "tp1": float(lv.get("tp1", 0.0)), "tp2": float(lv.get("tp2", 0.0)), "tp3": float(lv.get("tp3", 0.0))
-        }
-        probs_out = _monotone_tp_probs(parts[win_name].get("probs", {}) or {})
-        # сырая уверенность — средневзвешенная по активным
-        w_sum = sum(t[3] for t in active) or 1.0
-        raw_conf = float(sum(t[3]*_clip01(t[2]) for t in active) / w_sum)
+        # при слабом консенсусе используем медианные уровни, иначе — победителя
+        if ratio < 0.25:
+            levels_out = _median_levels(parts, final_action)
+        else:
+            lv = parts[win_name].get("levels", {}) or {}
+            levels_out = {
+                "entry": float(lv.get("entry", 0.0)), "sl": float(lv.get("sl", 0.0)),
+                "tp1": float(lv.get("tp1", 0.0)), "tp2": float(lv.get("tp2", 0.0)), "tp3": float(lv.get("tp3", 0.0))
+            }
+        probs_out = _monotone_tp_probs(parts.get(win_name, {}).get("probs", {}) or {})
+        raw_conf = float(sum(t[3]*_clip01(t[2]) for t in active) / (sum(t[3] for t in active) or 1.0))
+    else:
+        levels_out = {"entry":0.0,"sl":0.0,"tp1":0.0,"tp2":0.0,"tp3":0.0}
+        probs_out  = {"tp1":0.0,"tp2":0.0,"tp3":0.0}
+        raw_conf   = 0.50
 
     calibrated = float(OCTO_CALIBRATOR(raw_conf))
     overall_conf = float(max(0.52, min(0.86, calibrated * (1.0 - 0.35*disagreement))))
 
-    # собрать сигнал
     signals = {n: {"action": parts[n]["recommendation"]["action"],
                    "confidence": float(parts[n]["recommendation"]["confidence"])}
                for n in parts.keys()}
     last_price = float(parts.get("M7", parts.get("W7", parts.get("Global", {}))).get("last_price", 0.0))
-    ctx = [f"Octopus: consensus delta={delta:.3f}, disagreement={disagreement:.3f}, action={final_action}"]
+    ctx = [f"Octopus votes: {', '.join(votes_txt)} | scores L={score_long:.3f} S={score_short:.3f} "
+           f"| ratio={ratio:.3f} | majority {count_long}:{count_short} | action={final_action}"]
+
     res = {
         "strategy": "Octopus",
         "agents": list(parts.keys()), "weights": OCTO_WEIGHTS, "signals": signals,
@@ -660,7 +644,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     return res
 
 # -------------------- Strategy Router (для UI) --------------------
-STRATEGY_REGISTRY = {
+STRATEGY_REGISTRY: Dict[str, Callable[[str, str], Dict[str, Any]]] = {
     "Octopus": analyze_asset_octopus,
     "Global": analyze_asset_global,
     "M7": analyze_asset_m7,
@@ -673,3 +657,12 @@ def analyze_asset(ticker: str, horizon: str, strategy: str = "Octopus") -> Dict[
     if not fn:
         raise ValueError(f"Unknown strategy: {strategy}")
     return fn(ticker, horizon)
+
+if __name__ == "__main__":
+    for s in ["Global","M7","W7","AlphaPulse","Octopus"]:
+        try:
+            print(f"\n=== {s} ===")
+            print(analyze_asset("AAPL", "Краткосрочный", s))
+        except Exception as e:
+            print(f"{s} error:", e)
+
