@@ -573,10 +573,10 @@ try:
         conf_cal = float(CAL_CONF["AlphaPulse"](conf_ext))
         res.setdefault("recommendation", {})["confidence"] = conf_cal
 
-        # 3) Подготовка отладочной мета‑информации (u в ATR, p — probs)
+        # 3) Отладочная мета‑информация (u в ATR, p — probs)
         levels = res.get("levels", {}) or {}
         probs  = res.get("probs", {}) or {}
-        u_vals: list = []
+        u_vals = []
         try:
             df_dbg = PolygonClient().daily_ohlc(ticker, days=120)
             atr_dbg = float(_atr_like(df_dbg, n=14).iloc[-1]) or 1e-9
@@ -596,9 +596,7 @@ try:
             "fallback": res.get("meta", {}).get("fallback", False)
         }
 
-        # 4) Оверлей поверх внешнего агента:
-        #    если внешний агент вернул WAIT (или очень низкую уверенность), оцениваем z-score
-        #    и при |z| >= 1.2 преобразуем в слабый сигнал с градуированным confidence.
+        # 4) Оверлей поверх внешнего агента при нейтрали/слабой уверенности: |z| >= 1.0
         try:
             df = PolygonClient().daily_ohlc(ticker, days=240)
             price = float(df["close"].iloc[-1])
@@ -609,10 +607,10 @@ try:
             abs_z = abs(z)
             atr   = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
 
-            need_overlay = (action_ext == "WAIT") or (conf_cal <= 0.52)
-            if need_overlay and abs_z >= 1.2:
+            need_overlay = (action_ext == "WAIT") or (conf_cal <= 0.55)
+            if need_overlay and abs_z >= 1.0:
                 # Сторона и уровни по MR
-                if z <= -1.2:
+                if z <= -1.0:
                     side, entry, sl = "BUY", price, max(0.0, price - 1.2 * atr)
                     tp1, tp2, tp3 = entry + 1.2 * atr, entry + 2.0 * atr, entry + 3.0 * atr
                 else:
@@ -624,7 +622,7 @@ try:
                     base_conf = 0.78
                 elif abs_z >= 1.5:
                     base_conf = 0.68
-                else:  # 1.2 ≤ |z| < 1.5
+                else:  # 1.0 ≤ |z| < 1.5
                     base_conf = 0.58
                 conf = float(CAL_CONF["AlphaPulse"](float(max(0.55, min(0.82, base_conf)))))
 
@@ -637,13 +635,13 @@ try:
                 p3 = _clip01(b3 * math.exp(-k * (u3 - 2.2)))
                 probs_new = _monotone_tp_probs({"tp1": p1, "tp2": p2, "tp3": p3})
 
-                # Обновляем результат поверх внешнего WAIT
+                # Обновление результата поверх внешнего WAIT/low‑conf
                 res = {
                     "last_price": price,
                     "recommendation": {"action": side, "confidence": conf},
                     "levels": {"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3)},
                     "probs": probs_new,
-                    "context": [f"AlphaPulse overlay: z={z:.2f} (|z|≥1.2)"],
+                    "context": [f"AlphaPulse overlay: z={z:.2f} (|z|≥1.0)"],
                     "note_html": "<div>AlphaPulse: overlay mean‑reversion</div>",
                     "alt": "Mean‑Reversion",
                     "entry_kind": "market",
@@ -652,13 +650,12 @@ try:
                         **res.get("meta", {}),
                         "source": "AlphaPulse",
                         "overlay_used": True,
-                        "overlay_reason": f"abs_z={abs_z:.2f} ≥ 1.2",
+                        "overlay_reason": f"abs_z={abs_z:.2f} ≥ 1.0",
                         "probs_debug": {"u": [float(u1), float(u2), float(u3)],
                                         "p": [float(probs_new["tp1"]), float(probs_new["tp2"]), float(probs_new["tp3"])]}
                     }
                 }
-        except Exception as _e:
-            # если не удалось посчитать overlay — используем исходный результат внешнего агента как есть
+        except Exception:
             pass
 
         # 5) Логирование
@@ -680,7 +677,7 @@ try:
         return res
 
 except Exception:
-    # Fallback: Mean‑Reversion на z-score с порогом ±1.2 и градуированной уверенностью
+    # Fallback: Mean‑Reversion на z-score с порогом ±1.0 и градуированной уверенностью
     def analyze_asset_alphapulse(ticker: str, horizon: str = "Краткосрочный") -> Dict[str, Any]:
         def _safe_load_ohlc(sym: str, days: int):
             for mod in ("services.data", "core.data"):
@@ -699,7 +696,7 @@ except Exception:
         if not isinstance(df, pd.DataFrame) or len(df) < 50 or "close" not in df.columns:
             res = {
                 "last_price": price,
-                "recommendation": {"action": "WAIT", "confidence": 0.50},
+                "recommendation": {"action": "WAIT", "confidence": 0.52},
                 "levels": {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
                 "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
                 "context": ["AlphaPulse: недостаточно данных"],
@@ -709,7 +706,7 @@ except Exception:
             }
             try:
                 log_agent_performance(agent="AlphaPulse", ticker=ticker, horizon=horizon,
-                                      action="WAIT", confidence=0.50,
+                                      action="WAIT", confidence=0.52,
                                       levels=res["levels"], probs=res["probs"], meta=res["meta"],
                                       ts=pd.Timestamp.utcnow().isoformat())
             except Exception as e:
@@ -722,27 +719,27 @@ except Exception:
         atr = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
         abs_z = abs(z)
 
-        if abs_z < 1.2:
+        if abs_z < 1.0:
             res = {
                 "last_price": price,
-                "recommendation": {"action": "WAIT", "confidence": 0.50},
+                "recommendation": {"action": "WAIT", "confidence": 0.52},
                 "levels": {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
                 "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
-                "context": [f"AlphaPulse: z={z:.2f} нейтрально (<1.2σ)"],
+                "context": [f"AlphaPulse: z={z:.2f} нейтрально (<1.0σ)"],
                 "note_html": "<div>AlphaPulse: нейтрально</div>",
                 "alt": "WAIT", "entry_kind": "wait", "entry_label": "WAIT",
                 "meta": {"source": "AlphaPulse", "grey_zone": True, "fallback": True}
             }
             try:
                 log_agent_performance(agent="AlphaPulse", ticker=ticker, horizon=horizon,
-                                      action="WAIT", confidence=0.50,
+                                      action="WAIT", confidence=0.52,
                                       levels=res["levels"], probs=res["probs"], meta=res["meta"],
                                       ts=pd.Timestamp.utcnow().isoformat())
             except Exception as e:
                 logger.warning("perf log AlphaPulse failed: %s", e)
             return res
 
-        if z <= -1.2:
+        if z <= -1.0:
             side, entry, sl = "BUY", price, max(0.0, price - 1.2 * atr)
             tp1, tp2, tp3 = entry + 1.2 * atr, entry + 2.0 * atr, entry + 3.0 * atr
         else:
@@ -753,7 +750,7 @@ except Exception:
             base_conf = 0.78
         elif abs_z >= 1.5:
             base_conf = 0.68
-        else:
+        else:  # 1.0 ≤ |z| < 1.5
             base_conf = 0.58
 
         conf = float(CAL_CONF["AlphaPulse"](float(max(0.55, min(0.82, base_conf)))))
