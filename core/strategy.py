@@ -336,30 +336,70 @@ def _monotone_tp_probs(probs: dict) -> dict:
 def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный"):
     cli = PolygonClient(); df = cli.daily_ohlc(ticker, days=90)
     current_price = float(df['close'].iloc[-1])
+
+    # Базовые признаки тренда/волатильности
     returns = np.log(df['close']/df['close'].shift(1))
     hist_volatility = returns.std()*np.sqrt(252)
     short_ma = df['close'].rolling(20).mean().iloc[-1]
     long_ma  = df['close'].rolling(50).mean().iloc[-1]
-    if short_ma > long_ma: action, confidence = "BUY", 0.69
-    else:                  action, confidence = "SHORT", 0.65
-    atr = float(_atr_like(df, n=14).iloc[-1])
-    if action == "BUY":
-        entry = current_price; sl = current_price - 2*atr
-        tp1 = current_price + 1*atr; tp2 = current_price + 2*atr; tp3 = current_price + 3*atr
-        alt = "Покупка по рынку с консервативными целями"
+
+    if short_ma > long_ma:
+        action, confidence = "BUY", 0.69
     else:
-        entry = current_price; sl = current_price + 2*atr
-        tp1 = current_price - 1*atr; tp2 = current_price - 2*atr; tp3 = current_price - 3*atr
-        alt = "Продажа по рынку с консервативными целями"
-    context = [f"Волатильность: {hist_volatility:.2%}", f"Тренд: {'Бычий' if action=='BUY' else 'Медвежий'}"]
-    probs = _monotone_tp_probs({"tp1": 0.68, "tp2": 0.52, "tp3": 0.35})
+        action, confidence = "SHORT", 0.65
+
+    # ATR и уровни
+    atr = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
+    if action == "BUY":
+        entry = current_price
+        sl    = current_price - 2*atr
+        tp1   = current_price + 1*atr
+        tp2   = current_price + 2*atr
+        tp3   = current_price + 3*atr
+        alt   = "Покупка по рынку с консервативными целями"
+    else:
+        entry = current_price
+        sl    = current_price + 2*atr
+        tp1   = current_price - 1*atr
+        tp2   = current_price - 2*atr
+        tp3   = current_price - 3*atr
+        alt   = "Продажа по рынку с консервативными целями"
+
+    # Динамические probabilities по дистанции до TP в ATR
+    import math
+    u1 = abs(tp1 - entry)/atr
+    u2 = abs(tp2 - entry)/atr
+    u3 = abs(tp3 - entry)/atr
+
+    # Базовые уровни от уверенности + клиппинг
+    b1 = float(confidence)
+    b2 = float(max(0.50, confidence - 0.08))
+    b3 = float(max(0.45, confidence - 0.16))
+
+    # Затухание вероятности с ростом дистанции (офсеты под TP1/2/3)
+    k = 0.18
+    p1 = _clip01(b1 * math.exp(-k*(u1 - 1.0)))
+    p2 = _clip01(b2 * math.exp(-k*(u2 - 1.5)))
+    p3 = _clip01(b3 * math.exp(-k*(u3 - 2.2)))
+
+    probs = _monotone_tp_probs({"tp1": p1, "tp2": p2, "tp3": p3})
+
+    context = [
+        f"Волатильность: {hist_volatility:.2%}",
+        f"Тренд: {'Бычий' if action=='BUY' else 'Медвежий'}"
+    ]
     note_html = f"<div style='margin-top:10px; opacity:0.95;'>Global: {action} с уверенностью {confidence:.0%}.</div>"
+
     return {
         "last_price": current_price,
         "recommendation": {"action": action, "confidence": confidence},
         "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
-        "probs": probs, "context": context, "note_html": note_html, "alt": alt,
-        "entry_kind": "market", "entry_label": f"{action} NOW",
+        "probs": probs,
+        "context": context,
+        "note_html": note_html,
+        "alt": alt,
+        "entry_kind": "market",
+        "entry_label": f"{action} NOW",
         "meta": {"source":"Global"}
     }
 
