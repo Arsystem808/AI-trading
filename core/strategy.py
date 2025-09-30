@@ -334,59 +334,72 @@ def _monotone_tp_probs(probs: dict) -> dict:
 
 # -------------------- Global --------------------
 def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный"):
-    cli = PolygonClient(); df = cli.daily_ohlc(ticker, days=90)
+    cli = PolygonClient(); df = cli.daily_ohlc(ticker, days=120)
     current_price = float(df['close'].iloc[-1])
 
-    # Базовые признаки тренда/волатильности
-    returns = np.log(df['close']/df['close'].shift(1))
-    hist_volatility = returns.std()*np.sqrt(252)
-    short_ma = df['close'].rolling(20).mean().iloc[-1]
-    long_ma  = df['close'].rolling(50).mean().iloc[-1]
+    # Тренд и волатильность
+    closes = df['close']
+    short_ma = closes.rolling(20).mean().iloc[-1]
+    long_ma  = closes.rolling(50).mean().iloc[-1]
+    ma_gap   = float((short_ma - long_ma) / max(1e-9, long_ma))            # сила тренда
+    slope    = _linreg_slope(closes.tail(30).values) / max(1e-9, current_price)  # нормированный уклон
+    atr14    = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
+    atr28    = float(_atr_like(df, n=28).iloc[-1]) or 1e-9
+    vol_ratio = float(atr14 / max(1e-9, atr28))                            # >1 — волатильность растёт
 
-    if short_ma > long_ma:
-        action, confidence = "BUY", 0.69
-    else:
-        action, confidence = "SHORT", 0.65
+    # Направление по MA
+    action = "BUY" if short_ma > long_ma else "SHORT"
 
-    # ATR и уровни
-    atr = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
+    # Динамическая уверенность: +тренд, +уклон, −штраф за сверхволу
+    def _clp(x): return max(0.0, min(1.0, x))
+    base = 0.55
+    base += 0.22 * _clp(abs(ma_gap) / 0.02)                                # до +0.22 при сильном MA‑тренде
+    base += 0.10 * _clp((abs(slope) - 0.0003) / 0.0007)                    # до +0.10 при выраженном уклоне
+    base -= 0.12 * _clp((vol_ratio - 1.10) / 0.60)                         # до −0.12 при вздутой волатильности
+    confidence = float(max(0.55, min(0.86, base)))
+
+    # Уровни (как раньше)
     if action == "BUY":
         entry = current_price
-        sl    = current_price - 2*atr
-        tp1   = current_price + 1*atr
-        tp2   = current_price + 2*atr
-        tp3   = current_price + 3*atr
+        sl    = current_price - 2*atr14
+        tp1   = current_price + 1*atr14
+        tp2   = current_price + 2*atr14
+        tp3   = current_price + 3*atr14
         alt   = "Покупка по рынку с консервативными целями"
     else:
         entry = current_price
-        sl    = current_price + 2*atr
-        tp1   = current_price - 1*atr
-        tp2   = current_price - 2*atr
-        tp3   = current_price - 3*atr
+        sl    = current_price + 2*atr14
+        tp1   = current_price - 1*atr14
+        tp2   = current_price - 2*atr14
+        tp3   = current_price - 3*atr14
         alt   = "Продажа по рынку с консервативными целями"
 
-    # Динамические probabilities по дистанции до TP в ATR
+    # Дистанции до TP в ATR — всё ещё 1/2/3, но теперь base и k динамические
     import math
-    u1 = abs(tp1 - entry)/atr
-    u2 = abs(tp2 - entry)/atr
-    u3 = abs(tp3 - entry)/atr
+    u1 = abs(tp1 - entry)/atr14
+    u2 = abs(tp2 - entry)/atr14
+    u3 = abs(tp3 - entry)/atr14
 
-    # Базовые уровни от уверенности + клиппинг
-    b1 = float(confidence)
-    b2 = float(max(0.50, confidence - 0.08))
-    b3 = float(max(0.45, confidence - 0.16))
+    # Динамическое затухание: в «буре» быстрее гасим вероятность
+    k = 0.16 + 0.12 * _clp((vol_ratio - 1.00) / 0.80)                      # 0.16..0.28
 
-    # Затухание вероятности с ростом дистанции (офсеты под TP1/2/3)
-    k = 0.18
+    # Базы для TP с поправками на волу
+    b1 = confidence
+    b2 = max(0.50, confidence - (0.08 + 0.03*_clp(vol_ratio - 1.0)))
+    b3 = max(0.45, confidence - (0.16 + 0.05*_clp(vol_ratio - 1.2)))
+
     p1 = _clip01(b1 * math.exp(-k*(u1 - 1.0)))
     p2 = _clip01(b2 * math.exp(-k*(u2 - 1.5)))
     p3 = _clip01(b3 * math.exp(-k*(u3 - 2.2)))
-
     probs = _monotone_tp_probs({"tp1": p1, "tp2": p2, "tp3": p3})
 
+    # Контекст
+    returns = np.log(closes/closes.shift(1))
+    hist_volatility = returns.std()*np.sqrt(252)
     context = [
         f"Волатильность: {hist_volatility:.2%}",
-        f"Тренд: {'Бычий' if action=='BUY' else 'Медвежий'}"
+        f"Тренд: {'Бычий' if action=='BUY' else 'Медвежий'}",
+        f"MA gap={ma_gap:.3f}, slope={slope:.5f}, vol_ratio={vol_ratio:.2f}"
     ]
     note_html = f"<div style='margin-top:10px; opacity:0.95;'>Global: {action} с уверенностью {confidence:.0%}.</div>"
 
@@ -394,12 +407,8 @@ def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный
         "last_price": current_price,
         "recommendation": {"action": action, "confidence": confidence},
         "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
-        "probs": probs,
-        "context": context,
-        "note_html": note_html,
-        "alt": alt,
-        "entry_kind": "market",
-        "entry_label": f"{action} NOW",
+        "probs": probs, "context": context, "note_html": note_html, "alt": alt,
+        "entry_kind": "market", "entry_label": f"{action} NOW",
         "meta": {"source":"Global"}
     }
 
