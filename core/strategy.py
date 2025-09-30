@@ -561,38 +561,53 @@ def analyze_asset_w7(ticker: str, horizon: str):
 # -------------------- AlphaPulse --------------------
 try:
     from core.agents.alphapulse import analyze_asset_alphapulse as _alphapulse_impl
+
     def analyze_asset_alphapulse(ticker: str, horizon: str = "Краткосрочный") -> Dict[str, Any]:
+        # Внешний агент: используем как есть, но прокладываем калибровку уверенности и мета‑логирование
         res = _alphapulse_impl(ticker, horizon)
         conf = float(res.get("recommendation", {}).get("confidence", 0.5))
         conf = float(CAL_CONF["AlphaPulse"](conf))
         res.setdefault("recommendation", {})["confidence"] = conf
+
         levels = res.get("levels", {}) or {}
         probs = res.get("probs", {}) or {}
-        u_vals = []
+        u_vals: List[float] = []
         try:
             df = PolygonClient().daily_ohlc(ticker, days=120)
             atr = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
             if levels:
                 u_vals = [
-                    float(abs(levels.get("tp1",0.0)-levels.get("entry",0.0))/atr),
-                    float(abs(levels.get("tp2",0.0)-levels.get("entry",0.0))/atr),
-                    float(abs(levels.get("tp3",0.0)-levels.get("entry",0.0))/atr),
+                    float(abs(levels.get("tp1", 0.0) - levels.get("entry", 0.0)) / atr),
+                    float(abs(levels.get("tp2", 0.0) - levels.get("entry", 0.0)) / atr),
+                    float(abs(levels.get("tp3", 0.0) - levels.get("entry", 0.0)) / atr),
                 ]
         except Exception:
             pass
-        res["meta"] = {**res.get("meta", {}), "probs_debug": {"u": u_vals, "p": [float(probs.get("tp1",0.0)), float(probs.get("tp2",0.0)), float(probs.get("tp3",0.0))]}}
+
+        res["meta"] = {
+            **res.get("meta", {}),
+            "probs_debug": {"u": u_vals, "p": [float(probs.get("tp1", 0.0)), float(probs.get("tp2", 0.0)), float(probs.get("tp3", 0.0))]},
+        }
+
         try:
             log_agent_performance(
-                agent="AlphaPulse", ticker=ticker, horizon=horizon,
-                action=res.get("recommendation",{}).get("action","WAIT"),
-                confidence=res.get("recommendation",{}).get("confidence",0.5),
-                levels=res.get("levels",{}), probs=res.get("probs",{}),
-                meta=res.get("meta",{}), ts=pd.Timestamp.utcnow().isoformat()
+                agent="AlphaPulse",
+                ticker=ticker,
+                horizon=horizon,
+                action=res.get("recommendation", {}).get("action", "WAIT"),
+                confidence=res.get("recommendation", {}).get("confidence", 0.5),
+                levels=res.get("levels", {}),
+                probs=res.get("probs", {}),
+                meta=res.get("meta", {}),
+                ts=pd.Timestamp.utcnow().isoformat(),
             )
         except Exception as e:
             logger.warning("perf log AlphaPulse failed: %s", e)
+
         return res
+
 except Exception:
+    # Fallback: Mean‑Reversion на z-score с порогом ±1.2 и градуированной уверенностью
     def analyze_asset_alphapulse(ticker: str, horizon: str = "Краткосрочный") -> Dict[str, Any]:
         def _safe_load_ohlc(sym: str, days: int):
             for mod in ("services.data", "core.data"):
@@ -611,79 +626,127 @@ except Exception:
         if not isinstance(df, pd.DataFrame) or len(df) < 50 or "close" not in df.columns:
             res = {
                 "last_price": price,
-                "recommendation":{"action":"WAIT","confidence":0.50},
-                "levels":{"entry":0.0,"sl":0.0,"tp1":0.0,"tp2":0.0,"tp3":0.0},
-                "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
-                "context":["AlphaPulse: недостаточно данных"], "note_html":"<div>AlphaPulse: ожидание</div>",
-                "alt":"WAIT","entry_kind":"wait","entry_label":"WAIT",
-                "meta":{"source":"AlphaPulse","grey_zone":True,"fallback":True}
+                "recommendation": {"action": "WAIT", "confidence": 0.50},
+                "levels": {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+                "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+                "context": ["AlphaPulse: недостаточно данных"],
+                "note_html": "<div>AlphaPulse: ожидание</div>",
+                "alt": "WAIT",
+                "entry_kind": "wait",
+                "entry_label": "WAIT",
+                "meta": {"source": "AlphaPulse", "grey_zone": True, "fallback": True},
             }
             try:
-                log_agent_performance(agent="AlphaPulse", ticker=ticker, horizon=horizon,
-                                      action="WAIT", confidence=0.50,
-                                      levels=res["levels"], probs=res["probs"], meta=res["meta"],
-                                      ts=pd.Timestamp.utcnow().isoformat())
+                log_agent_performance(
+                    agent="AlphaPulse",
+                    ticker=ticker,
+                    horizon=horizon,
+                    action="WAIT",
+                    confidence=0.50,
+                    levels=res["levels"],
+                    probs=res["probs"],
+                    meta=res["meta"],
+                    ts=pd.Timestamp.utcnow().isoformat(),
+                )
             except Exception as e:
                 logger.warning("perf log AlphaPulse failed: %s", e)
             return res
 
         close = df["close"].astype(float)
-        ma20 = close.rolling(20).mean(); sd20 = close.rolling(20).std()
+        ma20 = close.rolling(20).mean()
+        sd20 = close.rolling(20).std()
         z = float((close.iloc[-1] - ma20.iloc[-1]) / max(1e-9, sd20.iloc[-1]))
         atr = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
+        abs_z = abs(z)
 
-        if z <= -1.5:
-            side, entry, sl = "BUY", price, max(0.0, price - 1.2*atr)
-            tp1, tp2, tp3 = entry + 1.2*atr, entry + 2.0*atr, entry + 3.0*atr
-        elif z >= 1.5:
-            side, entry, sl = "SHORT", price, price + 1.2*atr
-            tp1, tp2, tp3 = entry - 1.2*atr, entry - 2.0*atr, entry - 3.0*atr
-        else:
+        # Нейтральная зона — WAIT
+        if abs_z < 1.2:
             res = {
                 "last_price": price,
-                "recommendation":{"action":"WAIT","confidence":0.50},
-                "levels":{"entry":0.0,"sl":0.0,"tp1":0.0,"tp2":0.0,"tp3":0.0},
-                "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
-                "context":[f"AlphaPulse: z={z:.2f} нейтрально"], "note_html":"<div>AlphaPulse: нейтрально</div>",
-                "alt":"WAIT","entry_kind":"wait","entry_label":"WAIT",
-                "meta":{"source":"AlphaPulse","grey_zone":True,"fallback":True}
+                "recommendation": {"action": "WAIT", "confidence": 0.50},
+                "levels": {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+                "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+                "context": [f"AlphaPulse: z={z:.2f} нейтрально (<1.2σ)"],
+                "note_html": "<div>AlphaPulse: нейтрально</div>",
+                "alt": "WAIT",
+                "entry_kind": "wait",
+                "entry_label": "WAIT",
+                "meta": {"source": "AlphaPulse", "grey_zone": True, "fallback": True},
             }
             try:
-                log_agent_performance(agent="AlphaPulse", ticker=ticker, horizon=horizon,
-                                      action="WAIT", confidence=0.50,
-                                      levels=res["levels"], probs=res["probs"], meta=res["meta"],
-                                      ts=pd.Timestamp.utcnow().isoformat())
+                log_agent_performance(
+                    agent="AlphaPulse",
+                    ticker=ticker,
+                    horizon=horizon,
+                    action="WAIT",
+                    confidence=0.50,
+                    levels=res["levels"],
+                    probs=res["probs"],
+                    meta=res["meta"],
+                    ts=pd.Timestamp.utcnow().isoformat(),
+                )
             except Exception as e:
                 logger.warning("perf log AlphaPulse failed: %s", e)
             return res
 
-        conf = float(max(0.55, min(0.82, 0.55 + 0.18*_clip01((abs(z)-1.5)/1.0))))
-        k=0.18
-        u1,u2,u3 = abs(tp1-entry)/atr, abs(tp2-entry)/atr, abs(tp3-entry)/atr
-        b1,b2,b3 = conf, max(0.50, conf-0.08), max(0.45, conf-0.16)
-        p1 = _clip01(b1*math.exp(-k*(u1-1.0))); p2 = _clip01(b2*math.exp(-k*(u2-1.5))); p3 = _clip01(b3*math.exp(-k*(u3-2.2)))
-        probs = _monotone_tp_probs({"tp1":p1,"tp2":p2,"tp3":p3})
+        # Сторона и уровни при |z| >= 1.2
+        if z <= -1.2:
+            side, entry, sl = "BUY", price, max(0.0, price - 1.2 * atr)
+            tp1, tp2, tp3 = entry + 1.2 * atr, entry + 2.0 * atr, entry + 3.0 * atr
+        else:
+            side, entry, sl = "SHORT", price, price + 1.2 * atr
+            tp1, tp2, tp3 = entry - 1.2 * atr, entry - 2.0 * atr, entry - 3.0 * atr
+
+        # Градация уверенности по силе отклонения
+        if abs_z >= 2.0:
+            base_conf = 0.78
+        elif abs_z >= 1.5:
+            base_conf = 0.68
+        else:  # 1.2 ≤ |z| < 1.5
+            base_conf = 0.58
+
+        conf = float(max(0.55, min(0.82, base_conf)))
         conf = float(CAL_CONF["AlphaPulse"](conf))
-        meta_debug = {"u":[float(u1),float(u2),float(u3)], "p":[float(probs["tp1"]),float(probs["tp2"]),float(probs["tp3"])]}
+
+        # Probabilities с монотонией
+        k = 0.18
+        u1, u2, u3 = abs(tp1 - entry) / atr, abs(tp2 - entry) / atr, abs(tp3 - entry) / atr
+        b1, b2, b3 = conf, max(0.50, conf - 0.08), max(0.45, conf - 0.16)
+        p1 = _clip01(b1 * math.exp(-k * (u1 - 1.0)))
+        p2 = _clip01(b2 * math.exp(-k * (u2 - 1.5)))
+        p3 = _clip01(b3 * math.exp(-k * (u3 - 2.2)))
+        probs = _monotone_tp_probs({"tp1": p1, "tp2": p2, "tp3": p3})
+
+        meta_debug = {"u": [float(u1), float(u2), float(u3)],
+                      "p": [float(probs["tp1"]), float(probs["tp2"]), float(probs["tp3"])]}
 
         res = {
             "last_price": price,
-            "recommendation":{"action": side, "confidence": conf},
-            "levels":{"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3)},
+            "recommendation": {"action": side, "confidence": conf},
+            "levels": {"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3)},
             "probs": probs,
-            "context":[f"AlphaPulse MR(fallback): z={z:.2f}"],
-            "note_html":"<div>AlphaPulse: mean‑reversion</div>",
-            "alt":"Mean‑Reversion","entry_kind":"market","entry_label": side,
-            "meta":{"source":"AlphaPulse","grey_zone": bool(0.48 <= conf <= 0.58), "fallback": True, "probs_debug": meta_debug}
+            "context": [f"AlphaPulse MR(fallback): z={z:.2f}"],
+            "note_html": "<div>AlphaPulse: mean‑reversion</div>",
+            "alt": "Mean‑Reversion",
+            "entry_kind": "market",
+            "entry_label": side,
+            "meta": {"source": "AlphaPulse", "grey_zone": bool(0.48 <= conf <= 0.58), "fallback": True, "probs_debug": meta_debug},
         }
         try:
             log_agent_performance(
-                agent="AlphaPulse", ticker=ticker, horizon=horizon,
-                action=side, confidence=float(conf),
-                levels=res["levels"], probs=res["probs"], meta=res["meta"], ts=pd.Timestamp.utcnow().isoformat()
+                agent="AlphaPulse",
+                ticker=ticker,
+                horizon=horizon,
+                action=side,
+                confidence=float(conf),
+                levels=res["levels"],
+                probs=res["probs"],
+                meta=res["meta"],
+                ts=pd.Timestamp.utcnow().isoformat(),
             )
         except Exception as e:
             logger.warning("perf log AlphaPulse failed: %s", e)
+
         return res
 
 # -------------------- Оркестратор Octopus --------------------
