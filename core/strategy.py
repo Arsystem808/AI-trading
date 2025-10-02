@@ -1044,12 +1044,27 @@ STRATEGY_REGISTRY: Dict[str, Callable[[str, str], Dict[str, Any]]] = {
     "alphapulse":  analyze_asset_alphapulse,
 }
 
-def analyze_asset(ticker: str, horizon: str, strategy: str):
-    s = str(strategy).strip().lower()
-    fn = STRATEGY_REGISTRY.get(s)
-    if fn is None:
-        raise ValueError(f"Unknown strategy: {strategy}")
-    return fn(ticker, horizon)
+def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
+    parts: Dict[str, Any] = {}
+    for name, fn in {
+        "Global": analyze_asset_global,
+        "M7":     (lambda t,h: analyze_asset_m7(t, h, use_ml=False)),  # временно без ML
+        "W7":     analyze_asset_w7,
+        "AlphaPulse": analyze_asset_alphapulse,
+    }.items():
+        try:
+            parts[name] = fn(ticker, horizon)
+        except Exception as e:
+            logger.warning("Agent %s failed: %s", name, e)
+    if not parts:
+        return {
+            "last_price": 0.0,
+            "recommendation": {"action": "WAIT", "confidence": 0.5},
+            "levels": {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+            "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+            "context": {"Octopus": "no agents responded"},
+        }
+    return parts.get("Global") or next(iter(parts.values()))
 
 # -------------------- Тестовый запуск --------------------
 if __name__ == "__main__":
