@@ -1043,11 +1043,20 @@ STRATEGY_REGISTRY: Dict[str, Callable[[str, str], Dict[str, Any]]] = {
     "AlphaPulse": analyze_asset_alphapulse,
 }
 
-def analyze_asset(ticker: str, horizon: str, strategy: str = "Octopus") -> Dict[str, Any]:
-    fn = STRATEGY_REGISTRY.get(strategy)
-    if not fn:
+def analyze_asset(ticker: str, horizon: str, strategy: str):
+    s = str(strategy).strip().lower()
+    if s in ("global",):
+        return analyze_asset_global(ticker, horizon)
+    elif s in ("m7", "m7pro"):
+        return analyze_asset_m7(ticker, horizon, use_ml=True)
+    elif s in ("w7",):
+        return analyze_asset_w7(ticker, horizon)
+    elif s in ("alphapulse",):
+        return analyze_asset_alphapulse(ticker, horizon)
+    elif s in ("octopus",):
+        return analyze_asset_octopus(ticker, horizon)
+    else:
         raise ValueError(f"Unknown strategy: {strategy}")
-    return fn(ticker, horizon)
 
 # -------------------- Тестовый запуск --------------------
 if __name__ == "__main__":
