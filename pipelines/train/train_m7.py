@@ -34,7 +34,7 @@ def train_and_save(df: pd.DataFrame, out_path: Path):
         for tr, va in tscv.split(X):
             mdl.fit(X[tr], y[tr])
             p = mdl.predict_proba(X[va])[:,1]
-            lls.append(log_loss(y[va], p, eps=1e-6))
+            p = np.clip(p.astype(float), 1e-15, 1-1e-15); lls.append(log_loss(y[va], p))
         m = float(np.mean(lls))
         if m < best_ll:
             best_ll, best = m, LogisticRegression(C=C, max_iter=200).fit(X, y)
