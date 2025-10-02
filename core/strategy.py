@@ -1034,11 +1034,12 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
 
     return res
 
+# ---------------- Strategy Router ----------------
 STRATEGY_REGISTRY: Dict[str, Callable[[str, str], Dict[str, Any]]] = {
     "octopus":     analyze_asset_octopus,
     "global":      analyze_asset_global,
-    "m7":          lambda t,h: analyze_asset_m7(t,h,use_ml=False),
-    "m7pro":       lambda t,h: analyze_asset_m7(t,h,use_ml=True),
+    "m7":          lambda t,h: analyze_asset_m7(t, h, use_ml=True),
+    "m7pro":       lambda t,h: analyze_asset_m7(t, h, use_ml=True),
     "w7":          analyze_asset_w7,
     "alphapulse":  analyze_asset_alphapulse,
 }
