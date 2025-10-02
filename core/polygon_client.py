@@ -6,15 +6,22 @@ import datetime as dt
 API = "https://api.polygon.io"
 
 class PolygonClient:
-    def __init__(self, api_key: str | None = None):
-        self.key = api_key or os.getenv("POLYGON_API_KEY")
-        if not self.key:
-            raise RuntimeError("POLYGON_API_KEY не задан. Добавьте его в .env")
+    def __init__(self):
+        self.api_key = os.getenv("POLYGON_API_KEY", "")
+        self.session = requests.Session()
+        retry = Retry(
+            total=3,
+            backoff_factor=0.5,             # экспоненциальная задержка: 0.5, 1.0, 2.0, ...
+            status_forcelist=[429,500,502,503,504],
+            allowed_methods=["GET"],
+            raise_on_status=False,
+        )
+        self.session.mount("https://", HTTPAdapter(max_retries=retry))
 
-    def _get(self, url: str, params: dict | None = None) -> dict:
-        params = params or {}
-        params.setdefault("apiKey", self.key)
-        r = requests.get(url, params=params, timeout=30)
+    def _get(self, url: str, params=None, timeout=20):
+        params = dict(params or {})
+        if self.api_key: params["apiKey"] = self.api_key
+        r = self.session.get(url, params=params, timeout=(5, timeout))  # (connect, read)
         r.raise_for_status()
         return r.json()
 
