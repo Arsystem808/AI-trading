@@ -1044,7 +1044,7 @@ STRATEGY_REGISTRY: Dict[str, Callable[[str, str], Dict[str, Any]]] = {
     "alphapulse":  analyze_asset_alphapulse,
 }
 
-def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
+ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     parts: Dict[str, Any] = {}
     for name, fn in {
         "Global": analyze_asset_global,
