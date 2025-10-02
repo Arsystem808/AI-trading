@@ -1034,29 +1034,22 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
 
     return res
 
-# -------------------- Strategy Router --------------------
+# ---------------- Strategy Router ----------------
 STRATEGY_REGISTRY: Dict[str, Callable[[str, str], Dict[str, Any]]] = {
-    "Octopus": analyze_asset_octopus,
-    "Global": analyze_asset_global,
-    "M7": analyze_asset_m7,
-    "W7": analyze_asset_w7,
-    "AlphaPulse": analyze_asset_alphapulse,
+    "octopus":     analyze_asset_octopus,
+    "global":      analyze_asset_global,
+    "m7":          lambda t,h: analyze_asset_m7(t, h, use_ml=True),
+    "m7pro":       lambda t,h: analyze_asset_m7(t, h, use_ml=True),
+    "w7":          analyze_asset_w7,
+    "alphapulse":  analyze_asset_alphapulse,
 }
 
 def analyze_asset(ticker: str, horizon: str, strategy: str):
     s = str(strategy).strip().lower()
-    if s in ("global",):
-        return analyze_asset_global(ticker, horizon)
-    elif s in ("m7", "m7pro"):
-        return analyze_asset_m7(ticker, horizon, use_ml=True)
-    elif s in ("w7",):
-        return analyze_asset_w7(ticker, horizon)
-    elif s in ("alphapulse",):
-        return analyze_asset_alphapulse(ticker, horizon)
-    elif s in ("octopus",):
-        return analyze_asset_octopus(ticker, horizon)
-    else:
+    fn = STRATEGY_REGISTRY.get(s)
+    if fn is None:
         raise ValueError(f"Unknown strategy: {strategy}")
+    return fn(ticker, horizon)
 
 # -------------------- Тестовый запуск --------------------
 if __name__ == "__main__":
