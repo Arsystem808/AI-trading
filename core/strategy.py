@@ -373,10 +373,12 @@ class M7TradingStrategy:
                              'confidence':round(conf,2),'level':name,'level_value':round(val,4),'timestamp':ts})
         return sigs
 
-def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False):
+def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=True):
+    from math import isnan
     cli = PolygonClient(); df = cli.daily_ohlc(ticker, days=120)
     strategy = M7TradingStrategy(); signals = strategy.generate_signals(df)
     price = float(df['close'].iloc[-1])
+
     if not signals:
         res = {
             "last_price": price,
@@ -403,10 +405,41 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
     entry = float(best['price']); sl = float(best['stop_loss']); risk = abs(entry - sl)
     atr14 = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
     vol = df['close'].pct_change().std() * np.sqrt(252)
+    slope = _linreg_slope(df['close'].tail(20).values) / max(1e-9, price)
+    dist_norm = float(abs(price - best.get('level_value', price)) / max(1e-9, atr14))
 
+    # Базовая уверенность по правилам
     conf_base = 0.50 + 0.34*math.tanh((raw_conf - 0.65)/0.20)
     penalty = (0.05 if vol and vol > 0.35 else 0.0) + (0.04 if risk/atr14 < 0.8 else 0.0) + (0.03 if risk/atr14 > 3.5 else 0.0)
-    conf = float(max(0.52, min(0.82, conf_base*(1.0 - penalty))))
+    conf_rule = float(max(0.52, min(0.82, conf_base*(1.0 - penalty))))
+
+    # ML блендинг, если есть модель и use_ml=True
+    ml_conf = None
+    if use_ml:
+        try:
+            from core.model_loader import load_model_for
+            mdl = load_model_for(ticker)
+        except Exception:
+            mdl = None
+        if mdl is not None:
+            # Унифицированный набор признаков под тренер
+            X = np.array([[atr14, float(vol or 0.0), float(slope), float(dist_norm), float(risk/atr14 if atr14>0 else 0.0)]], dtype=float)
+            try:
+                if hasattr(mdl, "predict_proba"):
+                    ml_conf = float(mdl.predict_proba(X)[0,1])
+                elif hasattr(mdl, "decision_function"):
+                    z = float(mdl.decision_function(X))
+                    ml_conf = float(1.0/(1.0+np.exp(-z)))
+            except Exception as e:
+                logger.warning("M7 ML inference failed: %s", e)
+                ml_conf = None
+
+    if isinstance(ml_conf, float) and not isnan(ml_conf):
+        # Блендинг: 70% ML + 30% правил, затем калибровка
+        conf = 0.70*_clip01(ml_conf) + 0.30*conf_rule
+    else:
+        conf = conf_rule
+
     conf = float(CAL_CONF["M7"](conf))
 
     if best['type'].startswith('BUY'):
