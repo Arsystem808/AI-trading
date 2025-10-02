@@ -16,7 +16,7 @@ jobs:
           pip install -r requirements.txt
       - name: ETL
         run: |
-          python -m pipelines.etl.daily_etl --tickers "AAPL,QQQ,SPY,OXY,NKE,AMD,SNOW,TLT,AFFRM,X:BTCUSD,X:ETHUSD,MSFT,TSLA" --days 300 --out data/latest.parquet
+          python -m pipelines.etl.daily_etl --tickers "AAPL,QQQ,SPY,OXY,NKE,AMD,SNOW,TLT,AFRM,X:BTCUSD,X:ETHUSD,MSFT,TSLA" --days 300 --out data/latest.parquet
       - name: Train M7
         run: |
           python -m pipelines.train.train_m7 --data data/latest.parquet --out models/
@@ -25,7 +25,7 @@ jobs:
           python -m pipelines.calib.calibrate_conf --data data/latest.parquet --out config/calibration.json
       - name: Smoke test
         run: |
-          python -m pipelines.smoke.smoke_test --tickers "AAPL,QQQ,SPY,OXY,NKE,AMD,SNOW,TLT,AFFRM,X:BTCUSD,X:ETHUSD,MSFT,TSLA"
+          python -m pipelines.smoke.smoke_test --tickers "AAPL,QQQ,SPY,OXY,NKE,AMD,SNOW,TLT,AFRM,X:BTCUSD,X:ETHUSD,MSFT,TSLA"
       - name: Commit models and calib
         run: |
           git config user.name "octo-bot"
