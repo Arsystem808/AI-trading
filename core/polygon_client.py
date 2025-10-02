@@ -2,6 +2,8 @@ import os
 import requests
 import pandas as pd
 import datetime as dt
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 
 API = "https://api.polygon.io"
 
