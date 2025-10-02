@@ -413,20 +413,36 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=True):
     penalty = (0.05 if vol and vol > 0.35 else 0.0) + (0.04 if risk/atr14 < 0.8 else 0.0) + (0.03 if risk/atr14 > 3.5 else 0.0)
     conf_rule = float(max(0.52, min(0.82, conf_base*(1.0 - penalty))))
 
-    # ML блендинг, если есть модель и use_ml=True
+    # ML блендинг, если есть модель
     ml_conf = None
     if use_ml:
+        mdl = None
         try:
             from core.model_loader import load_model_for
             mdl = load_model_for(ticker)
-        except Exception:
+        except Exception as e:
+            logger.warning("M7 ML loader failed: %s", e)
             mdl = None
+
         if mdl is not None:
-            # Унифицированный набор признаков под тренер
-            X = np.array([[atr14, float(vol or 0.0), float(slope), float(dist_norm), float(risk/atr14 if atr14>0 else 0.0)]], dtype=float)
             try:
+                import pandas as pd
+                row = {
+                    "atr14": float(atr14),
+                    "vol": float(vol or 0.0),
+                    "slope": float(slope),
+                    "dist_norm": float(dist_norm),
+                    "risk_over_atr": float((risk/atr14) if atr14 > 0 else 0.0),
+                }
+                if hasattr(mdl, "feature_names_in_"):
+                    cols = list(getattr(mdl, "feature_names_in_"))
+                    X = pd.DataFrame([[row.get(c, 0.0) for c in cols]], columns=cols)
+                else:
+                    # fallback на базовые признаки как в train_m7.py
+                    X = np.array([[row["atr14"], row["vol"], row["slope"]]], dtype=float)
+
                 if hasattr(mdl, "predict_proba"):
-                    ml_conf = float(mdl.predict_proba(X)[0,1])
+                    ml_conf = float(mdl.predict_proba(X)[0, 1])
                 elif hasattr(mdl, "decision_function"):
                     z = float(mdl.decision_function(X))
                     ml_conf = float(1.0/(1.0+np.exp(-z)))
@@ -435,7 +451,6 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=True):
                 ml_conf = None
 
     if isinstance(ml_conf, float) and not isnan(ml_conf):
-        # Блендинг: 70% ML + 30% правил, затем калибровка
         conf = 0.70*_clip01(ml_conf) + 0.30*conf_rule
     else:
         conf = conf_rule
@@ -459,9 +474,14 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=True):
     p1 = _clip01(b1*np.exp(-k*(u1-1.0))); p2 = _clip01(b2*np.exp(-k*(u2-1.5))); p3 = _clip01(b3*np.exp(-k*(u3-2.2)))
     probs = _monotone_tp_probs({"tp1":p1,"tp2":p2,"tp3":p3})
 
-    meta_debug = {"risk": float(risk), "atr14": float(atr14),
-                  "u":[float(u1),float(u2),float(u3)],
-                  "p":[float(probs["tp1"]),float(probs["tp2"]),float(probs["tp3"])]}
+    meta_debug = {
+        "risk": float(risk), "atr14": float(atr14),
+        "features": {"atr14": float(atr14), "vol": float(vol or 0.0), "slope": float(slope),
+                     "dist_norm": float(dist_norm), "risk_over_atr": float((risk/atr14) if atr14>0 else 0.0)},
+        "u":[float(u1),float(u2),float(u3)],
+        "p":[float(probs["tp1"]),float(probs["tp2"]),float(probs["tp3"])],
+        "ml_conf": float(_clip01(ml_conf)) if isinstance(ml_conf, float) and not isnan(ml_conf) else None
+    }
     try:
         log_agent_performance(
             agent="M7", ticker=ticker, horizon=horizon,
