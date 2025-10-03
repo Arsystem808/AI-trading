@@ -21,3 +21,4 @@ ARXORA — PATCH PACK (не ломает существующий код)
    from utils.tickers import normalize_to_yf
    yf_symbol = normalize_to_yf(ticker)
    # дальше используйте yf_symbol в yfinance (или аналог)
+# temp check пятница,  3 октября 2025 г. 15:26:41 (MSK)
