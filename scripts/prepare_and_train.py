@@ -45,9 +45,11 @@ def train_and_save_model(ticker, df):
 project_dir = os.path.abspath(os.path.join(base_dir, '..'))
 models_dir = os.path.join(project_dir, 'models')
 os.makedirs(models_dir, exist_ok=True)
-    model_path = os.path.join(models_dir, f"arxora_m7pro_{ticker}.joblib")
-    joblib.dump(model, model_path)
-    print(f"Модель сохранена: {model_path}")
+    models_dir = os.path.join(project_dir, "models")
+os.makedirs(models_dir, exist_ok=True)
+
+model_path = os.path.join(models_dir, f"arxora_m7_{ticker}.joblib")
+print(f"Модель сохранена: {model_path}")
 
 if __name__ == "__main__":
     import argparse
