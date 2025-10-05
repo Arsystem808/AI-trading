@@ -5,6 +5,7 @@ on:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
+  workflow_dispatch: {}
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -15,26 +16,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: pip-${{ runner.os }}-${{ hashFiles('**/requirements*.txt') }}
           restore-keys: pip-${{ runner.os }}-
+
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install black flake8
+
       - name: Lint (не валит билд)
         shell: bash
         run: |
           paths=(scripts/train_m7.py scripts/train_octopus_meta.py scripts/calibrate_confidence.py services core/strategy.py)
-          exist=(); for p in "${paths[@]}"; do [[ -e "$p" ]] && exist+=("$p"); done
+          exist=()
+          for p in "${paths[@]}"; do [[ -e "$p" ]] && exist+=("$p"); done
           if (( ${#exist[@]} )); then
-            # показать дифф, но не падать
             black --check --diff "${exist[@]}" || true
             flake8 "${exist[@]}" || true
           else
@@ -42,49 +47,61 @@ jobs:
           fi
 
   test:
-    if: ${{ hashFiles('tests/**/*.py') != '' }}  # запустить только если тесты реально есть
+    if: ${{ hashFiles('tests/**/*.py') != '' }}
     runs-on: ubuntu-latest
     strategy:
-      matrix: { python-version: [ "3.10", "3.11" ] }
+      matrix:
+        python-version: [ "3.10", "3.11" ]
     env:
       PYTHONPATH: ${{ github.workspace }}
       CI_DRY_RUN: "1"
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
-        with: { python-version: ${{ matrix.python-version }} }
+        with:
+          python-version: ${{ matrix.python-version }}
+
       - uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: pip-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/requirements*.txt') }}
           restore-keys: pip-${{ runner.os }}-
+
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install pytest
+
       - name: Run tests
         run: pytest -q
 
   smoke:
     runs-on: ubuntu-latest
+    needs: lint
     env:
       PYTHONPATH: ${{ github.workspace }}
       CI_DRY_RUN: "1"
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
+        with:
+          python-version: "3.11"
+
       - uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: pip-${{ runner.os }}-${{ hashFiles('**/requirements*.txt') }}
           restore-keys: pip-${{ runner.os }}-
+
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install pandas numpy
+
       - name: Octopus import smoke
         run: |
           python - <<'PY'
