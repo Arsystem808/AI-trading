@@ -1,5 +1,21 @@
 import argparse
 from pathlib import Path
+<<<<<<< HEAD
+
+import joblib
+import numpy as np
+import pandas as pd
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import brier_score_loss, log_loss
+from sklearn.model_selection import TimeSeriesSplit
+
+FEATURES = [
+    "atr14",
+    "vol",
+    "slope",
+]  # Базовые фичи, согласованные с инференсом
+
+=======
 from typing import List, Tuple
 
 import joblib
@@ -10,6 +26,7 @@ from sklearn.metrics import log_loss
 from sklearn.model_selection import TimeSeriesSplit
 
 FEATURES: List[str] = ["atr14", "vol", "slope"]  # Базовые фичи, согласованные с инференсом
+>>>>>>> origin/main
 
 
 def train_and_save(df: pd.DataFrame, out_path: Path) -> Tuple[LogisticRegression, float]:
@@ -57,6 +74,28 @@ def main() -> None:
             train_and_save(g, out_dir / f"arxora_m7pro_{t}.joblib")
     else:
         train_and_save(df, out_dir / "m7_model.pkl")
+
+<<<<<<< HEAD
+
+def train_and_save(df: pd.DataFrame, out_path: Path):
+    X = df[FEATURES].values.astype(float)
+    y = df["y"].values.astype(int)
+    tscv = TimeSeriesSplit(n_splits=4)
+    best, best_ll = None, 1e9
+    for C in [0.1, 0.5, 1.0, 2.0]:
+        mdl = LogisticRegression(C=C, max_iter=200)
+        lls = []
+        for tr, va in tscv.split(X):
+            mdl.fit(X[tr], y[tr])
+            p = mdl.predict_proba(X[va])[:, 1]
+            p = np.clip(p.astype(float), 1e-15, 1 - 1e-15)
+            lls.append(log_loss(y[va], p))
+        m = float(np.mean(lls))
+        if m < best_ll:
+            best_ll, best = m, LogisticRegression(C=C, max_iter=200).fit(X, y)
+    joblib.dump(best, out_path)
+=======
+>>>>>>> origin/main
 
 
 if __name__ == "__main__":

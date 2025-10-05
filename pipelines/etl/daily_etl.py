@@ -1,6 +1,9 @@
 import argparse
 from datetime import datetime, timedelta
+<<<<<<< HEAD
+=======
 from typing import List
+>>>>>>> origin/main
 
 import numpy as np
 import pandas as pd
@@ -16,6 +19,13 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
 
     atr14 = (high - low).rolling(14, min_periods=1).mean()
     vol = close.pct_change().rolling(30, min_periods=1).std() * np.sqrt(252)
+<<<<<<< HEAD
+    slope = close.rolling(20).apply(
+        lambda x: np.polyfit(np.arange(len(x)), x, 1)[0], raw=False
+    )
+    feats = pd.DataFrame(
+        {"atr14": atr14, "vol": vol, "slope": slope / close.clip(lower=1e-9)},
+=======
 
     def _slope(arr: np.ndarray) -> float:
         x = np.arange(len(arr), dtype=float)
@@ -30,6 +40,7 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
             "vol": vol,
             "slope": slope / close.clip(lower=1e-9),
         },
+>>>>>>> origin/main
         index=df.index,
     )
     return feats
@@ -42,8 +53,13 @@ def build_targets(df: pd.DataFrame, horizon_days: int = 5) -> pd.Series:
     return y.astype(int)
 
 
+<<<<<<< HEAD
+def main():
+    ap = argparse.ArgumentParser()
+=======
 def main() -> None:
     ap = argparse.ArgumentParser(description="Daily ETL for M7 features/targets")
+>>>>>>> origin/main
     ap.add_argument("--tickers", type=str, default="AAPL,MSFT,TSLA")
     ap.add_argument("--days", type=int, default=240)
     ap.add_argument("--out", type=str, default="data/latest.parquet")
@@ -57,17 +73,25 @@ def main() -> None:
         df = cli.daily_ohlc(t, days=args.days)
         if not isinstance(df, pd.DataFrame) or len(df) < 60:
             continue
+<<<<<<< HEAD
+=======
 
+>>>>>>> origin/main
         feats = build_features(df)
         y = build_targets(df)
 
         dat = feats.copy()
         dat["ticker"] = t
         dat["y"] = y
+<<<<<<< HEAD
+        dat = dat.dropna().tail(args.days - 10)
+        rows.append(dat)
+=======
         dat = dat.dropna().tail(max(1, args.days - 10))
         if len(dat):
             rows.append(dat)
 
+>>>>>>> origin/main
     if not rows:
         raise SystemExit("No data rows")
 

@@ -20,18 +20,25 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+ Arsystem808-patch-1
 
+
+ main
       - uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: pip-${{ runner.os }}-${{ hashFiles('**/requirements*.txt') }}
           restore-keys: pip-${{ runner.os }}-
+ Arsystem808-patch-1
 
+
+ main
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install black flake8
+ Arsystem808-patch-1
 
       - name: Lint (не валит билд)
         shell: bash
@@ -44,6 +51,19 @@ jobs:
             flake8 "${exist[@]}" || true
           else
             echo "Нет целей для линта"
+
+      - name: Lint (soft)
+        run: |
+          set -e
+          paths=(scripts services core/strategy.py)
+          found=0
+          for p in "${paths[@]}"; do [ -e "$p" ] && found=1; done
+          if [ "$found" -eq 1 ]; then
+            black --check --diff "${paths[@]}" || true
+            flake8 "${paths[@]}" || true
+          else
+            echo "No lint targets"
+ main
           fi
 
   test:
@@ -79,10 +99,15 @@ jobs:
 
   smoke:
     runs-on: ubuntu-latest
+Arsystem808-patch-1
     needs: lint
     env:
       PYTHONPATH: ${{ github.workspace }}
       CI_DRY_RUN: "1"
+
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+ main
     steps:
       - uses: actions/checkout@v4
 
@@ -122,3 +147,24 @@ jobs:
               assert 'recommendation' in res and 'levels' in res, strat
           print("SMOKE OK")
           PY
+      - name: Detect tests
+        id: detect
+        shell: bash
+        run: |
+          if git ls-files 'tests/**/*.py' | grep -q .; then
+            echo "HAS_TESTS=true" >> "$GITHUB_ENV"
+          else
+            echo "HAS_TESTS=false" >> "$GITHUB_ENV"
+          fi
+      - name: Install deps
+        if: env.HAS_TESTS == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install pytest
+      - name: Run tests
+        if: env.HAS_TESTS == 'true'
+        run: pytest -q
+      - name: Skip note
+        if: env.HAS_TESTS != 'true'
+        run: echo "No tests found, skipping"

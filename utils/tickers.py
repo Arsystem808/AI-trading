@@ -1,4 +1,3 @@
-
 # utils/tickers.py — normalizer for crypto tickers typed like X:BTCUSD or BINANCE:ETHUSDT
 def normalize_to_yf(symbol: str) -> str:
     """
@@ -12,9 +11,18 @@ def normalize_to_yf(symbol: str) -> str:
     """
     s = (symbol or "").strip().upper().replace(" ", "")
 
-    for pref in ("X:", "CRYPTO:", "BINANCE:", "COINBASE:", "KRAKEN:", "BYBIT:", "HUOBI:", "OKX:"):
+    for pref in (
+        "X:",
+        "CRYPTO:",
+        "BINANCE:",
+        "COINBASE:",
+        "KRAKEN:",
+        "BYBIT:",
+        "HUOBI:",
+        "OKX:",
+    ):
         if s.startswith(pref):
-            s = s[len(pref):]
+            s = s[len(pref) :]
 
     if s.endswith("USDT"):
         s = s[:-4] + "USD"
