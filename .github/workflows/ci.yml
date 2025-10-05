@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 name: CI
 
 on:
@@ -12,37 +11,24 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-=======
-name: ci
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
->>>>>>> origin/main
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-<<<<<<< HEAD
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: pip-${{ runner.os }}-${{ hashFiles('**/requirements*.txt') }}
           restore-keys: pip-${{ runner.os }}-
-
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install black flake8
-
       - name: Lint (не валит билд)
         shell: bash
         run: |
@@ -67,23 +53,19 @@ jobs:
       CI_DRY_RUN: "1"
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-
       - uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: pip-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/requirements*.txt') }}
           restore-keys: pip-${{ runner.os }}-
-
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install pytest
-
       - name: Run tests
         run: pytest -q
 
@@ -95,23 +77,19 @@ jobs:
       CI_DRY_RUN: "1"
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: pip-${{ runner.os }}-${{ hashFiles('**/requirements*.txt') }}
           restore-keys: pip-${{ runner.os }}-
-
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install pandas numpy
-
       - name: Octopus import smoke
         run: |
           python - <<'PY'
@@ -132,22 +110,4 @@ jobs:
               assert 'recommendation' in res and 'levels' in res, strat
           print("SMOKE OK")
           PY
-=======
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - run: pip install flake8
-      - run: flake8 .
-  test:
-    runs-on: ubuntu-latest
-    needs: lint
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-   - run: pip install isort black flake8
-- run: isort --profile black .
-- run: black --line-length 120 .
-- run: flake8 . --exit-zero
->>>>>>> origin/main
+
