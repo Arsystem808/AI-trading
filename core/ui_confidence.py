@@ -2,7 +2,8 @@
 Breakdown с безопасным fallback из Session State, чтобы при любом раскладе совпадал с карточкой; это рекомендуемый приём Streamlit для согласованности состояния. [2][5]
 ```python
 # core/ui_confidence.py
-from typing import Dict, Any
+from typing import Any, Dict
+
 
 def get_confidence_breakdown_from_session() -> Dict[str, Any]:
     """

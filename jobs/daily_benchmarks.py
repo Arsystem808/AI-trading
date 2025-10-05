@@ -1,8 +1,12 @@
 # jobs/daily_benchmarks.py
 from __future__ import annotations
-import os, csv, argparse, time
+
+import argparse
+import csv
+import os
+import time
 from datetime import datetime, timezone
-from typing import List, Dict, Any
+from typing import Any, Dict, List
 
 # 1) ядро стратегий
 from core.strategy import analyze_asset
@@ -11,21 +15,26 @@ from core.strategy import analyze_asset
 try:
     from core.performance_tracker import log_agent_performance
 except Exception:
-    def log_agent_performance(*args, **kwargs): pass
+
+    def log_agent_performance(*args, **kwargs):
+        pass
+
 
 DATA_DIR = os.environ.get("PERF_DATA_DIR", "data/perf")
-AGENTS   = ["Global", "M7", "W7", "AlphaPulse", "Octopus"]
+AGENTS = ["Global", "M7", "W7", "AlphaPulse", "Octopus"]
 DEFAULT_TICKERS = os.environ.get("BENCH_TICKERS", "SPY,QQQ,DIA,IWM").split(",")
 DEFAULT_HORIZON = os.environ.get("BENCH_HORIZON", "Краткосрочный")
+
 
 def ensure_dir(p: str):
     os.makedirs(p, exist_ok=True)
 
+
 def _row_from_result(agent: str, ticker: str, horizon: str, res: Dict[str, Any]) -> Dict[str, Any]:
-    rec   = res.get("recommendation", {}) or {}
-    lev   = res.get("levels", {}) or {}
+    rec = res.get("recommendation", {}) or {}
+    lev = res.get("levels", {}) or {}
     probs = res.get("probs", {}) or {}
-    now   = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     return {
         "ts": now,
         "agent": agent,
@@ -45,6 +54,7 @@ def _row_from_result(agent: str, ticker: str, horizon: str, res: Dict[str, Any])
         # "tp1_hit": "", "tp2_hit": "", "tp3_hit": "", "sl_hit": ""
     }
 
+
 def _append_csv(path: str, row: Dict[str, Any]):
     new_file = not os.path.exists(path)
     with open(path, "a", newline="", encoding="utf-8") as f:
@@ -53,6 +63,7 @@ def _append_csv(path: str, row: Dict[str, Any]):
             ensure_dir(os.path.dirname(path))
             w.writeheader()
         w.writerow(row)
+
 
 def run_once(tickers: List[str], horizon: str = DEFAULT_HORIZON, sleep_s: float = 0.8):
     ensure_dir(DATA_DIR)
@@ -75,7 +86,13 @@ def run_once(tickers: List[str], horizon: str = DEFAULT_HORIZON, sleep_s: float 
                         horizon=horizon,
                         action=row["action"],
                         confidence=row["confidence"],
-                        levels={"entry": row["entry"], "sl": row["sl"], "tp1": row["tp1"], "tp2": row["tp2"], "tp3": row["tp3"]},
+                        levels={
+                            "entry": row["entry"],
+                            "sl": row["sl"],
+                            "tp1": row["tp1"],
+                            "tp2": row["tp2"],
+                            "tp3": row["tp3"],
+                        },
                         probs={"tp1": row["p_tp1"], "tp2": row["p_tp2"], "tp3": row["p_tp3"]},
                         meta={},
                         ts=row["ts"],
@@ -86,6 +103,7 @@ def run_once(tickers: List[str], horizon: str = DEFAULT_HORIZON, sleep_s: float 
             except Exception as e:
                 print(f"[ERR] {agent} {t}: {e}")
             time.sleep(sleep_s)
+
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()

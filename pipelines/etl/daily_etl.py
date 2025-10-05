@@ -1,6 +1,11 @@
-import argparse, pandas as pd, numpy as np
+import argparse
 from datetime import datetime, timedelta
+
+import numpy as np
+import pandas as pd
+
 from core.polygon_client import PolygonClient
+
 
 # Ежедневный ETL: формирует фичи и цели для M7 по тикерам
 def build_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -8,18 +13,16 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     atr14 = (df["high"] - df["low"]).rolling(14, min_periods=1).mean()
     vol = close.pct_change().rolling(30, min_periods=1).std() * np.sqrt(252)
     slope = close.rolling(20).apply(lambda x: np.polyfit(np.arange(len(x)), x, 1)[0], raw=False)
-    feats = pd.DataFrame({
-        "atr14": atr14,
-        "vol": vol,
-        "slope": slope / close.clip(lower=1e-9)
-    }, index=df.index)
+    feats = pd.DataFrame({"atr14": atr14, "vol": vol, "slope": slope / close.clip(lower=1e-9)}, index=df.index)
     return feats
+
 
 def build_targets(df: pd.DataFrame, horizon_days: int = 5) -> pd.Series:
     close = df["close"].astype(float)
     fwd = close.shift(-horizon_days)
     y = (fwd - close).fillna(0.0) > 0.0
     return y.astype(int)
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -32,18 +35,20 @@ def main():
     rows = []
     for t in [x.strip().upper() for x in args.tickers.split(",") if x.strip()]:
         df = cli.daily_ohlc(t, days=args.days)
-        if not isinstance(df, pd.DataFrame) or len(df) < 60: continue
+        if not isinstance(df, pd.DataFrame) or len(df) < 60:
+            continue
         feats = build_features(df)
         y = build_targets(df)
         dat = feats.copy()
         dat["ticker"] = t
         dat["y"] = y
-        dat = dat.dropna().tail(args.days-10)
+        dat = dat.dropna().tail(args.days - 10)
         rows.append(dat)
     if not rows:
         raise SystemExit("No data rows")
     out = pd.concat(rows).reset_index().rename(columns={"index": "date"})
     out.to_parquet(args.out, index=False)
+
 
 if __name__ == "__main__":
     main()

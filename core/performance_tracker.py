@@ -1,21 +1,22 @@
 # core/performance_tracker.py
 from __future__ import annotations
 
-import os
 import json
+import os
+from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 import pandas as pd
-from datetime import datetime
 
 # Директории вывода
-PERF_DIR = "performance_data"                 # помесячные CSV с дневной доходностью по агенту/тикеру
-METRICS_DIR = "metrics"                       # сводный CSV со событийными метриками сигналов
+PERF_DIR = "performance_data"  # помесячные CSV с дневной доходностью по агенту/тикеру
+METRICS_DIR = "metrics"  # сводный CSV со событийными метриками сигналов
 METRICS_CSV = Path(METRICS_DIR) / "agent_performance.csv"
 
 os.makedirs(PERF_DIR, exist_ok=True)
 os.makedirs(METRICS_DIR, exist_ok=True)
+
 
 # -------------------- безопасное добавление строки (без FutureWarning) --------------------
 def _append_row(df: Optional[pd.DataFrame], row: Dict[str, Any]) -> pd.DataFrame:
@@ -32,8 +33,11 @@ def _append_row(df: Optional[pd.DataFrame], row: Dict[str, Any]) -> pd.DataFrame
                 df[k] = pd.NA
     return pd.concat([df, pd.DataFrame([row])], ignore_index=True)
 
+
 # -------------------- дневная доходность (совместимость со старым интерфейсом) --------------------
-def _log_daily_return(agent_label: str, ticker: str, date: Union[str, datetime, pd.Timestamp], daily_return: float) -> bool:
+def _log_daily_return(
+    agent_label: str, ticker: str, date: Union[str, datetime, pd.Timestamp], daily_return: float
+) -> bool:
     """
     Запись/обновление дневной доходности агента по тикеру в CSV performance_data/performance_{agent}_{TICKER}.csv. [attached_file:614]
     """
@@ -53,6 +57,7 @@ def _log_daily_return(agent_label: str, ticker: str, date: Union[str, datetime, 
     df = df.sort_values("date").drop_duplicates("date", keep="last")
     df.to_csv(filename, index=False)
     return True
+
 
 def get_agent_performance(agent_label: str, ticker: str) -> Optional[pd.DataFrame]:
     """
@@ -74,6 +79,7 @@ def get_agent_performance(agent_label: str, ticker: str) -> Optional[pd.DataFram
     df["cumulative_return"] = (1.0 + df["daily_return"]).cumprod() - 1.0
     return df
 
+
 # -------------------- событийные метрики сигналов (интерфейс strategy.py) --------------------
 def _log_event_metrics(
     *,
@@ -88,7 +94,7 @@ def _log_event_metrics(
     ts: Optional[str] = None,
     out_path: Optional[Union[str, Path]] = None,
     df_cache: Optional[pd.DataFrame] = None,
-    **kwargs
+    **kwargs,
 ) -> bool:
     """
     Логирование метрик сигнала в единый CSV (metrics/agent_performance.csv), совместимо с вызовами из core/strategy.py. [attached_file:614]
@@ -129,6 +135,7 @@ def _log_event_metrics(
     df = _append_row(df, row)
     df.to_csv(path, index=False)
     return True
+
 
 # -------------------- единая точка входа (обратная совместимость) --------------------
 def log_agent_performance(*args, **kwargs) -> bool:

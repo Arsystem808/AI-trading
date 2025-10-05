@@ -1,5 +1,8 @@
+import os
 from pathlib import Path
-import os, joblib, numpy as np
+
+import joblib
+import numpy as np
 
 try:
     import shap
@@ -8,8 +11,10 @@ except Exception:
 
 MODELS = (Path(__file__).resolve().parents[1] / "models").resolve()
 
+
 def load_optional(path: Path):
     return joblib.load(path) if os.path.exists(path) else None
+
 
 def intervals_from_quantiles(ticker: str, family: str, x: np.ndarray):
     # Ожидаются модели с objective='quantile', alpha=0.1 и 0.9
@@ -20,6 +25,7 @@ def intervals_from_quantiles(ticker: str, family: str, x: np.ndarray):
     lo = float(np.ravel(p10.predict(x))[0])
     hi = float(np.ravel(p90.predict(x))[0])
     return {"low": lo, "high": hi, "width": hi - lo}
+
 
 def shap_breakdown(model, x: np.ndarray, feature_names=None, top_k=8):
     if shap is None or x is None:
@@ -34,6 +40,8 @@ def shap_breakdown(model, x: np.ndarray, feature_names=None, top_k=8):
         return [{"feature": feats[i], "shap": float(vals[i])} for i in order]
     except Exception:
         return None
+
+
 # --- UI adapter API ---
 def ui_get_confidence_breakdown(ticker: str) -> dict:
     """
@@ -48,6 +56,7 @@ def ui_get_confidence_breakdown(ticker: str) -> dict:
     # 1) Базовая уверенность правил (должна существовать в вашем модуле правил)
     try:
         from core.rules import rules_confidence_for_ticker
+
         rules_pct = float(rules_confidence_for_ticker(ticker))
     except Exception:
         rules_pct = 44.0  # безопасный дефолт, чтобы UI не пустовал
@@ -57,8 +66,9 @@ def ui_get_confidence_breakdown(ticker: str) -> dict:
     shap_top = []
     try:
         import numpy as np
-        from core.model_loader import load_model_for  # ожидается в проекте
+
         from core.ai_inference import build_features_for_ticker  # ожидается в проекте
+        from core.model_loader import load_model_for  # ожидается в проекте
 
         model = load_model_for(ticker)
         X = build_features_for_ticker(ticker)  # shape: (1, n_features)
@@ -103,6 +113,7 @@ def ui_get_confidence_breakdown(ticker: str) -> dict:
         # SHAP (опционально, не роняем UI)
         try:
             import shap
+
             explainer = shap.Explainer(model)
             sv = explainer(X)
             vals = sv.values[0]
@@ -127,7 +138,10 @@ def ui_get_confidence_breakdown(ticker: str) -> dict:
         "shap_top": shap_top,
     }
 
+
 if __name__ == "__main__":
-    import sys, json
+    import json
+    import sys
+
     t = sys.argv[1] if len(sys.argv) > 1 else "SPY"
     print(json.dumps(ui_get_confidence_breakdown(t), ensure_ascii=False))

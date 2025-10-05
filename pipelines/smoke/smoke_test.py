@@ -1,5 +1,8 @@
-import argparse, json
+import argparse
+import json
+
 from core.strategy import analyze_asset
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -13,6 +16,7 @@ def main():
             assert "recommendation" in out and "levels" in out and "probs" in out, "Missing keys"
             assert "action" in out["recommendation"] and "confidence" in out["recommendation"], "Bad reco"
             print(s, t, out["recommendation"], flush=True)
+
 
 if __name__ == "__main__":
     main()

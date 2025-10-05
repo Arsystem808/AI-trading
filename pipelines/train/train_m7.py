@@ -1,10 +1,19 @@
-import argparse, pandas as pd, numpy as np, joblib
+import argparse
 from pathlib import Path
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import log_loss, brier_score_loss
 
-FEATURES = ["atr14", "vol", "slope",]  # Базовые фичи, согласованные с инференсом
+import joblib
+import numpy as np
+import pandas as pd
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import brier_score_loss, log_loss
+from sklearn.model_selection import TimeSeriesSplit
+
+FEATURES = [
+    "atr14",
+    "vol",
+    "slope",
+]  # Базовые фичи, согласованные с инференсом
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -23,6 +32,7 @@ def main():
     else:
         train_and_save(df, Path(args.out) / "m7_model.pkl")
 
+
 def train_and_save(df: pd.DataFrame, out_path: Path):
     X = df[FEATURES].values.astype(float)
     y = df["y"].values.astype(int)
@@ -33,12 +43,14 @@ def train_and_save(df: pd.DataFrame, out_path: Path):
         lls = []
         for tr, va in tscv.split(X):
             mdl.fit(X[tr], y[tr])
-            p = mdl.predict_proba(X[va])[:,1]
-            p = np.clip(p.astype(float), 1e-15, 1-1e-15); lls.append(log_loss(y[va], p))
+            p = mdl.predict_proba(X[va])[:, 1]
+            p = np.clip(p.astype(float), 1e-15, 1 - 1e-15)
+            lls.append(log_loss(y[va], p))
         m = float(np.mean(lls))
         if m < best_ll:
             best_ll, best = m, LogisticRegression(C=C, max_iter=200).fit(X, y)
     joblib.dump(best, out_path)
+
 
 if __name__ == "__main__":
     main()

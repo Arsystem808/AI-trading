@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import json
-import math
 import logging
+import math
 from pathlib import Path
-from typing import Dict, Any, Optional, Callable
+from typing import Any, Callable, Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -22,7 +22,7 @@ except Exception:
             raise RuntimeError("PolygonClient unavailable")
 
 try:
-    from core.performance_tracker import log_agent_performance, get_agent_performance
+    from core.performance_tracker import get_agent_performance, log_agent_performance
 except Exception:
     def log_agent_performance(*args, **kwargs): pass
     def get_agent_performance(*args, **kwargs): return None

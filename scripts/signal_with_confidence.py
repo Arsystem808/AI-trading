@@ -1,10 +1,16 @@
-import sys, json, numpy as np
-from core.model_loader import load_model_for
+import json
+import sys
+
+import numpy as np
+
 from core.confidence import intervals_from_quantiles, shap_breakdown
+from core.model_loader import load_model_for
 from core.rules import rule_score
 
-def clamp01(x): 
+
+def clamp01(x):
     return max(0.0, min(1.0, x))
+
 
 def main():
     if len(sys.argv) < 2:
@@ -68,15 +74,13 @@ def main():
         "ticker": ticker,
         "signal": signal,
         "overall_confidence_pct": round(overall, 1),
-        "breakdown": {
-            "rules_pct": round(rule_pct, 1),
-            "ai_override_delta_pct": round(ai_delta, 1)
-        },
+        "breakdown": {"rules_pct": round(rule_pct, 1), "ai_override_delta_pct": round(ai_delta, 1)},
         "point": point,
         "interval": intervals,
-        "shap_top": shap_top
+        "shap_top": shap_top,
     }
     print(json.dumps(out, ensure_ascii=False, indent=2))
+
 
 if __name__ == "__main__":
     main()

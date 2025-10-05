@@ -1,6 +1,11 @@
-import sys, json, numpy as np
-from core.model_loader import load_model_for
+import json
+import sys
+
+import numpy as np
+
 from core.confidence import intervals_from_quantiles, shap_breakdown
+from core.model_loader import load_model_for
+
 
 def main():
     if len(sys.argv) < 2:
@@ -29,10 +34,11 @@ def main():
         "ticker": ticker,
         "point": point,
         "interval": ints,
-        "confidence": (None if not ints or point is None else max(0.0, 1.0 - (ints["width"] / (abs(point) + 1e-6)))) ,
-        "shap_top": shap_top
+        "confidence": (None if not ints or point is None else max(0.0, 1.0 - (ints["width"] / (abs(point) + 1e-6)))),
+        "shap_top": shap_top,
     }
     print(json.dumps(out, ensure_ascii=False, indent=2))
+
 
 if __name__ == "__main__":
     main()

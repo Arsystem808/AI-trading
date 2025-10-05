@@ -1,10 +1,10 @@
 # core/model_loader.py
 from __future__ import annotations
 
-from pathlib import Path
 import json
 import re
-from typing import Any, Optional, Dict, Union
+from pathlib import Path
+from typing import Any, Dict, Optional, Union
 
 try:
     import joblib  # внешняя библиотека joblib, не sklearn.externals
@@ -19,20 +19,29 @@ CONFIG_DIR = Path("configs")
 
 # Нормализация текста для устранения «invalid character» в JSON
 _FANCY = {
-    "“": '"', "”": '"', "„": '"', "«": '"', "»": '"',
-    "’": "'", "‘": "'",
-    "—": "-", "–": "-",
-    "，": ",", "：": ":", "；": ";"
+    "“": '"',
+    "”": '"',
+    "„": '"',
+    "«": '"',
+    "»": '"',
+    "’": "'",
+    "‘": "'",
+    "—": "-",
+    "–": "-",
+    "，": ",",
+    "：": ":",
+    "；": ";",
 }
+
 
 def _normalize_text(s: str) -> str:
     # Заменяем типографские символы
     for k, v in _FANCY.items():
         s = s.replace(k, v)
     # Превращаем ': 'value'' -> ': "value"' (частый почти‑JSON)
-    s = re.sub(r'(:\s*)\'([^\'\\n]*)\'', r'\1"\2"', s)
+    s = re.sub(r"(:\s*)\'([^\'\\n]*)\'", r'\1"\2"', s)
     # Удаляем запятую перед закрывающей скобкой/фигурной
-    s = re.sub(r',(\s*[}\]])', r'\1', s)
+    s = re.sub(r",(\s*[}\]])", r"\1", s)
     return s
 
 
@@ -121,4 +130,3 @@ def load_model_for(ticker_or_name: str) -> Optional[Union[Any, Dict[str, Any]]]:
             return _load_json_file(p)
 
     return None
-

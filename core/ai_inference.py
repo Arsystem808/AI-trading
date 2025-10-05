@@ -13,16 +13,18 @@
 # ---------------------------------------------------------------------
 
 from __future__ import annotations
-import os
-import re
+
 import math
+import os
 import pickle
-from typing import Dict, Any, Optional, Tuple
+import re
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
 try:
     import joblib  # предпочтительно
+
     _HAVE_JOBLIB = True
 except Exception:
     _HAVE_JOBLIB = False
@@ -274,7 +276,11 @@ def score_signal(feats: Dict[str, Any], hz: str, ticker: Optional[str] = None) -
             # повреждённая модель/неожиданные фичи
             if PSEUDO_ON:
                 p_long = _pseudo_score(feats, hz)
-                return {"p_long": float(p_long), "model_path": "pseudo_fallback", "meta": {"error": "model_inference_failed"}}
+                return {
+                    "p_long": float(p_long),
+                    "model_path": "pseudo_fallback",
+                    "meta": {"error": "model_inference_failed"},
+                }
             return None
 
     # Модель не найдена

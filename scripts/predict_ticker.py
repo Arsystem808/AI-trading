@@ -1,5 +1,9 @@
-import sys, numpy as np
+import sys
+
+import numpy as np
+
 from core.model_loader import load_model_for
+
 
 def main():
     if len(sys.argv) < 2:
@@ -14,6 +18,7 @@ def main():
     x = np.zeros((1, n))
     pred = model.predict(x)
     print(f"OK: {ticker} -> {type(model).__name__}, n_features_in_={n}, pred_shape={getattr(pred, 'shape', None)}")
+
 
 if __name__ == "__main__":
     main()

@@ -1,32 +1,41 @@
 from __future__ import annotations
-from typing import Dict, Any
+
 import random
+from typing import Any, Dict
+
 
 def fmt_price(x: float) -> str:
     return f"{x:,.2f}".replace(",", " ")
 
+
 def confidence_to_words(c: float) -> str:
-    if c >= 0.8: return "высокая"
-    if c >= 0.65: return "выше среднего"
-    if c >= 0.5: return "средняя"
-    if c >= 0.4: return "ниже среднего"
+    if c >= 0.8:
+        return "высокая"
+    if c >= 0.65:
+        return "выше среднего"
+    if c >= 0.5:
+        return "средняя"
+    if c >= 0.4:
+        return "ниже среднего"
     return "низкая"
+
 
 MOODS_UP = [
     "Снизу была остановка — видны признаки восстановления.",
     "Покупатели подбирают цену, давление снижается.",
-    "После паузы рынок тянет вверх — без излишней агрессии."
+    "После паузы рынок тянет вверх — без излишней агрессии.",
 ]
 MOODS_DOWN = [
     "Наверху импульс выдохся — сверху нарастает давление.",
     "Покупателям тяжело тащить дальше — логично ждать откат.",
-    "Сверху серия отказов — инициатива у продавцов."
+    "Сверху серия отказов — инициатива у продавцов.",
 ]
 MOODS_NEUTRAL = [
     "Цена в середине коридора — преимущества нет.",
     "Фон смешанный: лучше дождаться реакции рядом с ценой.",
-    "Рынок балансирует — явного сигнала пока нет."
+    "Рынок балансирует — явного сигнала пока нет.",
 ]
+
 
 def _pick_mood(action: str) -> str:
     if action.startswith("LONG"):
@@ -35,14 +44,15 @@ def _pick_mood(action: str) -> str:
         return random.choice(MOODS_DOWN)
     return random.choice(MOODS_NEUTRAL)
 
+
 def build_narrative(symbol: str, horizon_name: str, rec: Dict[str, Any]) -> str:
     c_words = confidence_to_words(rec.get("confidence", 0.5))
     lines = []
     lines.append(f"**{symbol} — {horizon_name}**")
     lines.append("")
-    lines.append(_pick_mood(rec['action']))
+    lines.append(_pick_mood(rec["action"]))
     lines.append("")
-    lines.append("**Рекомендация:** " + rec['action'])
+    lines.append("**Рекомендация:** " + rec["action"])
     if rec.get("entry"):
         lines.append(f"• Вход: {fmt_price(rec['entry'])}")
     if rec.get("tp1"):
