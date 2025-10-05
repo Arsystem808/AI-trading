@@ -5,7 +5,7 @@ on:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
-  workflow_dispatch: {}
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -16,155 +16,39 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
- Arsystem808-patch-1
-
-
- main
       - uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: pip-${{ runner.os }}-${{ hashFiles('**/requirements*.txt') }}
-          restore-keys: pip-${{ runner.os }}-
- Arsystem808-patch-1
-
-
- main
+          restore-keys: |
+            pip-${{ runner.os }}-
       - name: Install deps
         run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install black flake8
- Arsystem808-patch-1
-
-      - name: Lint (не валит билд)
-        shell: bash
-        run: |
-          paths=(scripts/train_m7.py scripts/train_octopus_meta.py scripts/calibrate_confidence.py services core/strategy.py)
-          exist=()
-          for p in "${paths[@]}"; do [[ -e "$p" ]] && exist+=("$p"); done
-          if (( ${#exist[@]} )); then
-            black --check --diff "${exist[@]}" || true
-            flake8 "${exist[@]}" || true
-          else
-            echo "Нет целей для линта"
-
-      - name: Lint (soft)
-        run: |
-          set -e
-          paths=(scripts services core/strategy.py)
-          found=0
-          for p in "${paths[@]}"; do [ -e "$p" ] && found=1; done
-          if [ "$found" -eq 1 ]; then
-            black --check --diff "${paths[@]}" || true
-            flake8 "${paths[@]}" || true
-          else
-            echo "No lint targets"
- main
-          fi
+          python -m pip install -U pip
+          pip install -r requirements.txt
+      - name: Lint
+        run: flake8 .
 
   test:
-    if: ${{ hashFiles('tests/**/*.py') != '' }}
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: [ "3.10", "3.11" ]
-    env:
-      PYTHONPATH: ${{ github.workspace }}
-      CI_DRY_RUN: "1"
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/requirements*.txt') }}
-          restore-keys: pip-${{ runner.os }}-
-
-      - name: Install deps
-        run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install pytest
-
-      - name: Run tests
-        run: pytest -q
-
-  smoke:
-    runs-on: ubuntu-latest
-Arsystem808-patch-1
-    needs: lint
-    env:
-      PYTHONPATH: ${{ github.workspace }}
-      CI_DRY_RUN: "1"
-
-    env:
-      PYTHONPATH: ${{ github.workspace }}
- main
-    steps:
-      - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: pip-${{ runner.os }}-${{ hashFiles('**/requirements*.txt') }}
-          restore-keys: pip-${{ runner.os }}-
-
+          restore-keys: |
+            pip-${{ runner.os }}-
       - name: Install deps
         run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install pandas numpy
-
-      - name: Octopus import smoke
-        run: |
-          python - <<'PY'
-          import os, pandas as pd, numpy as np
-          os.environ['CI_DRY_RUN']='1'
-          import core.strategy as S
-          import datetime as dt
-          n=240
-          idx = pd.date_range(end=dt.datetime.utcnow(), periods=n, freq='B')
-          base = np.linspace(100,110,n) + np.sin(np.linspace(0,8,n))*2
-          df = pd.DataFrame({'open':base+0.1,'high':base+0.6,'low':base-0.6,'close':base}, index=idx)
-          class FakePolygon:
-              def daily_ohlc(self, ticker, days=120): return df
-              def last_trade_price(self, ticker): return float(df['close'].iloc[-1])
-          S.PolygonClient = FakePolygon
-          for strat in ['Global','M7','W7','AlphaPulse','Octopus']:
-              res = S.analyze_asset('AAPL','Краткосрочный', strat)
-              assert 'recommendation' in res and 'levels' in res, strat
-          print("SMOKE OK")
-          PY
-      - name: Detect tests
-        id: detect
-        shell: bash
-        run: |
-          if git ls-files 'tests/**/*.py' | grep -q .; then
-            echo "HAS_TESTS=true" >> "$GITHUB_ENV"
-          else
-            echo "HAS_TESTS=false" >> "$GITHUB_ENV"
-          fi
-      - name: Install deps
-        if: env.HAS_TESTS == 'true'
-        run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install pytest
-      - name: Run tests
-        if: env.HAS_TESTS == 'true'
+          python -m pip install -U pip
+          pip install -r requirements.txt
+      - name: Test
         run: pytest -q
-      - name: Skip note
-        if: env.HAS_TESTS != 'true'
-        run: echo "No tests found, skipping"
+
