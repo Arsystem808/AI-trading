@@ -1,60 +1,77 @@
-import os
-import requests
-import pandas as pd
-import datetime as dt
+# core/polygon_client.py
+import hashlib
+import json
+import random
+import time
+from pathlib import Path
+from typing import Any, Dict, Optional
 
-API = "https://api.polygon.io"
+import pandas as pd
+import requests
+
 
 class PolygonClient:
-    def __init__(self, api_key: str | None = None):
-        self.key = api_key or os.getenv("POLYGON_API_KEY")
-        if not self.key:
-            raise RuntimeError("POLYGON_API_KEY не задан. Добавьте его в .env")
+    def __init__(self, api_key: str, cache_ttl_sec: int = 3600):
+        self.api_key = api_key
+        self.cache_ttl = cache_ttl_sec
+        self.cache_dir = Path(".cache/polygon")
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def _get(self, url: str, params: dict | None = None) -> dict:
-        params = params or {}
-        params.setdefault("apiKey", self.key)
-        r = requests.get(url, params=params, timeout=30)
-        r.raise_for_status()
-        return r.json()
+    def _get(
+        self,
+        url: str,
+        params: Optional[Dict[str, Any]] = None,
+        max_retries: int = 5,
+        backoff_base: float = 0.8,
+    ) -> Dict[str, Any]:
+        params = {**(params or {}), "apiKey": self.api_key}
+        last_err = None
+        for attempt in range(max_retries):
+            r = requests.get(url, params=params, timeout=20)
+            # Троттлим 429/5xx
+            if r.status_code in (429, 500, 502, 503, 504):
+                sleep = (backoff_base * (2**attempt)) + random.uniform(0, 0.3)
+                time.sleep(sleep)
+                last_err = requests.HTTPError(f"{r.status_code} {r.reason}: {r.url}")
+                continue
+            r.raise_for_status()
+            return r.json()
+        raise last_err or requests.HTTPError(
+            f"Request failed after {max_retries} retries"
+        )  # noqa
 
-    def last_trade_price(self, ticker: str) -> float:
-        t = ticker.upper()
-        # 1) last trade
+    def daily_ohlc(self, ticker: str, days: int = 120) -> pd.DataFrame:
+        # Ключ кэша
+        key = hashlib.md5(f"daily_ohlc:{ticker}:{days}".encode()).hexdigest()
+        path = self.cache_dir / f"{key}.json"
+        # Если свежий кэш — отдаем
+        if path.exists() and (time.time() - path.stat().st_mtime) < self.cache_ttl:
+            try:
+                return pd.read_json(path, orient="records")
+            except Exception:
+                path.unlink(missing_ok=True)
+        # Иначе грузим из API
+        end = pd.Timestamp.utcnow().normalize()
+        start = (end - pd.Timedelta(days=days * 2)).normalize()
+        url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{start.date()}/{end.date()}"
+        js = self._get(url, params={"adjusted": "true", "sort": "asc", "limit": 50000})
+        rows = js.get("results") or []
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            # Приводим к ожидаемым колонкам
+            rename = {
+                "o": "open",
+                "h": "high",
+                "l": "low",
+                "c": "close",
+                "v": "volume",
+                "t": "timestamp",
+            }
+            df = df.rename(columns=rename)
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+        # Пишем кэш
         try:
-            js = self._get(f"{API}/v2/last/trade/{t}")
-            if "results" in js and js["results"]:
-                return float(js["results"]["p"])
-            if "last" in js and js["last"]:
-                return float(js["last"]["price"])
+            df.to_json(path, orient="records")
         except Exception:
             pass
-        # 2) fallback: prev daily close
-        js = self._get(f"{API}/v2/aggs/ticker/{t}/prev", params={"adjusted": "true"})
-        if "results" in js and js["results"]:
-            return float(js["results"][0]["c"])
-        raise ValueError("Не удалось получить последнюю цену у Polygon")
-
-    def daily_ohlc(self, ticker: str, days: int = 365) -> pd.DataFrame:
-        """Дневные свечи за период. Правильный путь: /v2/aggs/ticker/{t}/range/1/day/{from}/{to}"""
-        t = ticker.upper()
-        to_ = dt.date.today()
-        frm_ = to_ - dt.timedelta(days=days * 2)  # запас на нерабочие дни
-        url = f"{API}/v2/aggs/ticker/{t}/range/1/day/{frm_.isoformat()}/{to_.isoformat()}"
-
-        js = self._get(url, params={"adjusted": "true", "sort": "asc", "limit": 50000})
-        if "results" not in js or not js["results"]:
-            raise ValueError("Пустые агрегаты Polygon (daily_ohlc)")
-
-        rows = []
-        for it in js["results"][-days:]:
-            rows.append({
-                "date": pd.to_datetime(it["t"], unit="ms"),
-                "open": float(it["o"]),
-                "high": float(it["h"]),
-                "low": float(it["l"]),
-                "close": float(it["c"]),
-                "volume": float(it.get("v", 0)),
-            })
-        df = pd.DataFrame(rows).set_index("date")
         return df

@@ -1,0 +1,15 @@
+import time, random, requests
+
+def _get(self, url, params=None, max_retries=5, backoff_base=0.8):
+    params = {**(params or {}), "apiKey": self.api_key}
+    last = None
+    for i in range(max_retries):
+        r = requests.get(url, params=params, timeout=20)
+        if r.status_code in (429, 500, 502, 503, 504):
+            sleep = (backoff_base * (2 ** i)) + random.uniform(0, 0.3)
+            time.sleep(sleep)
+            last = requests.HTTPError(f"{r.status_code} {r.reason}: {r.url}")
+            continue
+        r.raise_for_status()
+        return r.json()
+    raise last or requests.HTTPError(f"Request failed after {max_retries} retries")

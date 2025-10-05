@@ -1,14 +1,2 @@
-# AI Trading — сигналы с Rules + AI Override
-
-Инструмент для быстрого анализа тикеров и криптоактивов: комбинирует базовые торговые правила и вероятностную оценку модели (AI override), показывает уровни входа/выхода и прозрачную уверенность сигнала.
-
-## Что внутри
-
-- Единая шкала уверенности: база правил 44% + AI override из модели (калиброванная `predict_proba`).  
-- Понятный breakdown в UI: вклад правил, вклад ИИ, общий процент.  
-- Уровни: Entry, Stop Loss, TP1–TP3, рассчитанные с учётом волатильности.  
-- Смоук‑тест без UI и единый загрузчик весов (`joblib/pkl`).
-
-## Быстрый старт
-
-1) Клонировать репозиторий  
+[![CI](https://github.com/Arsystem808/AI-trading/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Arsystem808/AI-trading/actions/workflows/ci.yml)
+Add CI status badge,

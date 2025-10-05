@@ -1,7 +1,18 @@
-cat > .gitignore <<'IGN'
+# venv and caches
+.venv/
 __pycache__/
 *.pyc
-models/*.pkl
-models/*.joblib
-data/cache/*
-IGN
+.pytest_cache/
+
+# models and data artifacts
+models/
+data/
+*.pkl
+*.joblib
+*.parquet
+*.csv
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/

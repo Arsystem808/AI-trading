@@ -1,8 +1,13 @@
-from fastapi import FastAPI, Query
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
-import subprocess, sys, json, os
+
+from fastapi import FastAPI, Query
 
 app = FastAPI()
+
 
 @app.get("/signal")
 def signal(ticker: str = Query(..., min_length=1)):
@@ -11,11 +16,14 @@ def signal(ticker: str = Query(..., min_length=1)):
     env["PYTHONPATH"] = str(Path.cwd())
     proc = subprocess.run(
         [sys.executable, "scripts/signal_with_confidence.py", ticker],
-        env=env, capture_output=True, text=True
+        env=env,
+        capture_output=True,
+        text=True,
     )
     if proc.returncode != 0:
         return {"error": proc.stderr.strip(), "ticker": ticker}
     return json.loads(proc.stdout)
+
 
 from fastapi.middleware.cors import CORSMiddleware
 
