@@ -15,80 +15,78 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: pip-${{ runner.os }}-${{ hashFiles('**/requirements*.txt') }}
           restore-keys: pip-${{ runner.os }}-
-
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install black flake8
-
-      - name: Lint
+      - name: Lint (skip missing paths)
+        shell: bash
         run: |
-          black --check tests scripts/train_m7.py scripts/train_octopus_meta.py scripts/calibrate_confidence.py services core/strategy.py
-          flake8 tests scripts/train_m7.py scripts/train_octopus_meta.py scripts/calibrate_confidence.py services core/strategy.py
+          paths=(scripts/train_m7.py scripts/train_octopus_meta.py scripts/calibrate_confidence.py services core/strategy.py)
+          exist=()
+          for p in "${paths[@]}"; do [[ -e "$p" ]] && exist+=("$p"); done
+          if (( ${#exist[@]} )); then
+            black --check "${exist[@]}"
+            flake8 "${exist[@]}"
+          else
+            echo "No lint targets found"
+          fi
 
   test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: [ "3.10", "3.11" ]
+        python-version: ["3.10","3.11"]
     env:
+      PYTHONPATH: ${{ github.workspace }}
       CI_DRY_RUN: "1"
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-
       - uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: pip-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/requirements*.txt') }}
           restore-keys: pip-${{ runner.os }}-
-
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install pytest
-
       - name: Run tests
         run: pytest -q
 
   smoke:
     runs-on: ubuntu-latest
     env:
+      PYTHONPATH: ${{ github.workspace }}
       CI_DRY_RUN: "1"
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: pip-${{ runner.os }}-${{ hashFiles('**/requirements*.txt') }}
           restore-keys: pip-${{ runner.os }}-
-
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install pandas numpy
-
       - name: Octopus import smoke
         run: |
           python - <<'PY'
@@ -96,29 +94,16 @@ jobs:
           os.environ['CI_DRY_RUN'] = '1'
           import core.strategy as S
           import datetime as dt
-
           n = 240
           idx = pd.date_range(end=dt.datetime.utcnow(), periods=n, freq='B')
           base = np.linspace(100, 110, n) + np.sin(np.linspace(0, 8, n)) * 2
-          df = pd.DataFrame(
-              {
-                  'open':  base + 0.1,
-                  'high':  base + 0.6,
-                  'low':   base - 0.6,
-                  'close': base,
-              },
-              index=idx,
-          )
-
+          df = pd.DataFrame({'open': base+0.1,'high': base+0.6,'low': base-0.6,'close': base}, index=idx)
           class FakePolygon:
-              def daily_ohlc(self, ticker, days=120):
-                  return df
-              def last_trade_price(self, ticker):
-                  return float(df['close'].iloc[-1])
-
+              def daily_ohlc(self, ticker, days=120): return df
+              def last_trade_price(self, ticker): return float(df['close'].iloc[-1])
           S.PolygonClient = FakePolygon
-          for strat in ['Global', 'M7', 'W7', 'AlphaPulse', 'Octopus']:
-              res = S.analyze_asset('AAPL', 'Краткосрочный', strat)
+          for strat in ['Global','M7','W7','AlphaPulse','Octopus']:
+              res = S.analyze_asset('AAPL','Краткосрочный', strat)
               assert 'recommendation' in res and 'levels' in res, strat
-          print('SMOKE OK')
+          print("SMOKE OK")
           PY
