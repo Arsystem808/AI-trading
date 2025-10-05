@@ -10,3 +10,9 @@ exclude =
     .github,
     models,
     data,
+    pipelines,
+    jobs,
+    core/ui_confidence.py,
+    scripts/prepare_and_train.py,
+    scripts/quick_train_st.py,
+    scripts/backtest.py

@@ -5,7 +5,7 @@ import hashlib
 import json
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict
 
 STORE = Path("snapshots_store")
 INDEX = STORE / "index.csv"
