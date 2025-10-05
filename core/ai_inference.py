@@ -13,16 +13,18 @@
 # ---------------------------------------------------------------------
 
 from __future__ import annotations
-import os
-import re
+
 import math
+import os
 import pickle
-from typing import Dict, Any, Optional, Tuple
+import re
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
 try:
     import joblib  # предпочтительно
+
     _HAVE_JOBLIB = True
 except Exception:
     _HAVE_JOBLIB = False
@@ -30,7 +32,12 @@ except Exception:
 
 # ----------- ENV / глобальные настройки -----------
 MODEL_DIR = os.getenv("ARXORA_MODEL_DIR", "models").strip() or "models"
-PSEUDO_ON = str(os.getenv("ARXORA_AI_PSEUDO", "0")).strip() not in ("0", "false", "False", "")
+PSEUDO_ON = str(os.getenv("ARXORA_AI_PSEUDO", "0")).strip() not in (
+    "0",
+    "false",
+    "False",
+    "",
+)
 # Пороги в самой стратегии; тут только возвращаем вероятность p_long.
 
 # Кеш загрузок, чтобы не тянуть модель на каждый тик
@@ -235,7 +242,9 @@ def _pseudo_score(feats: Dict[str, Any], hz: str) -> float:
 
 
 # ----------- публичная функция -----------
-def score_signal(feats: Dict[str, Any], hz: str, ticker: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def score_signal(
+    feats: Dict[str, Any], hz: str, ticker: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
     """
     feats: dict с признаками (любые из:
         pos, slope_norm, atr_d_over_price, vol_ratio,
@@ -265,7 +274,11 @@ def score_signal(feats: Dict[str, Any], hz: str, ticker: Optional[str] = None) -
                 # если модель не умеет proba — fallback к псевдо
                 if PSEUDO_ON:
                     p_long = _pseudo_score(feats, hz)
-                    return {"p_long": float(p_long), "model_path": "pseudo_fallback", "meta": {"reason": "no_proba"}}
+                    return {
+                        "p_long": float(p_long),
+                        "model_path": "pseudo_fallback",
+                        "meta": {"reason": "no_proba"},
+                    }
                 return None
             # лёгкое ограничение, чтобы не было 0/1
             p_long = float(max(0.01, min(0.99, p_long)))
@@ -274,12 +287,20 @@ def score_signal(feats: Dict[str, Any], hz: str, ticker: Optional[str] = None) -
             # повреждённая модель/неожиданные фичи
             if PSEUDO_ON:
                 p_long = _pseudo_score(feats, hz)
-                return {"p_long": float(p_long), "model_path": "pseudo_fallback", "meta": {"error": "model_inference_failed"}}
+                return {
+                    "p_long": float(p_long),
+                    "model_path": "pseudo_fallback",
+                    "meta": {"error": "model_inference_failed"},
+                }
             return None
 
     # Модель не найдена
     if PSEUDO_ON:
         p_long = _pseudo_score(feats, hz)
-        return {"p_long": float(p_long), "model_path": "pseudo", "meta": {"missing_model": True}}
+        return {
+            "p_long": float(p_long),
+            "model_path": "pseudo",
+            "meta": {"missing_model": True},
+        }
 
     return None

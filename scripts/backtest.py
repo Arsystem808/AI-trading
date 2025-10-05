@@ -1,3 +1,11 @@
+<<<<<<< HEAD
+import os, sys
+
+if os.getenv("CI_DRY_RUN") == "1":
+    print("CI_DRY_RUN=1 -> skip backtest heavy run")
+    sys.exit(0)
+print("backtest: implement backtest here")
+=======
 from __future__ import annotations
 
 import argparse
@@ -159,3 +167,4 @@ if __name__ == "__main__":
         cooldown_days=args.cooldown,
     )
 
+>>>>>>> origin/main

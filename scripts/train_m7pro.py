@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 # scripts/train_m7pro.py
 import argparse
-from core.strategy import M7MLModel
+
 from core.polygon_client import PolygonClient
+from core.strategy import M7MLModel
+
 
 def main():
     p = argparse.ArgumentParser()
@@ -13,8 +15,11 @@ def main():
 
     df = PolygonClient().daily_ohlc(args.ticker, days=args.days)
     m = M7MLModel()
-    info = m.train_and_save(df, n_estimators=args.n_estimators, max_depth=None, use_calibration=True)
+    info = m.train_and_save(
+        df, n_estimators=args.n_estimators, max_depth=None, use_calibration=True
+    )
     print("trained:", info)
+
 
 if __name__ == "__main__":
     main()

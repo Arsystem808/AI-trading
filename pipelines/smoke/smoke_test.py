@@ -1,10 +1,17 @@
 import argparse
 import json
+<<<<<<< HEAD
+=======
 from typing import Any, Dict
+>>>>>>> origin/main
 
 from core.strategy import analyze_asset
 
 
+<<<<<<< HEAD
+def main():
+    ap = argparse.ArgumentParser()
+=======
 def _validate_payload(payload: Dict[str, Any]) -> None:
     if not isinstance(payload, dict):
         raise ValueError("analyze_asset must return dict")
@@ -17,6 +24,7 @@ def _validate_payload(payload: Dict[str, Any]) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Run strategies over tickers")
+>>>>>>> origin/main
     ap.add_argument("--tickers", type=str, default="AAPL,MSFT,TSLA")
     ap.add_argument(
         "--strategies",
@@ -31,6 +39,16 @@ def main() -> None:
     for t in tickers:
         for s in strategies:
             out = analyze_asset(t, "Краткосрочный", s)
+<<<<<<< HEAD
+            assert (
+                "recommendation" in out and "levels" in out and "probs" in out
+            ), "Missing keys"
+            assert (
+                "action" in out["recommendation"]
+                and "confidence" in out["recommendation"]
+            ), "Bad reco"
+            print(s, t, out["recommendation"], flush=True)
+=======
             _validate_payload(out)
             print(
                 json.dumps(
@@ -39,6 +57,8 @@ def main() -> None:
                 ),
                 flush=True,
             )
+
+>>>>>>> origin/main
 
 
 if __name__ == "__main__":

@@ -1,3 +1,13 @@
+<<<<<<< HEAD
+import os
+import sys
+
+if os.getenv("CI_DRY_RUN") == "1":
+    print("CI_DRY_RUN=1 -> skip train_models heavy run")
+    sys.exit(0)
+
+print("train_models: implement training here")
+=======
 # scripts/train_models.py
 from __future__ import annotations
 
@@ -88,3 +98,4 @@ def train_one(hz_tag: str, frames: List[pd.DataFrame]) -> str:
     """
     Возвращает путь к сохранённой модели для горизонта hz_tag.
     Горизонты: ST≈5 дней, MID≈20 дней, LT≈60 дней.
+>>>>>>> origin/main

@@ -1,5 +1,44 @@
 import argparse
 import json
+<<<<<<< HEAD
+
+import numpy as np
+import pandas as pd
+from sklearn.isotonic import IsotonicRegression
+from sklearn.metrics import brier_score_loss
+
+
+# Простейшая калибровка: подбираем смещение b в сигмоиде для M7/Octopus, остальное по умолчанию
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--data", type=str, required=True)
+    ap.add_argument("--out", type=str, default="config/calibration.json")
+    args = ap.parse_args()
+
+    try:
+        base = json.load(open(args.out, "r", encoding="utf-8"))
+    except Exception:
+        base = {
+            "Global": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
+            "M7": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
+            "W7": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
+            "AlphaPulse": {
+                "conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}
+            },
+            "Octopus": {
+                "conf": {"method": "sigmoid", "params": {"a": 1.2, "b": -0.10}}
+            },
+        }
+
+    df = pd.read_parquet(args.data)
+    df = df.dropna(subset=["atr14", "vol", "slope", "y"])
+    # Накидываем суррогатную «сырую» уверенность как логит базового шанса для подбора b
+    raw = (
+        0.5
+        + 0.2 * np.tanh((df["slope"].values) * 500.0)
+        - 0.1 * np.clip(df["vol"].values - 0.3, 0, 1)
+    )
+=======
 from pathlib import Path
 from typing import Dict, Any
 
@@ -45,6 +84,7 @@ def main() -> None:
 
     # Суррогат «сырая» уверенность
     raw = 0.5 + 0.2 * np.tanh(df["slope"].values * 500.0) - 0.1 * np.clip(df["vol"].values - 0.3, 0, 1)
+>>>>>>> origin/main
     raw = np.clip(raw, 0.01, 0.99)
     y = df["y"].values.astype(int)
 
@@ -60,6 +100,7 @@ def main() -> None:
     base["M7"]["conf"]["params"]["b"] = float(b_best)
 
     save_base(base, out_path)
+
 
 
 if __name__ == "__main__":

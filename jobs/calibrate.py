@@ -3,9 +3,16 @@ from __future__ import annotations
 
 import csv
 import json
+<<<<<<< HEAD
+import math
+import os
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
+=======
 import os
 from pathlib import Path
 from typing import Any, Dict, List
+>>>>>>> origin/main
 
 import numpy as np
 
@@ -53,7 +60,11 @@ def read_rows(path: str) -> List[Dict[str, Any]]:
         return list(csv.DictReader(f))
 
 
+<<<<<<< HEAD
+def save_cal(cal: Dict[str, Any], path: str):
+=======
 def save_cal(cal: Dict[str, Any], path: str) -> None:
+>>>>>>> origin/main
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(cal, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -69,10 +80,82 @@ def load_cal(path: str) -> Dict[str, Any]:
             "AlphaPulse": {
                 "conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}
             },
+<<<<<<< HEAD
+            "Octopus": {
+                "conf": {"method": "sigmoid", "params": {"a": 1.2, "b": -0.10}}
+            },
+=======
             "Octopus": {"conf": {"method": "sigmoid", "params": {"a": 1.2, "b": -0.10}}},
+>>>>>>> origin/main
         }
     try:
         return json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return {
+<<<<<<< HEAD
+            "Global": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
+            "M7": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
+            "W7": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
+            "AlphaPulse": {
+                "conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}
+            },
+            "Octopus": {
+                "conf": {"method": "sigmoid", "params": {"a": 1.2, "b": -0.10}}
+            },
+        }
+
+
+def main():
+    rows = read_rows(PERF_PATH)
+    if not rows:
+        print("no data in", PERF_PATH)
+        return
+
+    by_agent: Dict[str, List[Dict[str, Any]]] = {}
+    for r in rows:
+        by_agent.setdefault(r.get("agent", "Unknown"), []).append(r)
+
+    cal = load_cal(CAL_PATH)
+    changed = False
+
+    # Калибруем по TP1, если есть разметка tp1_hit (1/0)
+    for agent, rr in by_agent.items():
+        y, p = [], []
+        for r in rr:
+            hit = r.get("tp1_hit", "")
+            if hit not in ("0", "1"):
+                continue
+            try:
+                y.append(float(hit))
+                p.append(float(r.get("p_tp1", 0.0)))
+            except Exception:
+                continue
+        if len(y) < 100:
+            print(f"{agent}: not enough labeled rows for TP1 calibration ({len(y)})")
+            continue
+
+        y = np.array(y, dtype=float)
+        p = np.array(p, dtype=float)
+        res = platt_grid(p, y)
+        cal.setdefault(agent, {}).setdefault(
+            "conf", {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}
+        )
+        # Применяем тот же калибратор и к confidence как мягкий общий сдвиг
+        cal[agent]["conf"]["method"] = "sigmoid"
+        cal[agent]["conf"]["params"]["a"] = float(res["a"])
+        cal[agent]["conf"]["params"]["b"] = float(res["b"])
+        changed = True
+        print(f"{agent}: a={res['a']:.2f} b={res['b']:.2f} ece={res['ece']:.3f}")
+
+    if changed:
+        save_cal(cal, CAL_PATH)
+        print("calibration saved to", CAL_PATH)
+    else:
+        print("no changes in calibration")
+
+
+if __name__ == "__main__":
+    main()
+=======
             "Global": {"conf": {"method": "sigmoid",
+>>>>>>> origin/main
