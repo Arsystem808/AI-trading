@@ -24,7 +24,9 @@ def main():
             point = None
 
     family = "global"
-    if isinstance(getattr(model, "objective_", None), str) or hasattr(model, "booster_"):
+    if isinstance(getattr(model, "objective_", None), str) or hasattr(
+        model, "booster_"
+    ):
         family = "alphapulse"  # при необходимости адаптировать
 
     ints = intervals_from_quantiles(ticker, family, x) if x is not None else None
@@ -34,7 +36,11 @@ def main():
         "ticker": ticker,
         "point": point,
         "interval": ints,
-        "confidence": (None if not ints or point is None else max(0.0, 1.0 - (ints["width"] / (abs(point) + 1e-6)))),
+        "confidence": (
+            None
+            if not ints or point is None
+            else max(0.0, 1.0 - (ints["width"] / (abs(point) + 1e-6)))
+        ),
         "shap_top": shap_top,
     }
     print(json.dumps(out, ensure_ascii=False, indent=2))

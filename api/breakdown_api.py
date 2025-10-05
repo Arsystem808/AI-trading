@@ -15,7 +15,10 @@ def signal(ticker: str = Query(..., min_length=1)):
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path.cwd())
     proc = subprocess.run(
-        [sys.executable, "scripts/signal_with_confidence.py", ticker], env=env, capture_output=True, text=True
+        [sys.executable, "scripts/signal_with_confidence.py", ticker],
+        env=env,
+        capture_output=True,
+        text=True,
     )
     if proc.returncode != 0:
         return {"error": proc.stderr.strip(), "ticker": ticker}

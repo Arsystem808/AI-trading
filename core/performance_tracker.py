@@ -36,12 +36,17 @@ def _append_row(df: Optional[pd.DataFrame], row: Dict[str, Any]) -> pd.DataFrame
 
 # -------------------- дневная доходность (совместимость со старым интерфейсом) --------------------
 def _log_daily_return(
-    agent_label: str, ticker: str, date: Union[str, datetime, pd.Timestamp], daily_return: float
+    agent_label: str,
+    ticker: str,
+    date: Union[str, datetime, pd.Timestamp],
+    daily_return: float,
 ) -> bool:
     """
     Запись/обновление дневной доходности агента по тикеру в CSV performance_data/performance_{agent}_{TICKER}.csv. [attached_file:614]
     """
-    filename = Path(PERF_DIR) / f"performance_{agent_label.lower()}_{ticker.upper()}.csv"
+    filename = (
+        Path(PERF_DIR) / f"performance_{agent_label.lower()}_{ticker.upper()}.csv"
+    )
     df = None
     if filename.exists():
         try:
@@ -63,7 +68,9 @@ def get_agent_performance(agent_label: str, ticker: str) -> Optional[pd.DataFram
     """
     История доходности за последние 90 дней с накопленной доходностью, либо None если данных нет. [attached_file:614]
     """
-    filename = Path(PERF_DIR) / f"performance_{agent_label.lower()}_{ticker.upper()}.csv"
+    filename = (
+        Path(PERF_DIR) / f"performance_{agent_label.lower()}_{ticker.upper()}.csv"
+    )
     if not filename.exists():
         return None
     try:
@@ -105,7 +112,11 @@ def _log_event_metrics(
 
     row = {
         "ts": ts,
-        "date": pd.to_datetime(ts).date().isoformat() if ts else pd.Timestamp.utcnow().date().isoformat(),
+        "date": (
+            pd.to_datetime(ts).date().isoformat()
+            if ts
+            else pd.Timestamp.utcnow().date().isoformat()
+        ),
         "ticker": ticker,
         "horizon": horizon,
         "agent": meta.get("agent", agent),
@@ -145,7 +156,10 @@ def log_agent_performance(*args, **kwargs) -> bool:
     2) Новый формат (событийные метрики): log_agent_performance(agent=..., ticker=..., horizon=..., action=..., confidence=..., levels=..., probs=..., meta=None, ts=None, out_path=None) → metrics/agent_performance.csv. [attached_file:614]
     """
     # Детект формата 2 (новые события) по ключевым аргументам
-    wants_event = any(k in kwargs for k in ("agent", "action", "levels", "probs", "horizon", "confidence"))
+    wants_event = any(
+        k in kwargs
+        for k in ("agent", "action", "levels", "probs", "horizon", "confidence")
+    )
     if wants_event:
         return _log_event_metrics(**kwargs)
 
@@ -156,7 +170,12 @@ def log_agent_performance(*args, **kwargs) -> bool:
 
     # Также поддержим старый формат через именованные параметры
     if all(k in kwargs for k in ("agent_label", "ticker", "date", "daily_return")):
-        return _log_daily_return(kwargs["agent_label"], kwargs["ticker"], kwargs["date"], kwargs["daily_return"])
+        return _log_daily_return(
+            kwargs["agent_label"],
+            kwargs["ticker"],
+            kwargs["date"],
+            kwargs["daily_return"],
+        )
 
     # Если сигнатура не распознана — ничего не делаем, чтобы не падать
     return False

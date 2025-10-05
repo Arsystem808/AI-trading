@@ -124,7 +124,8 @@ def build_features(df: pd.DataFrame, hz: str) -> pd.DataFrame:
     out["slope_norm"] = pd.Series(
         [
             (
-                _linreg_slope(price.iloc[i - trend_win + 1 : i + 1].values) / max(1e-9, price.iloc[i])
+                _linreg_slope(price.iloc[i - trend_win + 1 : i + 1].values)
+                / max(1e-9, price.iloc[i])
                 if i >= trend_win - 1
                 else 0.0
             )
@@ -142,10 +143,18 @@ def build_features(df: pd.DataFrame, hz: str) -> pd.DataFrame:
     ha = _heikin_ashi(df)
     ha_diff = ha["ha_close"].diff()
     out["ha_up_run"] = pd.Series(
-        [_streak_by_sign(ha_diff.iloc[: i + 1], positive=True) for i in range(len(ha_diff))], index=df.index
+        [
+            _streak_by_sign(ha_diff.iloc[: i + 1], positive=True)
+            for i in range(len(ha_diff))
+        ],
+        index=df.index,
     )
     out["ha_down_run"] = pd.Series(
-        [_streak_by_sign(ha_diff.iloc[: i + 1], positive=False) for i in range(len(ha_diff))], index=df.index
+        [
+            _streak_by_sign(ha_diff.iloc[: i + 1], positive=False)
+            for i in range(len(ha_diff))
+        ],
+        index=df.index,
     )
 
     ema12 = price.ewm(span=12, adjust=False).mean()
@@ -154,10 +163,12 @@ def build_features(df: pd.DataFrame, hz: str) -> pd.DataFrame:
     signal = macd.ewm(span=9, adjust=False).mean()
     hist = macd - signal
     out["macd_pos_run"] = pd.Series(
-        [_streak_by_sign(hist.iloc[: i + 1], positive=True) for i in range(len(hist))], index=df.index
+        [_streak_by_sign(hist.iloc[: i + 1], positive=True) for i in range(len(hist))],
+        index=df.index,
     )
     out["macd_neg_run"] = pd.Series(
-        [_streak_by_sign(hist.iloc[: i + 1], positive=False) for i in range(len(hist))], index=df.index
+        [_streak_by_sign(hist.iloc[: i + 1], positive=False) for i in range(len(hist))],
+        index=df.index,
     )
 
     # pivots & band
@@ -175,7 +186,9 @@ def build_features(df: pd.DataFrame, hz: str) -> pd.DataFrame:
         H, L, C = hlc
         piv = _fib_pivots(H, L, C)
         pr = float(df["close"].iloc[i])
-        buf = buf_mult * float(atr_last.iloc[i] if not np.isnan(atr_last.iloc[i]) else 0.0)
+        buf = buf_mult * float(
+            atr_last.iloc[i] if not np.isnan(atr_last.iloc[i]) else 0.0
+        )
         bands.append(_classify_band(pr, piv, buf))
     out["band"] = pd.Series(bands, index=df.index)
 

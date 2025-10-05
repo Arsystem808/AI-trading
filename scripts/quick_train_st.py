@@ -30,7 +30,9 @@ from core.strategy import (
 # ==============================
 # Конфиги «по умолчанию»
 # ==============================
-TICKERS = os.getenv("ARXORA_TRAIN_TICKERS", "AAPL,MSFT,TSLA,NVDA,SPY,QQQ,X:BTCUSD,X:ETHUSD").split(",")
+TICKERS = os.getenv(
+    "ARXORA_TRAIN_TICKERS", "AAPL,MSFT,TSLA,NVDA,SPY,QQQ,X:BTCUSD,X:ETHUSD"
+).split(",")
 MONTHS = int(os.getenv("ARXORA_TRAIN_MONTHS", "12"))
 HORIZON = "Краткосрок (1–5 дней)"  # учим ST
 MODEL_DIR = os.getenv("ARXORA_MODEL_DIR", "models")
@@ -39,7 +41,16 @@ OUT_PATH = os.path.join(MODEL_DIR, "arxora_lgbm_ST.joblib")
 FILL_WINDOW = 3  # дней на касание entry
 HOLD_DAYS = 5  # окно удержания для ST
 MIN_ROWS_TO_TRAIN = 800  # нижняя граница на объём данных (можно уменьшить)
-FEATS = ["pos", "slope_norm", "atr_d_over_price", "vol_ratio", "streak", "band", "long_upper", "long_lower"]
+FEATS = [
+    "pos",
+    "slope_norm",
+    "atr_d_over_price",
+    "vol_ratio",
+    "streak",
+    "band",
+    "long_upper",
+    "long_lower",
+]
 
 
 def compute_levels_asof(df_asof: pd.DataFrame, horizon: str):
@@ -75,7 +86,9 @@ def compute_levels_asof(df_asof: pd.DataFrame, horizon: str):
     return entry, sl, tp1
 
 
-def label_tp_before_sl(df: pd.DataFrame, start_ix: int, entry: float, sl: float, tp1: float, hold_days: int) -> int:
+def label_tp_before_sl(
+    df: pd.DataFrame, start_ix: int, entry: float, sl: float, tp1: float, hold_days: int
+) -> int:
     """Возвращает 1, если TP1 достигнут раньше SL в ближайшие hold_days после start_ix (включая его), иначе 0."""
     lo = df["low"].values
     hi = df["high"].values
@@ -117,7 +130,9 @@ def build_dataset(tickers, horizon=HORIZON, months=MONTHS) -> pd.DataFrame:
                 atr_d = float(_atr_like(df_asof, n=cfg["atr"]).iloc[-1])
                 atr2 = float(_atr_like(df_asof, n=cfg["atr"] * 2).iloc[-1])
                 vol_ratio = atr_d / max(1e-9, atr2)
-                slope = _linreg_slope(df_asof["close"].tail(cfg["trend"]).values) / max(1e-9, price)
+                slope = _linreg_slope(df_asof["close"].tail(cfg["trend"]).values) / max(
+                    1e-9, price
+                )
                 streak = _streak(df_asof["close"])
 
                 hlc = _last_period_hlc(df_asof, cfg["pivot_period"])
@@ -128,7 +143,12 @@ def build_dataset(tickers, horizon=HORIZON, months=MONTHS) -> pd.DataFrame:
                         float(df_asof["close"].iloc[-1]),
                     )
                 piv = _fib_pivots(*hlc)
-                band = _classify_band(price, piv, 0.25 * (_weekly_atr(df_asof) if cfg.get("use_weekly_atr") else atr_d))
+                band = _classify_band(
+                    price,
+                    piv,
+                    0.25
+                    * (_weekly_atr(df_asof) if cfg.get("use_weekly_atr") else atr_d),
+                )
 
                 # свечные «тени»
                 lw_row = df_asof.iloc[-1]
@@ -184,7 +204,9 @@ def train_and_save(df: pd.DataFrame, out_path: str):
 
     X = df[FEATS].astype(float)
     y = df["y"].astype(int)
-    Xtr, Xva, ytr, yva = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    Xtr, Xva, ytr, yva = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
 
     # пытаемся LightGBM, иначе — LogisticRegression
     clf = None
@@ -192,7 +214,12 @@ def train_and_save(df: pd.DataFrame, out_path: str):
         from lightgbm import LGBMClassifier
 
         clf = LGBMClassifier(
-            n_estimators=400, learning_rate=0.05, num_leaves=63, subsample=0.8, colsample_bytree=0.8, random_state=42
+            n_estimators=400,
+            learning_rate=0.05,
+            num_leaves=63,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            random_state=42,
         )
         clf.fit(Xtr, ytr)
         model_name = "LightGBM"
@@ -212,7 +239,9 @@ def train_and_save(df: pd.DataFrame, out_path: str):
         auc = roc_auc_score(yva, proba) if len(np.unique(proba)) > 1 else float("nan")
 
     acc = accuracy_score(yva, (proba >= 0.5).astype(int))
-    print(f"[{model_name}] val AUC={auc:.3f} · ACC(0.5)={acc:.3f} · rows={len(df)} · pos_rate={df['y'].mean():.3f}")
+    print(
+        f"[{model_name}] val AUC={auc:.3f} · ACC(0.5)={acc:.3f} · rows={len(df)} · pos_rate={df['y'].mean():.3f}"
+    )
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     joblib.dump(clf, out_path)
@@ -227,10 +256,14 @@ if __name__ == "__main__":
         sys.exit(1)
 
     df = build_dataset(TICKERS, horizon=HORIZON, months=MONTHS)
-    print("Dataset shape:", df.shape, "| pos_rate:", df["y"].mean() if len(df) else "n/a")
+    print(
+        "Dataset shape:", df.shape, "| pos_rate:", df["y"].mean() if len(df) else "n/a"
+    )
 
     if len(df) == 0:
-        print("Нет данных для обучения. Проверь TICKERS / API ключ / доступность истории.")
+        print(
+            "Нет данных для обучения. Проверь TICKERS / API ключ / доступность истории."
+        )
         sys.exit(1)
 
     train_and_save(df, OUT_PATH)

@@ -12,8 +12,13 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     close = df["close"].astype(float)
     atr14 = (df["high"] - df["low"]).rolling(14, min_periods=1).mean()
     vol = close.pct_change().rolling(30, min_periods=1).std() * np.sqrt(252)
-    slope = close.rolling(20).apply(lambda x: np.polyfit(np.arange(len(x)), x, 1)[0], raw=False)
-    feats = pd.DataFrame({"atr14": atr14, "vol": vol, "slope": slope / close.clip(lower=1e-9)}, index=df.index)
+    slope = close.rolling(20).apply(
+        lambda x: np.polyfit(np.arange(len(x)), x, 1)[0], raw=False
+    )
+    feats = pd.DataFrame(
+        {"atr14": atr14, "vol": vol, "slope": slope / close.clip(lower=1e-9)},
+        index=df.index,
+    )
     return feats
 
 

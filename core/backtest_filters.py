@@ -47,7 +47,9 @@ def _score(sig: Dict[str, Any]) -> Tuple[float, float, float]:
 
 def _ts(sig: Dict[str, Any]) -> dt.datetime:
     t = sig["ts"]
-    return t if not isinstance(t, str) else dt.datetime.fromisoformat(t.replace("Z", ""))
+    return (
+        t if not isinstance(t, str) else dt.datetime.fromisoformat(t.replace("Z", ""))
+    )
 
 
 def _same_side(a, b) -> bool:

@@ -59,10 +59,20 @@ class M7MLModel:
         recent_data = df.tail(100).copy()
 
         # Целевая переменная: будет ли цена через 5 дней выше текущей
-        recent_data["target"] = (recent_data["close"].shift(-5) > recent_data["close"]).astype(int)
+        recent_data["target"] = (
+            recent_data["close"].shift(-5) > recent_data["close"]
+        ).astype(int)
 
         # Признаки
-        feature_columns = ["returns", "volatility", "momentum", "sma_20", "sma_50", "rsi", "volume_ratio"]
+        feature_columns = [
+            "returns",
+            "volatility",
+            "momentum",
+            "sma_20",
+            "sma_50",
+            "rsi",
+            "volume_ratio",
+        ]
 
         # Добавляем признаки уровней
         for level_name in pivots.keys():
@@ -108,7 +118,9 @@ class M7MLModel:
             return False
 
         # Разделение на обучающую и тестовую выборки
-        X_train, X_test, y_train, y_test = train_test_split(features, target, test_size=0.2, random_state=42)
+        X_train, X_test, y_train, y_test = train_test_split(
+            features, target, test_size=0.2, random_state=42
+        )
 
         # Масштабирование признаков
         X_train_scaled = self.scaler.fit_transform(X_train)
@@ -124,7 +136,9 @@ class M7MLModel:
         train_score = self.model.score(X_train_scaled, y_train)
         test_score = self.model.score(X_test_scaled, y_test)
 
-        print(f"Model trained. Train score: {train_score:.3f}, Test score: {test_score:.3f}")
+        print(
+            f"Model trained. Train score: {train_score:.3f}, Test score: {test_score:.3f}"
+        )
         return True
 
     def predict_signal(self, df, ticker):
@@ -149,6 +163,8 @@ class M7MLModel:
 
         return {
             "p_long": float(p_long),
-            "confidence": float(min(0.95, max(0.5, p_long * 0.8 + 0.1))),  # Нормализуем уверенность
+            "confidence": float(
+                min(0.95, max(0.5, p_long * 0.8 + 0.1))
+            ),  # Нормализуем уверенность
             "features": latest_features.to_dict("records")[0],
         }

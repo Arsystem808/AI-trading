@@ -15,7 +15,9 @@ def main():
 
     df = PolygonClient().daily_ohlc(args.ticker, days=args.days)
     m = M7MLModel()
-    info = m.train_and_save(df, n_estimators=args.n_estimators, max_depth=None, use_calibration=True)
+    info = m.train_and_save(
+        df, n_estimators=args.n_estimators, max_depth=None, use_calibration=True
+    )
     print("trained:", info)
 
 

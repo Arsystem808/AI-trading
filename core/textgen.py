@@ -80,5 +80,7 @@ def build_narrative(symbol: str, horizon_name: str, rec: Dict[str, Any]) -> str:
     if rec.get("commentary"):
         lines.append("**Комментарий:** " + rec["commentary"])
     lines.append("")
-    lines.append("_Это не инвестиционная рекомендация. Решения вы принимаете самостоятельно._")
+    lines.append(
+        "_Это не инвестиционная рекомендация. Решения вы принимаете самостоятельно._"
+    )
     return "\n".join(lines)

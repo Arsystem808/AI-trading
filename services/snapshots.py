@@ -51,7 +51,15 @@ def save_snapshot(payload: Dict[str, Any]) -> str:
     if not INDEX.exists():
         with open(INDEX, "w", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow(
-                ["snapshot_id", "generated_at", "ticker", "horizon", "model", "model_version", "weights_hash"]
+                [
+                    "snapshot_id",
+                    "generated_at",
+                    "ticker",
+                    "horizon",
+                    "model",
+                    "model_version",
+                    "weights_hash",
+                ]
             )
     with open(INDEX, "a", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
@@ -94,7 +102,11 @@ def compare_snapshots(a_id: str, b_id: str) -> Dict[str, Any]:
 
     delta = {
         "action": {"a": safe_act(a), "b": safe_act(b)},
-        "confidence": {"a": safe_conf(a), "b": safe_conf(b), "diff": safe_conf(b) - safe_conf(a)},
+        "confidence": {
+            "a": safe_conf(a),
+            "b": safe_conf(b),
+            "diff": safe_conf(b) - safe_conf(a),
+        },
         "levels": {"a": lv(a), "b": lv(b)},
         "meta": {"a": a["meta"], "b": b["meta"]},
     }

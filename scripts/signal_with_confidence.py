@@ -74,7 +74,10 @@ def main():
         "ticker": ticker,
         "signal": signal,
         "overall_confidence_pct": round(overall, 1),
-        "breakdown": {"rules_pct": round(rule_pct, 1), "ai_override_delta_pct": round(ai_delta, 1)},
+        "breakdown": {
+            "rules_pct": round(rule_pct, 1),
+            "ai_override_delta_pct": round(ai_delta, 1),
+        },
         "point": point,
         "interval": intervals,
         "shap_top": shap_top,

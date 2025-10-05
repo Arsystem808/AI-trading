@@ -39,7 +39,11 @@ except Exception:
     pass
 
 # ===== Page / Branding =====
-st.set_page_config(page_title="Arxora — трейд‑ИИ (MVP)", page_icon="assets/arxora_favicon_512.png", layout="centered")
+st.set_page_config(
+    page_title="Arxora — трейд‑ИИ (MVP)",
+    page_icon="assets/arxora_favicon_512.png",
+    layout="centered",
+)
 
 
 def render_arxora_header():
@@ -120,9 +124,17 @@ def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
     if abs(entry - last_price) <= eps * max(1.0, abs(last_price)):
         return "Market price", "Entry (Market)"
     if action == "BUY":
-        return ("Buy Stop", "Entry (Buy Stop)") if entry > last_price else ("Buy Limit", "Entry (Buy Limit)")
+        return (
+            ("Buy Stop", "Entry (Buy Stop)")
+            if entry > last_price
+            else ("Buy Limit", "Entry (Buy Limit)")
+        )
     else:
-        return ("Sell Stop", "Entry (Sell Stop)") if entry < last_price else ("Sell Limit", "Entry (Sell Limit)")
+        return (
+            ("Sell Stop", "Entry (Sell Stop)")
+            if entry < last_price
+            else ("Sell Limit", "Entry (Sell Limit)")
+        )
 
 
 def normalize_for_polygon(symbol: str) -> str:
@@ -147,7 +159,9 @@ def rr_line(levels: Dict[str, float]) -> str:
     return f"RR ≈ 1:{rr1:.1f} (TP1) · 1:{rr2:.1f} (TP2) · 1:{rr3:.1f} (TP3)"
 
 
-def card_html(title: str, value: str, sub: Optional[str] = None, color: Optional[str] = None) -> str:
+def card_html(
+    title: str, value: str, sub: Optional[str] = None, color: Optional[str] = None
+) -> str:
     bg = "#141a20"
     if color == "green":
         bg = "#006f6f"
@@ -193,7 +207,9 @@ def get_available_models() -> List[str]:
         return ["Octopus"]
     reg = getattr(mod, "STRATEGY_REGISTRY", {}) or {}
     keys = list(reg.keys())
-    return (["Octopus"] if "Octopus" in keys else []) + [k for k in sorted(keys) if k != "Octopus"]
+    return (["Octopus"] if "Octopus" in keys else []) + [
+        k for k in sorted(keys) if k != "Octopus"
+    ]
 
 
 def run_model_by_name(ticker_norm: str, model_name: str) -> Dict[str, Any]:
@@ -239,10 +255,14 @@ def render_confidence_breakdown_inline(ticker: str, conf_pct: float):
         _get_conf_from_session()
         if _get_conf_from_session
         else {
-            "overall_confidence_pct": float(st.session_state.get("last_overall_conf_pct", conf_pct or 0.0)),
+            "overall_confidence_pct": float(
+                st.session_state.get("last_overall_conf_pct", conf_pct or 0.0)
+            ),
             "breakdown": {
                 "rules_pct": float(st.session_state.get("last_rules_pct", 44.0)),
-                "ai_override_delta_pct": float(st.session_state.get("last_overall_conf_pct", conf_pct or 0.0))
+                "ai_override_delta_pct": float(
+                    st.session_state.get("last_overall_conf_pct", conf_pct or 0.0)
+                )
                 - float(st.session_state.get("last_rules_pct", 44.0)),
             },
             "shap_top": [],
@@ -272,7 +292,9 @@ def _aggregate_performance_to_csv():
     frames = []
     for p in DATA_DIR.glob("performance_*_*.csv"):
         try:
-            df = pd.read_csv(p, sep=None, engine="python", on_bad_lines="skip")  # авто‑разделитель, пропуск битых строк
+            df = pd.read_csv(
+                p, sep=None, engine="python", on_bad_lines="skip"
+            )  # авто‑разделитель, пропуск битых строк
         except Exception:
             continue
         m = re.match(r"^performance_(.+)_(.+)\.csv$", p.name)
@@ -295,7 +317,14 @@ def _ensure_summary_up_to_date():
         if os.getenv("ARXORA_AUTO_RUN_BENCHMARK", "0") == "1":
             agents = ["W7", "M7", "Global", "AlphaPulse", "Octopus"]
             tickers = ["SPY", "QQQ"]
-            cmd = ["python3", "jobs/daily_benchmarks.py", "--agents", *agents, "--tickers", *tickers]
+            cmd = [
+                "python3",
+                "jobs/daily_benchmarks.py",
+                "--agents",
+                *agents,
+                "--tickers",
+                *tickers,
+            ]
             try:
                 subprocess.run(cmd, check=False, capture_output=True)
             except Exception:
@@ -316,9 +345,14 @@ st.subheader("AI agents")
 models = get_available_models()
 if not models:
     models = ["Octopus"]
-model = st.radio("Выберите модель", options=models, index=0, horizontal=False, key="agent_radio")
+model = st.radio(
+    "Выберите модель", options=models, index=0, horizontal=False, key="agent_radio"
+)
 
-ticker_input = st.text_input("Тикер", placeholder="Примеры ввода: AAPL • SPY • BTCUSD • C:EURUSD • O:SPY240920C500")
+ticker_input = st.text_input(
+    "Тикер",
+    placeholder="Примеры ввода: AAPL • SPY • BTCUSD • C:EURUSD • O:SPY240920C500",
+)
 ticker = ticker_input.strip().upper()
 symbol_for_engine = normalize_for_polygon(ticker)
 
@@ -331,7 +365,10 @@ if run and ticker:
 
         rec = out.get("recommendation")
         if not rec and ("action" in out or "confidence" in out):
-            rec = {"action": out.get("action", "WAIT"), "confidence": float(out.get("confidence", 0.0))}
+            rec = {
+                "action": out.get("action", "WAIT"),
+                "confidence": float(out.get("confidence", 0.0)),
+            }
         if not rec:
             rec = {"action": "WAIT", "confidence": 0.0}
 
@@ -346,13 +383,18 @@ if run and ticker:
             unsafe_allow_html=True,
         )
 
-        lv = {k: float(out.get("levels", {}).get(k, 0.0)) for k in ("entry", "sl", "tp1", "tp2", "tp3")}
+        lv = {
+            k: float(out.get("levels", {}).get(k, 0.0))
+            for k in ("entry", "sl", "tp1", "tp2", "tp3")
+        }
         if action in ("BUY", "SHORT"):
             tp1, tp2, tp3 = lv["tp1"], lv["tp2"], lv["tp3"]
             t1, t2, t3 = sanitize_targets(action, lv["entry"], tp1, tp2, tp3)
             lv["tp1"], lv["tp2"], lv["tp3"] = float(t1), float(t2), float(t3)
 
-        mode_text, entry_title = entry_mode_labels(action, lv.get("entry", last_price), last_price, ENTRY_MARKET_EPS)
+        mode_text, entry_title = entry_mode_labels(
+            action, lv.get("entry", last_price), last_price, ENTRY_MARKET_EPS
+        )
         header_text = "WAIT"
         if action == "BUY":
             header_text = f"Long • {mode_text}"
@@ -383,9 +425,15 @@ if run and ticker:
         if action in ("BUY", "SHORT"):
             c1, c2, c3 = st.columns(3)
             with c1:
-                st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
+                st.markdown(
+                    card_html(entry_title, f"{lv['entry']:.2f}", color="green"),
+                    unsafe_allow_html=True,
+                )
             with c2:
-                st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
+                st.markdown(
+                    card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"),
+                    unsafe_allow_html=True,
+                )
             with c3:
                 st.markdown(
                     card_html(
@@ -417,7 +465,8 @@ if run and ticker:
             rr = rr_line(lv)
             if rr:
                 st.markdown(
-                    f"<div style='margin-top:6px; color:#FFA94D; font-weight:600;'>{rr}</div>", unsafe_allow_html=True
+                    f"<div style='margin-top:6px; color:#FFA94D; font-weight:600;'>{rr}</div>",
+                    unsafe_allow_html=True,
                 )
 
         # Custom phrases (ваши тексты)
@@ -434,17 +483,30 @@ if run and ticker:
             "STOPLINE": ["Стоп‑лосс: {sl}. Потенциальный риск ~{risk_pct}% от входа."],
             "DISCLAIMER": "AI‑анализ носит информационный характер, не является инвестрекомендацией; рынок меняется быстро, прошлые результаты не гарантируют будущие.",
         }
-        ctx_key = "support" if action == "BUY" else ("resistance" if action == "SHORT" else "neutral")
-        st.markdown(f"<div style='opacity:0.9'>{CUSTOM_PHRASES['CONTEXT'][ctx_key][0]}</div>", unsafe_allow_html=True)
+        ctx_key = (
+            "support"
+            if action == "BUY"
+            else ("resistance" if action == "SHORT" else "neutral")
+        )
+        st.markdown(
+            f"<div style='opacity:0.9'>{CUSTOM_PHRASES['CONTEXT'][ctx_key][0]}</div>",
+            unsafe_allow_html=True,
+        )
         if action in ("BUY", "SHORT"):
             stopline = CUSTOM_PHRASES["STOPLINE"][0].format(
-                sl=_fmt(lv["sl"]), risk_pct=f"{abs(lv['entry']-lv['sl'])/max(1e-9,abs(lv['entry']))*100.0:.1f}"
+                sl=_fmt(lv["sl"]),
+                risk_pct=f"{abs(lv['entry']-lv['sl'])/max(1e-9,abs(lv['entry']))*100.0:.1f}",
             )
-            st.markdown(f"<div style='opacity:0.9; margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div style='opacity:0.9; margin-top:4px'>{stopline}</div>",
+                unsafe_allow_html=True,
+            )
         st.caption(CUSTOM_PHRASES["DISCLAIMER"])
 
         # ====== Performance chart (3 месяца) из единой сводки с кэшем до EOD ======
-        st.subheader(f"Эффективность модели {model} по ключевым инструментам (3 месяца)")
+        st.subheader(
+            f"Эффективность модели {model} по ключевым инструментам (3 месяца)"
+        )
         try:
             df_all = load_summary_df()
         except Exception:
@@ -456,14 +518,17 @@ if run and ticker:
                 st.markdown(f"**{tk}**")
                 try:
                     d = df_all[
-                        (df_all["agent"].str.lower() == model.lower()) & (df_all["ticker"].str.upper() == tk)
+                        (df_all["agent"].str.lower() == model.lower())
+                        & (df_all["ticker"].str.upper() == tk)
                     ].copy()
                     if not d.empty:
                         d["date"] = pd.to_datetime(d["date"], errors="coerce", utc=True)
                         d = d.sort_values("date")
                         cutoff = datetime.now(timezone.utc) - timedelta(days=90)
                         d = d[d["date"] >= cutoff]
-                        d["cumulative_return"] = (1.0 + d["daily_return"].astype(float)).cumprod() - 1.0
+                        d["cumulative_return"] = (
+                            1.0 + d["daily_return"].astype(float)
+                        ).cumprod() - 1.0
                         st.line_chart(d.set_index("date")["cumulative_return"])
                     else:
                         # Fallback на старый источник, если сводки нет по тикеру
@@ -491,11 +556,15 @@ if run and ticker:
         st.exception(e)
 
 elif not ticker:
-    st.info("Введите тикер и нажмите «Проанализировать». Примеры формата показаны в поле ввода.")
+    st.info(
+        "Введите тикер и нажмите «Проанализировать». Примеры формата показаны в поле ввода."
+    )
 
 # ===== Footer / About =====
 st.markdown("---")
-st.markdown("<style>.stButton > button { font-weight: 600; }</style>", unsafe_allow_html=True)
+st.markdown(
+    "<style>.stButton > button { font-weight: 600; }</style>", unsafe_allow_html=True
+)
 
 st.markdown(
     """

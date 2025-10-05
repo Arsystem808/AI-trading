@@ -37,13 +37,19 @@ def atr_wilder(df: pd.DataFrame, length: int = 14) -> pd.Series:
     low = df["low"]
     close = df["close"]
     prev_close = close.shift(1)
-    tr = pd.concat([(high - low), (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+    tr = pd.concat(
+        [(high - low), (high - prev_close).abs(), (low - prev_close).abs()], axis=1
+    ).max(axis=1)
     return rma(tr, length)
 
 
 def heikin_ashi(df: pd.DataFrame) -> pd.DataFrame:
     # df must have columns: open, high, low, close
-    ha = pd.DataFrame(index=df.index, columns=["ha_open", "ha_high", "ha_low", "ha_close"], dtype=float)
+    ha = pd.DataFrame(
+        index=df.index,
+        columns=["ha_open", "ha_high", "ha_low", "ha_close"],
+        dtype=float,
+    )
     ha["ha_close"] = (df["open"] + df["high"] + df["low"] + df["close"]) / 4.0
     ha_open = []
     for i, (o, h, l, c) in enumerate(df[["open", "high", "low", "close"]].values):
@@ -54,8 +60,12 @@ def heikin_ashi(df: pd.DataFrame) -> pd.DataFrame:
             prev_ha_c = ha["ha_close"].iloc[i - 1]
             ha_open.append((prev_ha_o + prev_ha_c) / 2.0)
     ha["ha_open"] = ha_open
-    ha["ha_high"] = np.stack([df["high"], ha["ha_open"], ha["ha_close"]], axis=1).max(axis=1)
-    ha["ha_low"] = np.stack([df["low"], ha["ha_open"], ha["ha_close"]], axis=1).min(axis=1)
+    ha["ha_high"] = np.stack([df["high"], ha["ha_open"], ha["ha_close"]], axis=1).max(
+        axis=1
+    )
+    ha["ha_low"] = np.stack([df["low"], ha["ha_open"], ha["ha_close"]], axis=1).min(
+        axis=1
+    )
     return ha
 
 
@@ -78,7 +88,9 @@ def is_hist_slowing(hist: pd.Series, look: int = 5) -> bool:
         return False
     last = hist.dropna().iloc[-look:]
     # check two recent decreases in a row in abs value
-    dec1 = abs(last.iloc[-3]) >= abs(last.iloc[-2]) and abs(last.iloc[-2]) >= abs(last.iloc[-1])
+    dec1 = abs(last.iloc[-3]) >= abs(last.iloc[-2]) and abs(last.iloc[-2]) >= abs(
+        last.iloc[-1]
+    )
     return bool(dec1)
 
 

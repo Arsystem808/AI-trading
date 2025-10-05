@@ -66,8 +66,12 @@ def load_cal(path: str) -> Dict[str, Any]:
             "Global": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
             "M7": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
             "W7": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
-            "AlphaPulse": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
-            "Octopus": {"conf": {"method": "sigmoid", "params": {"a": 1.2, "b": -0.10}}},
+            "AlphaPulse": {
+                "conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}
+            },
+            "Octopus": {
+                "conf": {"method": "sigmoid", "params": {"a": 1.2, "b": -0.10}}
+            },
         }
     try:
         return json.loads(p.read_text(encoding="utf-8"))
@@ -76,8 +80,12 @@ def load_cal(path: str) -> Dict[str, Any]:
             "Global": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
             "M7": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
             "W7": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
-            "AlphaPulse": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
-            "Octopus": {"conf": {"method": "sigmoid", "params": {"a": 1.2, "b": -0.10}}},
+            "AlphaPulse": {
+                "conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}
+            },
+            "Octopus": {
+                "conf": {"method": "sigmoid", "params": {"a": 1.2, "b": -0.10}}
+            },
         }
 
 
@@ -113,7 +121,9 @@ def main():
         y = np.array(y, dtype=float)
         p = np.array(p, dtype=float)
         res = platt_grid(p, y)
-        cal.setdefault(agent, {}).setdefault("conf", {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}})
+        cal.setdefault(agent, {}).setdefault(
+            "conf", {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}
+        )
         # Применяем тот же калибратор и к confidence как мягкий общий сдвиг
         cal[agent]["conf"]["method"] = "sigmoid"
         cal[agent]["conf"]["params"]["a"] = float(res["a"])

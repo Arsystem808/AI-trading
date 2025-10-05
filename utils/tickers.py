@@ -11,7 +11,16 @@ def normalize_to_yf(symbol: str) -> str:
     """
     s = (symbol or "").strip().upper().replace(" ", "")
 
-    for pref in ("X:", "CRYPTO:", "BINANCE:", "COINBASE:", "KRAKEN:", "BYBIT:", "HUOBI:", "OKX:"):
+    for pref in (
+        "X:",
+        "CRYPTO:",
+        "BINANCE:",
+        "COINBASE:",
+        "KRAKEN:",
+        "BYBIT:",
+        "HUOBI:",
+        "OKX:",
+    ):
         if s.startswith(pref):
             s = s[len(pref) :]
 

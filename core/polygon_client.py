@@ -18,7 +18,11 @@ class PolygonClient:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def _get(
-        self, url: str, params: Optional[Dict[str, Any]] = None, max_retries: int = 5, backoff_base: float = 0.8
+        self,
+        url: str,
+        params: Optional[Dict[str, Any]] = None,
+        max_retries: int = 5,
+        backoff_base: float = 0.8,
     ) -> Dict[str, Any]:
         params = {**(params or {}), "apiKey": self.api_key}
         last_err = None
@@ -32,7 +36,9 @@ class PolygonClient:
                 continue
             r.raise_for_status()
             return r.json()
-        raise last_err or requests.HTTPError(f"Request failed after {max_retries} retries")  # noqa
+        raise last_err or requests.HTTPError(
+            f"Request failed after {max_retries} retries"
+        )  # noqa
 
     def daily_ohlc(self, ticker: str, days: int = 120) -> pd.DataFrame:
         # Ключ кэша
@@ -53,7 +59,14 @@ class PolygonClient:
         df = pd.DataFrame(rows)
         if not df.empty:
             # Приводим к ожидаемым колонкам
-            rename = {"o": "open", "h": "high", "l": "low", "c": "close", "v": "volume", "t": "timestamp"}
+            rename = {
+                "o": "open",
+                "h": "high",
+                "l": "low",
+                "c": "close",
+                "v": "volume",
+                "t": "timestamp",
+            }
             df = df.rename(columns=rename)
             df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
         # Пишем кэш

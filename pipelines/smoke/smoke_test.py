@@ -13,8 +13,13 @@ def main():
     for t in [x.strip().upper() for x in args.tickers.split(",") if x.strip()]:
         for s in [y.strip() for y in args.strategies.split(",") if y.strip()]:
             out = analyze_asset(t, "Краткосрочный", s)
-            assert "recommendation" in out and "levels" in out and "probs" in out, "Missing keys"
-            assert "action" in out["recommendation"] and "confidence" in out["recommendation"], "Bad reco"
+            assert (
+                "recommendation" in out and "levels" in out and "probs" in out
+            ), "Missing keys"
+            assert (
+                "action" in out["recommendation"]
+                and "confidence" in out["recommendation"]
+            ), "Bad reco"
             print(s, t, out["recommendation"], flush=True)
 
 

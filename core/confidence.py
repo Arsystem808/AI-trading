@@ -36,7 +36,11 @@ def shap_breakdown(model, x: np.ndarray, feature_names=None, top_k=8):
         vals = sv if isinstance(sv, np.ndarray) else sv[0]
         vals = vals[0]
         order = np.argsort(np.abs(vals))[::-1][:top_k]
-        feats = feature_names if feature_names is not None else [f"f{i}" for i in range(len(vals))]
+        feats = (
+            feature_names
+            if feature_names is not None
+            else [f"f{i}" for i in range(len(vals))]
+        )
         return [{"feature": feats[i], "shap": float(vals[i])} for i in order]
     except Exception:
         return None
@@ -134,7 +138,10 @@ def ui_get_confidence_breakdown(ticker: str) -> dict:
     return {
         "signal": signal,
         "overall_confidence_pct": overall,
-        "breakdown": {"rules_pct": float(rules_pct), "ai_override_delta_pct": float(ai_delta)},
+        "breakdown": {
+            "rules_pct": float(rules_pct),
+            "ai_override_delta_pct": float(ai_delta),
+        },
         "shap_top": shap_top,
     }
 

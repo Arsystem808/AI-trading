@@ -37,14 +37,26 @@ class MeanReversionSignalEngine:
         min_avg_volume: Optional[float] = 2e5,
         warmup_bars: int = 200,
     ):
-        self.rsi_period, self.stoch_period, self.ma_fast, self.ma_slow, self.z_period = (
+        (
+            self.rsi_period,
+            self.stoch_period,
+            self.ma_fast,
+            self.ma_slow,
+            self.z_period,
+        ) = (
             rsi_period,
             stoch_period,
             ma_fast,
             ma_slow,
             z_period,
         )
-        self.z_long_thr, self.z_short_thr, self.rsi_os, self.rsi_ob, self.use_adaptive_rsi = (
+        (
+            self.z_long_thr,
+            self.z_short_thr,
+            self.rsi_os,
+            self.rsi_ob,
+            self.use_adaptive_rsi,
+        ) = (
             z_long_thr,
             z_short_thr,
             rsi_os,
@@ -63,8 +75,17 @@ class MeanReversionSignalEngine:
             require_range_regime,
             range_thr_pct,
         )
-        self.confidence_min, self.tp_atr_mult, self.sl_atr_mult = confidence_min, tp_atr_mult, sl_atr_mult
-        self.hold_time_bars, self.cooldown_bars, self.min_avg_volume, self.warmup_bars = (
+        self.confidence_min, self.tp_atr_mult, self.sl_atr_mult = (
+            confidence_min,
+            tp_atr_mult,
+            sl_atr_mult,
+        )
+        (
+            self.hold_time_bars,
+            self.cooldown_bars,
+            self.min_avg_volume,
+            self.warmup_bars,
+        ) = (
             hold_time_bars,
             cooldown_bars,
             min_avg_volume,
@@ -145,11 +166,17 @@ class MeanReversionSignalEngine:
         o["MACD"] = self._macd(o["close"])
         ms = o["MAS"].replace(0, np.nan)
         o["TrendStrength"] = (o["MAF"] - o["MAS"]).abs() / ms * 100
-        o["Regime"] = np.where(o["TrendStrength"] <= self.range_thr_pct, "Range", "Trend")
+        o["Regime"] = np.where(
+            o["TrendStrength"] <= self.range_thr_pct, "Range", "Trend"
+        )
         return o
 
     def _rsi_bounds(self, vol_ann: float) -> tuple[int, int]:
-        return (35, 65) if (self.use_adaptive_rsi and vol_ann > 0.40) else (self.rsi_os, self.rsi_ob)
+        return (
+            (35, 65)
+            if (self.use_adaptive_rsi and vol_ann > 0.40)
+            else (self.rsi_os, self.rsi_ob)
+        )
 
     def clear_state(self) -> None:
         self._cooldowns.clear()
@@ -228,7 +255,10 @@ class MeanReversionSignalEngine:
         r = f["close"].pct_change().dropna()
         vol = float(r.std() * np.sqrt(252)) if len(r) else 0.30
         rsi_os, rsi_ob = self._rsi_bounds(vol)
-        start = min(max(self.warmup_bars, self.ma_slow + 5, self.atr_period + 5, 25), max(0, len(f) - 1))
+        start = min(
+            max(self.warmup_bars, self.ma_slow + 5, self.atr_period + 5, 25),
+            max(0, len(f) - 1),
+        )
         cd = int(self._cooldowns.get(symbol, 0))
         sigs: List[Dict] = []
 
@@ -255,27 +285,43 @@ class MeanReversionSignalEngine:
                 continue
             sc = {"sum": 0.0, "max": 0.0, "reasons": []}
             add(sc, "base_mr", True)
-            add(sc, "volume", pd.notna(row["VolRatio"]) and row["VolRatio"] >= self.volume_ratio_min)
+            add(
+                sc,
+                "volume",
+                pd.notna(row["VolRatio"]) and row["VolRatio"] >= self.volume_ratio_min,
+            )
             add(sc, "sr", bool(row["NearSup"]) if base_long else bool(row["NearRes"]))
-            add(sc, "vol_ok", pd.notna(row["VolRank"]) and float(row["VolRank"]) >= 0.30)
+            add(
+                sc, "vol_ok", pd.notna(row["VolRank"]) and float(row["VolRank"]) >= 0.30
+            )
             add(
                 sc,
                 "bb_extreme",
-                pd.notna(row["BB_Pos"]) and ((row["BB_Pos"] <= 0.10) if base_long else (row["BB_Pos"] >= 0.90)),
+                pd.notna(row["BB_Pos"])
+                and ((row["BB_Pos"] <= 0.10) if base_long else (row["BB_Pos"] >= 0.90)),
             )
             add(
                 sc,
                 "stoch_extreme",
-                pd.notna(row["Stoch"]) and ((row["Stoch"] <= 20.0) if base_long else (row["Stoch"] >= 80.0)),
+                pd.notna(row["Stoch"])
+                and ((row["Stoch"] <= 20.0) if base_long else (row["Stoch"] >= 80.0)),
             )
             add(
                 sc,
                 "momentum_turn",
                 pd.notna(row["MACD"])
                 and pd.notna(prev["MACD"])
-                and ((row["MACD"] > prev["MACD"]) if base_long else (row["MACD"] < prev["MACD"])),
+                and (
+                    (row["MACD"] > prev["MACD"])
+                    if base_long
+                    else (row["MACD"] < prev["MACD"])
+                ),
             )
-            add(sc, "regime_range", (row["Regime"] == "Range") if self.require_range_regime else True)
+            add(
+                sc,
+                "regime_range",
+                (row["Regime"] == "Range") if self.require_range_regime else True,
+            )
             conf = (sc["sum"] / sc["max"] * 100.0) if sc["max"] > 0 else 0.0
             if conf < self.confidence_min:
                 continue
@@ -301,9 +347,19 @@ class MeanReversionSignalEngine:
                     "cooldown_bars": int(self.cooldown_bars),
                     "z": float(row["Z"]) if pd.notna(row["Z"]) else float(np.nan),
                     "rsi": float(row["RSI"]) if pd.notna(row["RSI"]) else float(np.nan),
-                    "stoch": float(row["Stoch"]) if pd.notna(row["Stoch"]) else float(np.nan),
-                    "bb_pos": float(row["BB_Pos"]) if pd.notna(row["BB_Pos"]) else float(np.nan),
-                    "vol_rank": float(row["VolRank"]) if pd.notna(row["VolRank"]) else float(np.nan),
+                    "stoch": (
+                        float(row["Stoch"]) if pd.notna(row["Stoch"]) else float(np.nan)
+                    ),
+                    "bb_pos": (
+                        float(row["BB_Pos"])
+                        if pd.notna(row["BB_Pos"])
+                        else float(np.nan)
+                    ),
+                    "vol_rank": (
+                        float(row["VolRank"])
+                        if pd.notna(row["VolRank"])
+                        else float(np.nan)
+                    ),
                 }
             )
             cd = int(self.cooldown_bars)

@@ -26,7 +26,9 @@ html, body, [class^='css'] {{ font-family: 'Manrope', system-ui, -apple-system, 
 """
 
 
-def render_header(logo_path: str = "assets/arxora_logo.png", tagline: str = "trade smarter."):
+def render_header(
+    logo_path: str = "assets/arxora_logo.png", tagline: str = "trade smarter."
+):
     st.markdown(CSS, unsafe_allow_html=True)
     html = f"""
     <div class="hero">

@@ -30,7 +30,9 @@ def ensure_dir(p: str):
     os.makedirs(p, exist_ok=True)
 
 
-def _row_from_result(agent: str, ticker: str, horizon: str, res: Dict[str, Any]) -> Dict[str, Any]:
+def _row_from_result(
+    agent: str, ticker: str, horizon: str, res: Dict[str, Any]
+) -> Dict[str, Any]:
     rec = res.get("recommendation", {}) or {}
     lev = res.get("levels", {}) or {}
     probs = res.get("probs", {}) or {}
@@ -93,13 +95,19 @@ def run_once(tickers: List[str], horizon: str = DEFAULT_HORIZON, sleep_s: float 
                             "tp2": row["tp2"],
                             "tp3": row["tp3"],
                         },
-                        probs={"tp1": row["p_tp1"], "tp2": row["p_tp2"], "tp3": row["p_tp3"]},
+                        probs={
+                            "tp1": row["p_tp1"],
+                            "tp2": row["p_tp2"],
+                            "tp3": row["p_tp3"],
+                        },
                         meta={},
                         ts=row["ts"],
                     )
                 except Exception:
                     pass
-                print(f"[OK] {row['ts']} {agent} {t} {row['action']} {row['confidence']:.2f}")
+                print(
+                    f"[OK] {row['ts']} {agent} {t} {row['action']} {row['confidence']:.2f}"
+                )
             except Exception as e:
                 print(f"[ERR] {agent} {t}: {e}")
             time.sleep(sleep_s)
@@ -107,7 +115,12 @@ def run_once(tickers: List[str], horizon: str = DEFAULT_HORIZON, sleep_s: float 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--tickers", type=str, default=",".join(DEFAULT_TICKERS), help="comma-separated list")
+    ap.add_argument(
+        "--tickers",
+        type=str,
+        default=",".join(DEFAULT_TICKERS),
+        help="comma-separated list",
+    )
     ap.add_argument("--horizon", type=str, default=DEFAULT_HORIZON)
     ap.add_argument("--sleep", type=float, default=0.8)
     args = ap.parse_args()
