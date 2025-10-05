@@ -3,27 +3,39 @@ name: CI
 on:
   push:
     branches: [ main, master ]
+    paths:
+      - "**.py"
+      - "requirements*.txt"
+      - ".github/workflows/**"
   pull_request:
     branches: [ main, master ]
-  workflow_dispatch: {}
+    paths:
+      - "**.py"
+      - "requirements*.txt"
+      - ".github/workflows/**"
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   lint:
+    name: CI / lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-${{ runner.os }}-${{ hashFiles('**/requirements*.txt') }}
-          restore-keys: pip-${{ runner.os }}-
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
@@ -31,11 +43,9 @@ jobs:
           pip install black flake8
       - name: Lint (soft)
         run: |
-          set -e
-          paths=(scripts services core/strategy.py)
-          found=0
-          for p in "${paths[@]}"; do [ -e "$p" ] && found=1; done
-          if [ "$found" -eq 1 ]; then
+          paths=("scripts" "services" "core/strategy.py")
+          any=0; for p in "${paths[@]}"; do [[ -e "$p" ]] && any=1; done
+          if [[ $any -eq 1 ]]; then
             black --check --diff "${paths[@]}" || true
             flake8 "${paths[@]}" || true
           else
@@ -43,7 +53,9 @@ jobs:
           fi
 
   test:
+    name: CI / test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       PYTHONPATH: ${{ github.workspace }}
     steps:
@@ -51,9 +63,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
       - name: Detect tests
         id: detect
-        shell: bash
         run: |
           if git ls-files 'tests/**/*.py' | grep -q .; then
             echo "HAS_TESTS=true" >> "$GITHUB_ENV"
