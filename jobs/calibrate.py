@@ -3,12 +3,19 @@ from __future__ import annotations
 
 import csv
 import json
+<<<<<<< HEAD
 import math
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+=======
+import os
+from pathlib import Path
+from typing import Any, Dict, List
+>>>>>>> origin/main
 
 import numpy as np
+
 
 PERF_PATH = os.environ.get("PERF_ALL_PATH", "data/perf/all.csv")
 CAL_PATH = os.environ.get("CALIB_PATH", "config/calibration.json")
@@ -53,7 +60,11 @@ def read_rows(path: str) -> List[Dict[str, Any]]:
         return list(csv.DictReader(f))
 
 
+<<<<<<< HEAD
 def save_cal(cal: Dict[str, Any], path: str):
+=======
+def save_cal(cal: Dict[str, Any], path: str) -> None:
+>>>>>>> origin/main
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(cal, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -69,14 +80,19 @@ def load_cal(path: str) -> Dict[str, Any]:
             "AlphaPulse": {
                 "conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}
             },
+<<<<<<< HEAD
             "Octopus": {
                 "conf": {"method": "sigmoid", "params": {"a": 1.2, "b": -0.10}}
             },
+=======
+            "Octopus": {"conf": {"method": "sigmoid", "params": {"a": 1.2, "b": -0.10}}},
+>>>>>>> origin/main
         }
     try:
         return json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return {
+<<<<<<< HEAD
             "Global": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
             "M7": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
             "W7": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
@@ -140,3 +156,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+=======
+            "Global": {"conf": {"method": "sigmoid",
+>>>>>>> origin/main
