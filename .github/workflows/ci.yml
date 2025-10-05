@@ -8,6 +8,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
+        cache: pip
         with:
           python-version: '3.11'
       - name: Install deps
@@ -22,6 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
+        cache: pip
         with:
           python-version: '3.11'
       - name: Install deps
