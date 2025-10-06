@@ -1,12 +1,8 @@
 name: Train
+
 on:
   workflow_dispatch:
     inputs:
-      symbol:
-        description: 'Ticker'
-        required: true
-        type: string
-        default: 'AAPL'
       start:
         description: 'Start (YYYY-MM-DD)'
         required: true
@@ -22,37 +18,55 @@ on:
         required: false
         type: number
         default: 10
+  schedule:
+    - cron: '0 2 * * *' # ежедневно в 02:00 UTC
 
 permissions:
   contents: read
-  packages: read
 
 jobs:
   train:
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        symbol: [AAPL, MSFT, NVDA, GOOGL, AMZN, TSLA, META, AMD, NFLX, AVGO]
     runs-on: ubuntu-24.04
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: ./
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
           cache-dependency-path: requirements.txt
+
       - name: Install deps
         run: |
           python -m pip install -U pip
           pip install -r requirements.txt
+
       - name: Run training
+        env:
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
         run: |
           python scripts/train.py \
-            --symbol "${{ inputs.symbol }}" \
+            --symbol "${{ matrix.symbol }}" \
             --start "${{ inputs.start }}" \
             --end "${{ inputs.end }}" \
             --epochs "${{ inputs.epochs }}" \
-            --outdir artifacts
+            --outdir "artifacts/${{ matrix.symbol }}"
+
       - name: Upload models and logs
         uses: actions/upload-artifact@v4
         with:
-          name: models-${{ github.run_id }}
-          path: artifacts/**
+          name: model-${{ matrix.symbol }}-${{ github.run_id }}
+          path: artifacts/${{ matrix.symbol }}/**
           if-no-files-found: error
           retention-days: 14
