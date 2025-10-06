@@ -1,42 +1,47 @@
 name: Nightly Training
 on:
   schedule:
-    - cron: "0 2 * * *"
-  workflow_dispatch: {}
+    - cron: "0 1 * * *"
+  workflow_dispatch:
 
 jobs:
   train:
     runs-on: ubuntu-latest
-    env:
-      POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-${{ runner.os }}-${{ hashFiles('**/requirements*.txt') }}
-          restore-keys: pip-${{ runner.os }}-
+          python-version: "3.11"
       - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Run training
+        env:
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
         run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install pandas numpy scikit-learn joblib
-      - name: Train M7
+          mkdir -p artifacts/train metrics
+          python scripts/train_incremental.py --out artifacts/train --metrics metrics
+
+      - name: List outputs
         run: |
-          python scripts/train_m7.py
-      - name: Calibrate confidence
-        run: |
-          python scripts/calibrate_confidence.py
-      - name: Train Octopus meta (optional)
-        run: |
-          python scripts/train_octopus_meta.py || echo "meta optional"
-      - name: Upload artifacts
+          ls -la
+          ls -la artifacts/train || true
+          ls -la metrics || true
+
+      - name: Sanitize artifact filenames
+        run: python scripts/sanitize_artifacts.py
+
+      - name: Upload models
         uses: actions/upload-artifact@v4
         with:
-          name: models-and-calibration
-          path: |
-            models/**
-            config/calibration.json
+          name: models-${{ github.run_id }}
+          path: artifacts/train/**
+          if-no-files-found: error
+
+      - name: Upload metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: metrics-${{ github.run_id }}
+          path: metrics/**
+          if-no-files-found: warn
