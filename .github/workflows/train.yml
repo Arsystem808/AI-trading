@@ -1,9 +1,32 @@
 name: Train
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: 'Ticker'
+        required: true
+        type: string
+        default: 'AAPL'
+      start:
+        description: 'Start (YYYY-MM-DD)'
+        required: true
+        type: string
+        default: '2020-01-01'
+      end:
+        description: 'End (YYYY-MM-DD)'
+        required: true
+        type: string
+        default: '2025-10-01'
+      epochs:
+        description: 'Epochs'
+        required: false
+        type: number
+        default: 10
+
 permissions:
   contents: read
   packages: read
+
 jobs:
   train:
     runs-on: ubuntu-24.04
@@ -12,6 +35,24 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: pip
+          cache: 'pip'
           cache-dependency-path: requirements.txt
-      - run: pip install -r requirements.txt
+      - name: Install deps
+        run: |
+          python -m pip install -U pip
+          pip install -r requirements.txt
+      - name: Run training
+        run: |
+          python scripts/train.py \
+            --symbol "${{ inputs.symbol }}" \
+            --start "${{ inputs.start }}" \
+            --end "${{ inputs.end }}" \
+            --epochs "${{ inputs.epochs }}" \
+            --outdir artifacts
+      - name: Upload models and logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: models-${{ github.run_id }}
+          path: artifacts/**
+          if-no-files-found: error
+          retention-days: 14
