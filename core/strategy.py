@@ -339,16 +339,20 @@ class M7TradingStrategy:
     def __init__(self, atr_period=14, atr_multiplier=1.5, pivot_period='D', fib_levels=[0.236,0.382,0.5,0.618,0.786]):
         self.atr_period = atr_period; self.atr_multiplier = atr_multiplier
         self.pivot_period = pivot_period; self.fib_levels = fib_levels
+
     def calculate_pivot_points(self, h,l,c):
         pivot = (h + l + c) / 3
         r1 = (2 * pivot) - l; r2 = pivot + (h - l); r3 = h + 2 * (pivot - l)
         s1 = (2 * pivot) - h; s2 = pivot - (h - l); s3 = l - 2 * (h - pivot)
         return {'pivot': pivot, 'r1': r1, 'r2': r2, 'r3': r3, 's1': s1, 's2': s2, 's3': s3}
+
     def calculate_fib_levels(self, h,l):
         diff = h - l; fib = {}
         for level in self.fib_levels: fib[f'fib_{int(level*1000)}'] = h - level * diff
         return fib
+
     def identify_key_levels(self, data):
+        # Важно: data уже с DatetimeIndex (см. analyze_asset_m7) для корректной работы resample [web:3221][web:3236]
         grouped = data.resample('D') if self.pivot_period == 'D' else data.resample('W')
         key = {}
         for _, g in grouped:
@@ -356,6 +360,7 @@ class M7TradingStrategy:
                 h = g['high'].max(); l = g['low'].min(); c = g['close'].iloc[-1]
                 key.update(self.calculate_pivot_points(h,l,c)); key.update(self.calculate_fib_levels(h,l))
         return key
+
     def generate_signals(self, data):
         sigs = []; req = ['high','low','close']
         if not all(c in data.columns for c in req): return sigs
@@ -373,10 +378,31 @@ class M7TradingStrategy:
                              'confidence':round(conf,2),'level':name,'level_value':round(val,4),'timestamp':ts})
         return sigs
 
+
 def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False):
-    cli = PolygonClient(); df = cli.daily_ohlc(ticker, days=120)
-    strategy = M7TradingStrategy(); signals = strategy.generate_signals(df)
+    cli = PolygonClient()
+    df = cli.daily_ohlc(ticker, days=120)
+
+    # Критично: привести к DatetimeIndex для resample/rolling [web:3221][web:3236]
+    if df is None or df.empty:
+        # Офлайн/нет данных — безопасный возврат WAIT
+        return {
+            "last_price": 0.0,
+            "recommendation": {"action":"WAIT","confidence":0.5},
+            "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
+            "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
+            "context":["Нет данных для M7"], "note_html":"<div>M7: ожидание</div>",
+            "alt":"Ожидание сигналов", "entry_kind":"wait","entry_label":"WAIT",
+            "meta":{"source":"M7","grey_zone":True}
+        }
+    df = df.sort_values("timestamp")
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    df = df.set_index("timestamp")
+
+    strategy = M7TradingStrategy()
+    signals = strategy.generate_signals(df)
     price = float(df['close'].iloc[-1])
+
     if not signals:
         res = {
             "last_price": price,
@@ -452,23 +478,70 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
 
 # -------------------- W7 --------------------
 def analyze_asset_w7(ticker: str, horizon: str):
-    cli = PolygonClient(); cfg = _horizon_cfg(horizon); hz = cfg["hz"]
-    days = max(90, cfg["look"] * 2); df = cli.daily_ohlc(ticker, days=days); price = cli.last_trade_price(ticker)
-    closes = df["close"]; tail = df.tail(cfg["look"])
-    rng_low, rng_high = float(tail["low"].min()), float(tail["high"].max())
-    rng_w = max(1e-9, rng_high - rng_low); pos = (price - rng_low) / rng_w
-    slope = _linreg_slope(closes.tail(cfg["trend"]).values); slope_norm = slope / max(1e-9, price)
-    atr_d = float(_atr_like(df, n=cfg["atr"]).iloc[-1]); atr_w = _weekly_atr(df) if cfg.get("use_weekly_atr") else atr_d
-    vol_ratio = atr_d / max(1e-9, float(_atr_like(df, n=cfg["atr"] * 2).iloc[-1]))
-    ha = _heikin_ashi(df); ha_diff = ha["ha_close"].diff()
-    ha_up_run = _streak_by_sign(ha_diff, True); ha_down_run = _streak_by_sign(ha_diff, False)
-    _, _, hist = _macd_hist(closes); macd_pos_run = _streak_by_sign(hist, True); macd_neg_run = _streak_by_sign(hist, False)
-    last_row = df.iloc[-1]; body, up_wick, dn_wick = _wick_profile(last_row)
+    cli = PolygonClient()
+    cfg = _horizon_cfg(horizon); hz = cfg["hz"]
+    days = max(90, cfg["look"] * 2)
+
+    # Загружаем дневные данные
+    df = cli.daily_ohlc(ticker, days=days)
+
+    # Приводим к DatetimeIndex для дальнейших weekly/daily агрегатов [web:3221][web:3236]
+    if df is None or df.empty:
+        df = pd.DataFrame(columns=["open","high","low","close","volume","timestamp"])
+    else:
+        df = df.sort_values("timestamp")
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+        df = df.set_index("timestamp")
+
+    # Надёжное получение "текущей" цены: prev_close -> последний close из аггрегатов -> last trade (как опция) [web:3225][web:3232]
+    price = cli.prev_close(ticker)
+    if price is None and not df.empty:
+        price = float(df["close"].iloc[-1])
+    if price is None:
+        try:
+            price = cli.last_trade_price(ticker)  # может дать 403 — ловим и игнорируем [web:3225]
+        except Exception:
+            price = None
+    if price is None:
+        price = 0.0  # офлайн/нет данных
+
+    closes = df["close"] if "close" in df.columns else pd.Series(dtype=float)
+    tail = df.tail(cfg["look"]) if not df.empty else df
+    rng_low, rng_high = float(tail["low"].min()) if not tail.empty else 0.0, float(tail["high"].max()) if not tail.empty else 0.0
+    rng_w = max(1e-9, rng_high - rng_low); pos = (price - rng_low) / rng_w if rng_w > 0 else 0.0
+    slope = _linreg_slope(closes.tail(cfg["trend"]).values) if not closes.empty else 0.0
+    slope_norm = slope / max(1e-9, price if price else 1.0)
+
+    atr_d = float(_atr_like(df, n=cfg["atr"]).iloc[-1]) if not df.empty else 0.0
+    atr_w = _weekly_atr(df) if (not df.empty and cfg.get("use_weekly_atr")) else atr_d
+    vol_ratio = (atr_d / max(1e-9, float(_atr_like(df, n=cfg["atr"] * 2).iloc[-1]))) if not df.empty else 1.0
+
+    ha = _heikin_ashi(df) if not df.empty else pd.DataFrame(columns=["ha_close"])
+    ha_diff = ha["ha_close"].diff() if "ha_close" in ha.columns else pd.Series(dtype=float)
+    ha_up_run = _streak_by_sign(ha_diff, True) if not ha_diff.empty else 0
+    ha_down_run = _streak_by_sign(ha_diff, False) if not ha_diff.empty else 0
+
+    _, _, hist = _macd_hist(closes) if not closes.empty else (None,None,pd.Series(dtype=float))
+    macd_pos_run = _streak_by_sign(hist, True) if not hist.empty else 0
+    macd_neg_run = _streak_by_sign(hist, False) if not hist.empty else 0
+
+    last_row = df.iloc[-1] if not df.empty else pd.Series({"open":0,"high":0,"low":0,"close":price})
+    body, up_wick, dn_wick = _wick_profile(last_row)
     long_upper = (up_wick > body * 1.3) and (up_wick > dn_wick * 1.1)
     long_lower = (dn_wick > body * 1.3) and (dn_wick > up_wick * 1.1)
-    hlc = _last_period_hlc(df, cfg["pivot_rule"]) or (float(df["high"].tail(60).max()), float(df["low"].tail(60).min()), float(df["close"].iloc[-1]))
-    H, L, C = hlc; piv = _fib_pivots(H, L, C); P, R1, R2, S1, S2 = piv["P"], piv["R1"], piv.get("R2"), piv["S1"], piv.get("S2")
-    tol_k = {"ST": 0.18, "MID": 0.22, "LT": 0.28}[hz]; buf = tol_k * (atr_w if hz != "ST" else atr_d)
+
+    hlc = _last_period_hlc(df, cfg["pivot_rule"]) if not df.empty else None
+    if not hlc and not df.empty:
+        hlc = (float(df["high"].tail(60).max()), float(df["low"].tail(60).min()), float(df["close"].iloc[-1]))
+    elif not hlc:
+        hlc = (0.0, 0.0, price)
+    H, L, C = hlc
+    piv = _fib_pivots(H, L, C)
+    P, R1, R2, S1, S2 = piv["P"], piv["R1"], piv.get("R2"), piv["S1"], piv.get("S2")
+
+    tol_k = {"ST": 0.18, "MID": 0.22, "LT": 0.28}[hz]
+    step_d, step_w = atr_d, atr_w
+    buf = tol_k * (step_w if hz != "ST" else step_d)
 
     def _near_from_below(level: float) -> bool: return (level is not None) and (0 <= level - price <= buf)
     def _near_from_above(level: float) -> bool: return (level is not None) and (0 <= price - level <= buf)
@@ -501,7 +574,6 @@ def analyze_asset_w7(ticker: str, horizon: str):
     if action == "WAIT": base -= 0.07
     conf = float(max(0.55, min(0.90, base))); conf = float(CAL_CONF["W7"](conf))
 
-    step_d, step_w = atr_d, atr_w
     if action == "BUY":
         if price < P:  entry = max(price, S1 + 0.15*step_w); sl = S1 - 0.60*step_w
         else:          entry = max(price, P  + 0.10*step_w); sl = P  - 0.60*step_w
@@ -518,7 +590,7 @@ def analyze_asset_w7(ticker: str, horizon: str):
         alt = "Ждать пробоя/ретеста"
 
     tp1, tp2, tp3 = _clamp_tp_by_trend(action, hz, tp1, tp2, tp3, piv, step_w, slope_norm, macd_pos_run, macd_neg_run)
-    atr_for_floor = atr_w if hz != "ST" else atr_d
+    atr_for_floor = step_w if hz != "ST" else step_d
     tp1, tp2, tp3 = _apply_tp_floors(entry, sl, tp1, tp2, tp3, action, hz, price, atr_for_floor)
     tp1, tp2, tp3 = _order_targets(entry, tp1, tp2, tp3, action)
     sl,  tp1, tp2, tp3 = _sanity_levels(action, entry, sl, tp1, tp2, tp3, price, step_d, step_w, hz)
@@ -532,7 +604,7 @@ def analyze_asset_w7(ticker: str, horizon: str):
              "tp3": float(_clip01(0.28 + 0.13*(conf - 0.55)/0.35))}
     probs = _monotone_tp_probs(probs)
 
-    u_base = atr_w if hz != "ST" else atr_d
+    u_base = step_w if hz != "ST" else step_d
     u1,u2,u3 = abs(tp1-entry)/u_base, abs(tp2-entry)/u_base, abs(tp3-entry)/u_base
     meta_debug = {"atr_d": float(atr_d), "atr_w": float(atr_w),
                   "slope_norm": float(slope_norm), "pos": float(pos),
