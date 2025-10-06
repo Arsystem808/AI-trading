@@ -30,7 +30,7 @@ jobs:
       fail-fast: false
       max-parallel: 6
       matrix:
-        symbol: [AAPL, MSFT, NVDA, GOOGL, AMZN, TSLA, META, AMD, NFLX, AVGO]
+        symbol: [AAPL, MSFT, NVDA, X:BTCUSD, X:ETHUSD, AMZN, TSLA, META, AMD, OXY, QQQ, SPY, AFRM]
     runs-on: ubuntu-24.04
 
     defaults:
