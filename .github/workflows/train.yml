@@ -21,8 +21,9 @@ on:
   schedule:
     - cron: '0 2 * * *' # ежедневно в 02:00 UTC
 
+# ключевое изменение: разрешаем push для публикации метрик
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   train:
@@ -30,6 +31,7 @@ jobs:
       fail-fast: false
       max-parallel: 6
       matrix:
+        # акции/ETF без префикса; крипто с префиксом X:
         symbol: [AAPL, X:BTCUSD, NVDA, SPY, X:ETHUSD, TSLA, META, AMD, NFLX, QQQ]
     runs-on: ubuntu-24.04
 
@@ -62,6 +64,20 @@ jobs:
             --end "${{ inputs.end }}" \
             --epochs "${{ inputs.epochs }}" \
             --outdir "artifacts/${{ matrix.symbol }}"
+
+      # публикуем сводки в репозиторий для UI
+      - name: Publish perf to repo
+        if: success()
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name  "github-actions[bot]"
+          mkdir -p data/perf/M7/${{ matrix.symbol }}
+          cp artifacts/${{ matrix.symbol }}/metrics.json data/perf/M7/${{ matrix.symbol }}/metrics.json || true
+          cp artifacts/${{ matrix.symbol }}/predictions.csv data/perf/M7/${{ matrix.symbol }}/predictions.csv || true
+          git add data/perf/M7/${{ matrix.symbol }}/* || true
+          git commit -m "perf: ${{ matrix.symbol }} ${{ github.run_id }}" || echo "Nothing to commit"
+          # небольшой ретрай на случай гонок между матричными джобами
+          for i in {1..5}; do git pull --rebase || true; git push && break || sleep 2; done
 
       - name: Upload models and logs
         uses: actions/upload-artifact@v4
