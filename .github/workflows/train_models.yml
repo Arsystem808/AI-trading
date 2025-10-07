@@ -1,42 +1,83 @@
 name: Nightly Training
+
 on:
   schedule:
-    - cron: "0 2 * * *"
+    - cron: "0 2 * * *"   # каждый день в 02:00 UTC
   workflow_dispatch: {}
+
+concurrency:
+  group: nightly-training
+  cancel-in-progress: true
 
 jobs:
   train:
     runs-on: ubuntu-latest
     env:
       POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+      # Список символов для обучения (пример); можно вынести в org/repo variables
+      SYMBOLS: "BTCUSD ETHUSD"
+      START_DATE: "2019-01-01"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - uses: actions/cache@v4
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: pip-${{ runner.os }}-${{ hashFiles('**/requirements*.txt') }}
           restore-keys: pip-${{ runner.os }}-
+
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install pandas numpy scikit-learn joblib
-      - name: Train M7
+          # минимальный набор для тренера и загрузчика
+          pip install pandas numpy scikit-learn joblib requests
+        shell: bash
+
+      - name: Set END_DATE (UTC today)
         run: |
-          python scripts/train_m7.py
+          echo "END_DATE=$(date -u +%F)" >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Train M7 (all symbols)
+        run: |
+          set -e
+          for SYM in $SYMBOLS; do
+            echo "=== Train for $SYM ==="
+            python scripts/train.py \
+              --symbol "$SYM" \
+              --start  "${{ env.START_DATE }}" \
+              --end    "${{ env.END_DATE }}" \
+              --epochs 12 \
+              --artifacts-dir "artifacts/${SYM}" \
+              --models-dir    "models" \
+              --configs-dir   "configs"
+          done
+        shell: bash
+
       - name: Calibrate confidence
         run: |
+          # Скрипт должен писать итог в configs/calibration.json
           python scripts/calibrate_confidence.py
+        shell: bash
+
       - name: Train Octopus meta (optional)
         run: |
           python scripts/train_octopus_meta.py || echo "meta optional"
+        shell: bash
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: models-and-calibration
           path: |
             models/**
-            config/calibration.json
+            configs/**/*.json
+            artifacts/**
