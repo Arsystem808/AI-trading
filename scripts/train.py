@@ -129,15 +129,17 @@ def time_split(X, y, test_size=0.2):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--symbol", required=True, help="Base symbol, e.g., BTCUSD or X:BTCUSD")
+    ap.add_argument("--artifacts-dir", default="artifacts",
+                help="Where to write metrics/predictions")
+    ap.add_argument("--models-dir", default="models",
+                help="Where to write production model artifact")
+    ap.add_argument("--configs-dir", default="configs",
+                help="Where to write auxiliary JSON config")
+    ap.add_argument("--symbol", required=True)
     ap.add_argument("--start", required=True)
     ap.add_argument("--end", required=True)
     ap.add_argument("--epochs", type=int, default=10)
-    ap.add_argument("--artifacts-dir", default="artifacts", help="Where to write metrics/predictions")
-    ap.add_argument("--models-dir", default="models", help="Where to write production model artifact")
-    ap.add_argument("--configs-dir", default="configs", help="Where to write auxiliary JSON config")
-    args = ap.parse_args()
-
+   
     t0 = time.time()
 
     artifacts_dir = Path(args.artifacts_dir)
