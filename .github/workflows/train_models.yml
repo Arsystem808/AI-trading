@@ -53,8 +53,8 @@ jobs:
             echo "=== Train for $SYM ==="
             python scripts/train.py \
               --symbol "$SYM" \
-              --start  "${{ env.START_DATE }}" \
-              --end    "${{ env.END_DATE }}" \
+              --start  "$START_DATE" \
+              --end    "$END_DATE" \
               --epochs 12 \
               --artifacts-dir "artifacts/${SYM}" \
               --models-dir    "models" \
