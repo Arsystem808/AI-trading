@@ -32,7 +32,7 @@ jobs:
       max-parallel: 6
       matrix:
         # акции/ETF без префикса; крипто с префиксом X:
-        symbol: [AAPL, BTCUSD, XOM, TLT, SOXL, GLD, IWM, XLY, GS, NVDA, SPY, TSLA, META,]
+        symbol: [AAPL, BTCUSD, TLT, SOXL, GLD, IWM, XLY, GS, NVDA, SPY, TSLA,]
     runs-on: ubuntu-24.04
 
     defaults:
