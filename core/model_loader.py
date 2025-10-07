@@ -11,13 +11,13 @@ try:
 except Exception:
     joblib = None  # мягкий импорт
 
+from core.utils_naming import sanitize_symbol  # единая санитизация имён
 
-# Директории для артефактов
+# Базовые директории артефактов
 MODELS_DIR = Path("models")
 CONFIG_DIR = Path("configs")
 
-
-# Нормализация текста для устранения «invalid character» в JSON
+# Нормализация типографики/почти‑JSON (для конфигов)
 _FANCY = {
     "“": '"',
     "”": '"',
@@ -29,10 +29,9 @@ _FANCY = {
     "—": "-",
     "–": "-",
     "，": ",",
-    "：": ":",
+    "：": ":",  # в JSON допустимо; для имён файлов используем sanitize_symbol
     "；": ";",
 }
-
 
 def _normalize_text(s: str) -> str:
     # Заменяем типографские символы
@@ -44,7 +43,6 @@ def _normalize_text(s: str) -> str:
     s = re.sub(r",(\s*[}\]])", r"\1", s)
     return s
 
-
 def _load_json_file(p: Path) -> Any:
     raw = p.read_text(encoding="utf-8", errors="replace")
     norm = _normalize_text(raw)
@@ -52,7 +50,6 @@ def _load_json_file(p: Path) -> Any:
         return json.loads(norm)
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON in {p}: {e}")
-
 
 def _extract_feature_names_if_any(model: Any) -> Optional[list]:
     """
@@ -80,37 +77,71 @@ def _extract_feature_names_if_any(model: Any) -> Optional[list]:
         return None
     return None
 
-
 def _try_joblib(p: Path) -> Any:
     if not joblib:
         raise RuntimeError("joblib is not available to load model files")
     return joblib.load(p)
 
+def _candidate_names(base: str) -> list[str]:
+    """
+    Формирует шаблоны имён для разных агентов по одному тикеру.
+    """
+    return [
+        f"arxora_m7pro_{base}.joblib",
+        f"global_{base}.joblib",
+        f"alphapulse_{base}.joblib",
+        f"octopus_{base}.joblib",
+    ]
+
+def _dedup(seq):
+    seen = set()
+    out = []
+    for x in seq:
+        if x not in seen:
+            out.append(x)
+            seen.add(x)
+    return out
+
+def _build_candidates(ticker_or_name: str) -> list[Path]:
+    """
+    Приоритетный список путей поиска:
+    1) Санитизированное имя (кросс‑платформенно и совместимо с upload‑artifact)
+    2) Исходное имя (на случай старых файлов до санитизации)
+    3) Общие/fallback‑модели и JSON‑конфиги
+    """
+    raw = (ticker_or_name or "").upper().strip()
+    safe = sanitize_symbol(raw)
+
+    names_safe = _candidate_names(safe)
+    names_raw = _candidate_names(raw) if raw != safe else []
+
+    model_paths = [MODELS_DIR / n for n in (names_safe + names_raw)]
+    # Добавляем общий fallback
+    model_paths.append(MODELS_DIR / "m7_model.pkl")
+
+    # Конфиги (безопасное имя + обратная совместимость при отличии)
+    cfgs = [
+        CONFIG_DIR / f"m7pro_{safe}.json",
+        CONFIG_DIR / f"octopus_{safe}.json",
+        CONFIG_DIR / "calibration.json",
+    ]
+    if raw != safe:
+        cfgs.insert(0, CONFIG_DIR / f"m7pro_{raw}.json")
+        cfgs.insert(1, CONFIG_DIR / f"octopus_{raw}.json")
+
+    return _dedup(model_paths + cfgs)
 
 def load_model_for(ticker_or_name: str) -> Optional[Union[Any, Dict[str, Any]]]:
     """
     Универсальный загрузчик:
-    - Пытается найти веса по приоритету для тикера/агента (m7pro/global/alphapulse/octopus).
+    - Ищет веса по приоритету для тикера/агента (arxora_m7pro/global/alphapulse/octopus),
+      сначала по санитизированному имени, затем по исходному (обратная совместимость). 
     - Поддерживает .joblib/.pkl (через joblib) и .json конфиги.
     - Если модель — LightGBM (или содержит booster), возвращает dict {"model": obj, "feature_names": [...]}
-      чтобы инференс мог выровнять DataFrame под train и избежать LGBM Fatal по фичам.
+      чтобы инференс мог выровнять DataFrame под train.
     - Иначе возвращает сам объект модели.
     """
-    t = (ticker_or_name or "").upper()
-
-    candidates = [
-        MODELS_DIR / f"arxora_m7pro_{t}.joblib",
-        MODELS_DIR / f"m7pro_{t}.joblib",
-        MODELS_DIR / f"global_{t}.joblib",
-        MODELS_DIR / f"alphapulse_{t}.joblib",
-        MODELS_DIR / f"octopus_{t}.joblib",
-        MODELS_DIR / "m7_model.pkl",  # общий fallback
-        CONFIG_DIR / f"m7pro_{t}.json",
-        CONFIG_DIR / f"octopus_{t}.json",
-        CONFIG_DIR / "calibration.json",
-    ]
-
-    for p in candidates:
+    for p in _build_candidates(ticker_or_name):
         if not p.exists():
             continue
 
@@ -120,7 +151,6 @@ def load_model_for(ticker_or_name: str) -> Optional[Union[Any, Dict[str, Any]]]:
             except Exception as e:
                 raise RuntimeError(f"Joblib load failed for {p}: {e}")
 
-            # Пытаемся вытащить feature names для LightGBM
             feats = _extract_feature_names_if_any(obj)
             if feats:
                 return {"model": obj, "feature_names": feats}
@@ -130,3 +160,4 @@ def load_model_for(ticker_or_name: str) -> Optional[Union[Any, Dict[str, Any]]]:
             return _load_json_file(p)
 
     return None
+
