@@ -130,16 +130,19 @@ def time_split(X, y, test_size=0.2):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--artifacts-dir", default="artifacts",
-                help="Where to write metrics/predictions")
+                    help="Where to write metrics/predictions")
     ap.add_argument("--models-dir", default="models",
-                help="Where to write production model artifact")
+                    help="Where to write production model artifact")
     ap.add_argument("--configs-dir", default="configs",
-                help="Where to write auxiliary JSON config")
+                    help="Where to write auxiliary JSON config")
     ap.add_argument("--symbol", required=True)
     ap.add_argument("--start", required=True)
     ap.add_argument("--end", required=True)
     ap.add_argument("--epochs", type=int, default=10)
-   
+
+    # ОБЯЗАТЕЛЬНО: разбор аргументов
+    args = ap.parse_args()
+
     t0 = time.time()
 
     artifacts_dir = Path(args.artifacts_dir)
@@ -199,27 +202,24 @@ def main():
     }
 
     # ===== Save artifacts (для анализа) =====
-    # Предсказания по тесту
     preds_df = pd.DataFrame(
         {"date": df["date"].iloc[n_tr:], "y_true": y_te, "y_pred": pred, "proba": proba}
     )
-    (artifacts_dir / "predictions.csv").write_text(preds_df.to_csv(index=False) or "", encoding="utf-8")
+    (artifacts_dir / "predictions.csv").write_text(
+        preds_df.to_csv(index=False) or "", encoding="utf-8"
+    )
 
-    # Feature importances
     pd.DataFrame({"feature": meta["feature_cols"], "importance": clf.feature_importances_}).sort_values(
         "importance", ascending=False
     ).to_csv(artifacts_dir / "feature_importances.csv", index=False)
 
-    # Метрики
     (artifacts_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
 
     # ===== Save production model (совместимо с универсальным загрузчиком) =====
-    # Каноническое имя прод-артефакта: arxora_m7pro_{SANITIZED}.joblib
     prod_model_path = models_dir / f"arxora_m7pro_{file_symbol}.joblib"
     joblib.dump(clf, prod_model_path)
 
     # Опциональный JSON-конфиг для выравнивания признаков на инференсе
-    # Универсальный загрузчик может прочитать configs/m7pro_{SANITIZED}.json
     cfg = {
         "feature_cols": meta["feature_cols"],
         "dates": {"start": meta["date_start"], "end": meta["date_end"]},
@@ -228,7 +228,7 @@ def main():
     }
     (configs_dir / f"m7pro_{file_symbol}.json").write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
-    # Дублируем модель в артефакты для удобства локального анализа (не обязательно)
+    # Дублируем модель в артефакты для удобства локального анализа
     joblib.dump(clf, artifacts_dir / "model.pkl")
 
     log("Done.")
