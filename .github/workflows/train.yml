@@ -19,21 +19,43 @@ on:
         type: number
         default: 10
   schedule:
-    - cron: '0 2 * * *' # ежедневно в 02:00 UTC
+    - cron: '0 2 * * *'  # ежедневно в 02:00 UTC
 
-# ключевое изменение: разрешаем push для публикации метрик
+# нужно для коммитов метрик
 permissions:
   contents: write
 
+# не допускаем наложений ночных прогонов/ручных запусков
+concurrency:
+  group: train-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.build.outputs.matrix }}
+    steps:
+      - name: Ensure jq
+        run: |
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -y && sudo apt-get install -y jq
+          fi
+      - name: Build unique matrix
+        id: build
+        run: |
+          # исходный список тикеров из текущего файла (дубликаты будут убраны)
+          SYMS='["AAPL","BTCUSD","TLT","SOXL","GLD","IWM","XLY","GS","NVDA","SPY","TSLA"]'
+          MATRIX=$(echo "$SYMS" | jq -c 'unique | map({symbol:.})')
+          echo "matrix={\"include\":$MATRIX}" >> "$GITHUB_OUTPUT"
+
   train:
+    needs: prepare
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
-      max-parallel: 6
-      matrix:
-        # акции/ETF без префикса; крипто с префиксом X:
-        symbol: [AAPL, BTCUSD, TLT, SOXL, GLD, IWM, XLY, GS, NVDA, SPY, TSLA,]
-    runs-on: ubuntu-24.04
+      max-parallel: 3
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
 
     defaults:
       run:
@@ -65,7 +87,6 @@ jobs:
             --epochs "${{ inputs.epochs }}" \
             --outdir "artifacts/${{ matrix.symbol }}"
 
-      # публикуем сводки в репозиторий для UI
       - name: Publish perf to repo
         if: success()
         run: |
@@ -76,7 +97,6 @@ jobs:
           cp artifacts/${{ matrix.symbol }}/predictions.csv data/perf/M7/${{ matrix.symbol }}/predictions.csv || true
           git add data/perf/M7/${{ matrix.symbol }}/* || true
           git commit -m "perf: ${{ matrix.symbol }} ${{ github.run_id }}" || echo "Nothing to commit"
-          # небольшой ретрай на случай гонок между матричными джобами
           for i in {1..5}; do git pull --rebase || true; git push && break || sleep 2; done
 
       - name: Upload models and logs
