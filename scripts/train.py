@@ -129,8 +129,14 @@ def time_split(X, y, test_size=0.2):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--artifacts-dir", default="artifacts",
-                    help="Where to write metrics/predictions")
+
+    # Поддерживаем новый флаг и устаревший алиас для обратной совместимости
+    ap.add_argument(
+        "--artifacts-dir", "--outdir",
+        dest="artifacts_dir",
+        default="artifacts",
+        help="Where to write metrics/predictions (alias: --outdir)",
+    )
     ap.add_argument("--models-dir", default="models",
                     help="Where to write production model artifact")
     ap.add_argument("--configs-dir", default="configs",
@@ -140,8 +146,12 @@ def main():
     ap.add_argument("--end", required=True)
     ap.add_argument("--epochs", type=int, default=10)
 
-    # ОБЯЗАТЕЛЬНО: разбор аргументов
+    # Разбор аргументов обязателен до обращения к args
     args = ap.parse_args()
+
+    # Мягкое предупреждение при использовании устаревшего алиаса
+    if "--outdir" in sys.argv:
+        log("WARNING: --outdir is deprecated; use --artifacts-dir instead")
 
     t0 = time.time()
 
@@ -209,9 +219,11 @@ def main():
         preds_df.to_csv(index=False) or "", encoding="utf-8"
     )
 
-    pd.DataFrame({"feature": meta["feature_cols"], "importance": clf.feature_importances_}).sort_values(
-        "importance", ascending=False
-    ).to_csv(artifacts_dir / "feature_importances.csv", index=False)
+    pd.DataFrame(
+        {"feature": meta["feature_cols"], "importance": clf.feature_importances_}
+    ).sort_values("importance", ascending=False).to_csv(
+        artifacts_dir / "feature_importances.csv", index=False
+    )
 
     (artifacts_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
 
