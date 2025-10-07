@@ -1,4 +1,3 @@
-# core/model_loader.py
 from __future__ import annotations
 
 import json
@@ -82,6 +81,21 @@ def _try_joblib(p: Path) -> Any:
         raise RuntimeError("joblib is not available to load model files")
     return joblib.load(p)
 
+def normalize_symbol(sym: str) -> str:
+    """
+    Приводим тикер к верхнему регистру и добавляем префикс класса активов
+    для совместимости с Polygon (crypto/forex/indices).
+    Примеры:
+      BTCUSD -> X:BTCUSD
+      EURUSD -> C:EURUSD (если используется ваша логика для FX; при желании оставьте только crypto)
+    """
+    u = (sym or "").upper().strip()
+    # Crypto/FX/Indices префиксы Polygon
+    if u.endswith("USD") and not (u.startswith("X:") or u.startswith("C:") or u.startswith("I:")):
+        # По умолчанию считаем крипто для *USD* тикеров без префикса
+        return f"X:{u}"
+    return u
+
 def _candidate_names(base: str) -> list[str]:
     """
     Формирует шаблоны имён для разных агентов по одному тикеру.
@@ -105,29 +119,32 @@ def _dedup(seq):
 def _build_candidates(ticker_or_name: str) -> list[Path]:
     """
     Приоритетный список путей поиска:
-    1) Санитизированное имя (кросс‑платформенно и совместимо с upload‑artifact)
-    2) Исходное имя (на случай старых файлов до санитизации)
+    1) Санитизированное нормализованное имя (совместимо с upload‑artifact)
+    2) Санитизированное исходное имя (обратная совместимость)
     3) Общие/fallback‑модели и JSON‑конфиги
     """
     raw = (ticker_or_name or "").upper().strip()
-    safe = sanitize_symbol(raw)
+    norm = normalize_symbol(raw)
+    safe_norm = sanitize_symbol(norm)
+    safe_raw = sanitize_symbol(raw)
 
-    names_safe = _candidate_names(safe)
-    names_raw = _candidate_names(raw) if raw != safe else []
+    names = _candidate_names(safe_norm)
+    if safe_raw != safe_norm:
+        names += _candidate_names(safe_raw)
 
-    model_paths = [MODELS_DIR / n for n in (names_safe + names_raw)]
-    # Добавляем общий fallback
-    model_paths.append(MODELS_DIR / "m7_model.pkl")
+    # Модели
+    model_paths = [MODELS_DIR / n for n in names]
+    model_paths.append(MODELS_DIR / "m7_model.pkl")  # общий fallback
 
-    # Конфиги (безопасное имя + обратная совместимость при отличии)
+    # Конфиги
     cfgs = [
-        CONFIG_DIR / f"m7pro_{safe}.json",
-        CONFIG_DIR / f"octopus_{safe}.json",
+        CONFIG_DIR / f"m7pro_{safe_norm}.json",
+        CONFIG_DIR / f"octopus_{safe_norm}.json",
         CONFIG_DIR / "calibration.json",
     ]
-    if raw != safe:
-        cfgs.insert(0, CONFIG_DIR / f"m7pro_{raw}.json")
-        cfgs.insert(1, CONFIG_DIR / f"octopus_{raw}.json")
+    if safe_raw != safe_norm:
+        cfgs.insert(0, CONFIG_DIR / f"m7pro_{safe_raw}.json")
+        cfgs.insert(1, CONFIG_DIR / f"octopus_{safe_raw}.json")
 
     return _dedup(model_paths + cfgs)
 
@@ -135,29 +152,37 @@ def load_model_for(ticker_or_name: str) -> Optional[Union[Any, Dict[str, Any]]]:
     """
     Универсальный загрузчик:
     - Ищет веса по приоритету для тикера/агента (arxora_m7pro/global/alphapulse/octopus),
-      сначала по санитизированному имени, затем по исходному (обратная совместимость). 
+      сначала по нормализованному и санитизированному имени, потом по исходному.
     - Поддерживает .joblib/.pkl (через joblib) и .json конфиги.
-    - Если модель — LightGBM (или содержит booster), возвращает dict {"model": obj, "feature_names": [...]}
-      чтобы инференс мог выровнять DataFrame под train.
-    - Иначе возвращает сам объект модели.
+    - Если найден конфиг JSON с указанием model_artifact, загружает модель по этому пути
+      и возвращает {"model": obj, "metadata": {...}}, где metadata включает feature_cols/dates при наличии.
+    - Если модель — LightGBM (или содержит booster), добавляет feature_names для выравнивания инференса.
     """
     for p in _build_candidates(ticker_or_name):
         if not p.exists():
             continue
 
-        if p.suffix in (".joblib", ".pkl"):
-            try:
-                obj = _try_joblib(p)
-            except Exception as e:
-                raise RuntimeError(f"Joblib load failed for {p}: {e}")
+        if p.suffix == ".json":
+            cfg = _load_json_file(p)
+            if isinstance(cfg, dict) and "model_artifact" in cfg:
+                art = Path(cfg["model_artifact"])
+                if not art.is_absolute():
+                    art = Path(".") / art
+                if art.exists():
+                    obj = _try_joblib(art)
+                    feats = _extract_feature_names_if_any(obj)
+                    metadata: Dict[str, Any] = dict(cfg)
+                    if feats:
+                        metadata.setdefault("feature_names", feats)
+                    return {"model": obj, "metadata": metadata}
+            # если нет пути к артефакту — возвращаем сам конфиг (обратная совместимость)
+            return cfg
 
+        if p.suffix in (".joblib", ".pkl"):
+            obj = _try_joblib(p)
             feats = _extract_feature_names_if_any(obj)
             if feats:
                 return {"model": obj, "feature_names": feats}
             return obj
 
-        if p.suffix == ".json":
-            return _load_json_file(p)
-
     return None
-
