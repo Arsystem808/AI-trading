@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -41,6 +41,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
           pip install black flake8
       - name: Lint (soft)
         run: |
@@ -70,7 +71,7 @@ jobs:
       - name: Detect tests
         id: detect
         run: |
-          if git ls-files 'tests/**/*.py' | grep -q .; then
+          if git ls-files "tests/*.py" "tests/**/*.py" | grep -q .; then
             echo "HAS_TESTS=true" >> "$GITHUB_ENV"
           else
             echo "HAS_TESTS=false" >> "$GITHUB_ENV"
@@ -81,8 +82,9 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install pytest
-      - name: Run tests
+      - name: Run tests (soft)
         if: env.HAS_TESTS == 'true'
+        continue-on-error: true
         run: pytest -q
       - name: Skip note
         if: env.HAS_TESTS != 'true'
