@@ -5,12 +5,17 @@ on:
     branches: [ main, master ]
     paths:
       - "**.py"
+      - "**.toml"
+      - ".streamlit/**"
       - "requirements*.txt"
       - ".github/workflows/**"
+      - "docs/**"
   pull_request:
     branches: [ main, master ]
     paths:
       - "**.py"
+      - "**.toml"
+      - ".streamlit/**"
       - "requirements*.txt"
       - ".github/workflows/**"
       - "docs/**"
@@ -69,7 +74,6 @@ jobs:
           cache-dependency-path: |
             requirements.txt
       - name: Detect tests
-        id: detect
         run: |
           if git ls-files "tests/*.py" "tests/**/*.py" | grep -q .; then
             echo "HAS_TESTS=true" >> "$GITHUB_ENV"
@@ -89,3 +93,4 @@ jobs:
       - name: Skip note
         if: env.HAS_TESTS != 'true'
         run: echo "No tests found, skipping"
+
