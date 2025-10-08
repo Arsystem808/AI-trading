@@ -69,7 +69,6 @@ jobs:
           cache-dependency-path: |
             requirements.txt
       - name: Detect tests
-        id: detect
         run: |
           if git ls-files "tests/*.py" "tests/**/*.py" | grep -q .; then
             echo "HAS_TESTS=true" >> "$GITHUB_ENV"
