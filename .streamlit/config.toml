@@ -1,9 +1,19 @@
 [theme]
-base="dark"
-primaryColor="#0F09F5"
-backgroundColor="#000000"
-secondaryBackgroundColor="#55555a"
+base = "dark"
+primaryColor = "#0F09F5"
+backgroundColor = "#000000"
+secondaryBackgroundColor = "#55555a"
+
 [client]
-toolbarMode = "minimal"   # скрывает «три точки» и верхнюю панель
+toolbarMode = "minimal"
+
 [browser]
 gatherUsageStats = false
+
+[server]
+# Отключаем файловый вотчер, чтобы не расходовать дескрипторы
+fileWatcherType = "none"
+# Не перезапускать скрипт при сохранении
+runOnSave = false
+# Явно фиксируем порт (по умолчанию 8501, можно убрать)
+port = 8501
