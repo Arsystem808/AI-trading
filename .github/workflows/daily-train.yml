@@ -1,39 +1,94 @@
+# .github/workflows/daily-train.yml
 name: Daily Training
+
 on:
   schedule:
-    - cron: "30 22 * * 1-5"
-  workflow_dispatch:
+    - cron: "30 22 * * 1-5"   # будни в 22:30 UTC
+  workflow_dispatch: {}
+
+# Нужны права для пуша ветки и открытия PR
+permissions:
+  contents: write        # git push, commit
+  pull-requests: write   # создание/обновление PR
+
 jobs:
   train:
     runs-on: ubuntu-latest
+
+    # Секрет доступен как переменная окружения
+    env:
+      POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+
       - name: Install
+        shell: bash
         run: |
-          pip install -r requirements.txt
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          mkdir -p data models config
+
       - name: ETL
+        env:
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+        shell: bash
         run: |
-          python -m pipelines.etl.daily_etl --tickers "AAPL,QQQ,SPY,OXY,NKE,AMD,SNOW,TLT,AFRM,X:BTCUSD,X:ETHUSD,MSFT,TSLA" --days 300 --out data/latest.parquet
+          set -euo pipefail
+          test -n "${POLYGON_API_KEY:-}" || { echo "POLYGON_API_KEY is not set"; exit 1; }
+          python -m pipelines.etl.daily_etl \
+            --tickers "AAPL,QQQ,SPY,OXY,NKE,AMD,SNOW,TLT,AFRM,X:BTCUSD,X:ETHUSD,MSFT,TSLA" \
+            --days 300 \
+            --out data/latest.parquet
+
       - name: Train M7
+        shell: bash
         run: |
+          set -euo pipefail
           python -m pipelines.train.train_m7 --data data/latest.parquet --out models/
+
       - name: Calibrate
+        shell: bash
         run: |
+          set -euo pipefail
           python -m pipelines.calib.calibrate_conf --data data/latest.parquet --out config/calibration.json
+
       - name: Smoke test
+        shell: bash
         run: |
+          set -euo pipefail
           python -m pipelines.smoke.smoke_test --tickers "AAPL,QQQ,SPY,OXY,NKE,AMD,SNOW,TLT,AFRM,X:BTCUSD,X:ETHUSD,MSFT,TSLA"
+
       - name: Commit models and calib
+        shell: bash
         run: |
-          git config user.name "octo-bot"
-          git config user.email "octo-bot@users.noreply.github.com"
-          git checkout -b chore/daily-models-${{ github.run_id }}
-          git add models/*.joblib models/*.pkl config/calibration.json
-          git commit -m "chore: daily models + calibration"
-          git push --set-upstream origin chore/daily-models-${{ github.run_id }}
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          BR="chore/daily-models-${{ github.run_id }}"
+          git checkout -b "$BR"
+          # Добавляем всё из целевых папок (не падаем, если файлов пока нет)
+          git add -A models config || true
+          # Коммит только если есть изменения
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: daily models + calibration"
+            git push --set-upstream origin "$BR"
+          else
+            echo "No changes to commit"
+          fi
+
       - name: Open PR
         uses: peter-evans/create-pull-request@v6
         with:
