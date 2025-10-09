@@ -93,4 +93,3 @@ jobs:
       - name: Skip note
         if: env.HAS_TESTS != 'true'
         run: echo "No tests found, skipping"
-
