@@ -1,44 +1,41 @@
-# .github/workflows/etl.yml
 name: ETL
 
 on:
   workflow_dispatch:
     inputs:
       etl_path:
-        description: "Relative path to ETL script (e.g., pipelines/etl/daily_etl.py or scripts/etl.py) or module (e.g., pipelines.etl.daily_etl)"
+        description: "File path or module (e.g., pipelines/etl/daily_etl.py или pipelines.etl.daily_etl)"
         required: false
         default: ""
-        type: string
       workdir:
-        description: "Working directory (monorepo subfolder, e.g., ai-trading)"
+        description: "Рабочая директория (если код не в корне)"
         required: false
         default: ""
-        type: string
   schedule:
     - cron: "0 5 * * *"
+
+defaults:
+  run:
+    shell: bash
+    working-directory: ${{ github.event.inputs.workdir || '.' }}
+
+env:
+  POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+  ETL_PATH_RAW: ${{ github.event.inputs.etl_path }}
+  WORKDIR: ${{ github.event.inputs.workdir || '.' }}
+
+permissions:
+  contents: read
 
 jobs:
   etl:
     runs-on: ubuntu-latest
-
-    # Все run-шага выполняются из workdir или из корня
-    defaults:
-      run:
-        shell: bash
-        working-directory: ${{ github.event.inputs.workdir || '.' }}
-
-    env:
-      # Важно: секрет должен быть создан в Settings → Secrets → Actions
-      POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
-      ETL_PATH_RAW: ${{ github.event.inputs.etl_path }}
-      WORKDIR: ${{ github.event.inputs.workdir || '.' }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: recursive
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -48,61 +45,39 @@ jobs:
 
       - name: Install dependencies
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-
+          # Устанавливаем pyarrow для to_parquet
+          pip install pyarrow
       - name: Verify tree
         run: |
           echo "WORKDIR='${WORKDIR}'"
           echo "ETL_PATH_RAW='${ETL_PATH_RAW:-<empty>}'"
           pwd
-          ls -la
-          find . -maxdepth 4 -type f -name 'etl.py' -print || true
+          ls -R . | head -n 50
 
       - name: Resolve ETL entrypoint
         id: resolve
         run: |
           set -euo pipefail
-
-          # Нормализуем ввод: убираем CR, обрезаем пробелы и возможные кавычки
-          ETL_IN="${ETL_PATH_RAW:-}"
-          ETL_IN="$(printf '%s' "$ETL_IN" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//')"
-
+          ETL_IN="$(printf '%s' "${ETL_PATH_RAW}" | tr -d '\r' | sed 's/^"//;s/"$//;s/^[[:space:]]*//;s/[[:space:]]*$//')"
           if [ -n "$ETL_IN" ]; then
-            # Если это путь к файлу
             if [ -f "$ETL_IN" ]; then
               echo "ETL_FILE=$ETL_IN" >> "$GITHUB_ENV"
-              echo "Resolved file: $ETL_IN"
               exit 0
             fi
-            # Если это модуль (pipelines.etl.daily_etl)
-            if echo "$ETL_IN" | grep -Eq '^[A-Za-z0-9_.]+$' && ! echo "$ETL_IN" | grep -q '/'; then
+            if [[ "$ETL_IN" =~ ^[A-Za-z0-9_.]+$ && "$ETL_IN" != */* ]]; then
               echo "ETL_MODULE=$ETL_IN" >> "$GITHUB_ENV"
-              echo "Resolved module: $ETL_IN"
               exit 0
             fi
-            echo "Provided etl_path='$ETL_IN' not found as file in WORKDIR='${WORKDIR}'" >&2
+            echo "Provided etl_path='$ETL_IN' not found in WORKDIR='$WORKDIR'" >&2
             exit 2
           fi
-
-          # Автопоиск файла entrypoint
-          for c in \
-            "pipelines/etl/daily_etl.py" \
-            "scripts/etl.py" \
-            "etl/runner.py" \
-            "etl.py" \
-            "etl/main.py" \
-            "src/etl.py" \
-            "src/etl/main.py"
-          do
-            if [ -f "$c" ]; then
-              echo "ETL_FILE=$c" >> "$GITHUB_ENV"
-              echo "Resolved via auto-discovery: $c"
-              exit 0
-            fi
+          for c in pipelines/etl/daily_etl.py scripts/etl.py etl.py; do
+            [ -f "$c" ] && echo "ETL_FILE=$c" >> "$GITHUB_ENV" && exit 0
           done
-
-          echo "ETL entrypoint not found; set a valid file path (e.g., pipelines/etl/daily_etl.py) or a module (e.g., pipelines.etl.daily_etl)" >&2
+          echo "ETL entrypoint not found" >&2
           exit 2
 
       - name: Run ETL
@@ -111,15 +86,26 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${POLYGON_API_KEY:-}" || { echo "POLYGON_API_KEY is not set"; exit 1; }
+
+          # Если модуль — запускаем через -m, это добавляет корень в sys.path
           if [ -n "${ETL_MODULE:-}" ]; then
             python -m "${ETL_MODULE}"
-          else
-            python "${ETL_FILE}"
+            exit $?
           fi
 
-      - name: Post-run diagnostics
-        if: failure()
-        run: |
-          echo "ETL_FILE=${ETL_FILE:-<unset>}"
-          echo "ETL_MODULE=${ETL_MODULE:-<unset>}"
-          python --version
+          # Если файл — пытаемся конвертировать путь в модуль
+          if [ -n "${ETL_FILE:-}" ]; then
+            MOD="$(echo "$ETL_FILE" | sed 's|^./||;s|/|.|g;s|\.py$||')"
+            if python -m "$MOD" --help >/dev/null 2>&1; then
+              python -m "$MOD"
+              exit $?
+            fi
+            # Фолбэк: проброс PYTHONPATH на корень проекта
+            echo "PYTHONPATH=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+            PYTHONPATH="$GITHUB_WORKSPACE:$PYTHONPATH" python "$ETL_FILE"
+            exit $?
+          fi
+
+          echo "No ETL entrypoint resolved"
+          exit 2
+
