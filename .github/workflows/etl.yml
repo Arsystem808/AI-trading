@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       etl_path:
-        description: "Relative path to ETL script (e.g., scripts/etl.py or etl/runner.py)"
+        description: "Relative path to ETL script (e.g., pipelines/etl/daily_etl.py or scripts/etl.py) or module (e.g., pipelines.etl.daily_etl)"
         required: false
         default: ""
         type: string
@@ -21,15 +21,16 @@ jobs:
   etl:
     runs-on: ubuntu-latest
 
-    # Выполняем все run из переданной подпапки или из корня
+    # Все run-шага выполняются из workdir или из корня
     defaults:
       run:
         shell: bash
         working-directory: ${{ github.event.inputs.workdir || '.' }}
 
     env:
+      # Важно: секрет должен быть создан в Settings → Secrets → Actions
       POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
-      ETL_PATH: ${{ github.event.inputs.etl_path }}
+      ETL_PATH_RAW: ${{ github.event.inputs.etl_path }}
       WORKDIR: ${{ github.event.inputs.workdir || '.' }}
 
     steps:
@@ -53,39 +54,47 @@ jobs:
       - name: Verify tree
         run: |
           echo "WORKDIR='${WORKDIR}'"
-          echo "ETL_PATH='${ETL_PATH:-<auto>}'"
+          echo "ETL_PATH_RAW='${ETL_PATH_RAW:-<empty>}'"
           pwd
           ls -la
           find . -maxdepth 4 -type f -name 'etl.py' -print || true
 
-      - name: Resolve ETL path
+      - name: Resolve ETL entrypoint
         id: resolve
         run: |
           set -euo pipefail
 
-          # 1) Если передан путь — валидируем его
-          if [ -n "${ETL_PATH:-}" ]; then
-            if [ -f "${ETL_PATH}" ]; then
-              echo "ETL_FILE=${ETL_PATH}" >> "$GITHUB_ENV"
-              echo "Resolved via input: ${ETL_PATH}"
+          # Нормализуем ввод: убираем CR, обрезаем пробелы и возможные кавычки
+          ETL_IN="${ETL_PATH_RAW:-}"
+          ETL_IN="$(printf '%s' "$ETL_IN" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//')"
+
+          if [ -n "$ETL_IN" ]; then
+            # Если это путь к файлу
+            if [ -f "$ETL_IN" ]; then
+              echo "ETL_FILE=$ETL_IN" >> "$GITHUB_ENV"
+              echo "Resolved file: $ETL_IN"
               exit 0
-            else
-              echo "Provided etl_path='${ETL_PATH}' does not exist in WORKDIR='${WORKDIR}'" >&2
-              exit 2
             fi
+            # Если это модуль (pipelines.etl.daily_etl)
+            if echo "$ETL_IN" | grep -Eq '^[A-Za-z0-9_.]+$' && ! echo "$ETL_IN" | grep -q '/'; then
+              echo "ETL_MODULE=$ETL_IN" >> "$GITHUB_ENV"
+              echo "Resolved module: $ETL_IN"
+              exit 0
+            fi
+            echo "Provided etl_path='$ETL_IN' not found as file in WORKDIR='${WORKDIR}'" >&2
+            exit 2
           fi
 
-          # 2) Автопоиск в типичных местах
-          CANDIDATES=(
-            "scripts/etl.py"
-            "etl.py"
-            "etl/runner.py"
-            "etl/main.py"
-            "src/etl.py"
+          # Автопоиск файла entrypoint
+          for c in \
+            "pipelines/etl/daily_etl.py" \
+            "scripts/etl.py" \
+            "etl/runner.py" \
+            "etl.py" \
+            "etl/main.py" \
+            "src/etl.py" \
             "src/etl/main.py"
-            "pipelines/etl/daily_etl.py"
-          )
-          for c in "${CANDIDATES[@]}"; do
+          do
             if [ -f "$c" ]; then
               echo "ETL_FILE=$c" >> "$GITHUB_ENV"
               echo "Resolved via auto-discovery: $c"
@@ -93,15 +102,7 @@ jobs:
             fi
           done
 
-          # 3) Поиск по индексу git
-          FOUND="$(git ls-files | grep -E '(^|/)(etl|runner)\.py$' | head -n 1 || true)"
-          if [ -n "$FOUND" ] && [ -f "$FOUND" ]; then
-            echo "ETL_FILE=$FOUND" >> "$GITHUB_ENV"
-            echo "Resolved via git index: $FOUND"
-            exit 0
-          fi
-
-          echo "ETL entrypoint not found; set workflow input etl_path" >&2
+          echo "ETL entrypoint not found; set a valid file path (e.g., pipelines/etl/daily_etl.py) or a module (e.g., pipelines.etl.daily_etl)" >&2
           exit 2
 
       - name: Run ETL
@@ -110,11 +111,15 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${POLYGON_API_KEY:-}" || { echo "POLYGON_API_KEY is not set"; exit 1; }
-          python "${ETL_FILE}"
+          if [ -n "${ETL_MODULE:-}" ]; then
+            python -m "${ETL_MODULE}"
+          else
+            python "${ETL_FILE}"
+          fi
 
       - name: Post-run diagnostics
         if: failure()
         run: |
-          echo "ETL_FILE was: ${ETL_FILE:-<unset>}"
+          echo "ETL_FILE=${ETL_FILE:-<unset>}"
+          echo "ETL_MODULE=${ETL_MODULE:-<unset>}"
           python --version
-          pip list | sed -n '1,80p'
