@@ -12,6 +12,10 @@ concurrency:
 jobs:
   train:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
     env:
       POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
       SYMBOLS: "BTCUSD ETHUSD"
@@ -55,15 +59,18 @@ jobs:
 
       - name: Train M7 (all symbols)
         shell: bash
+        env:
+          CI_DRY_RUN: "0"
         run: |
-          set -e
-          for SYM in $SYMBOLS; do
-            echo "=== Train for $SYM ==="
+          set -euo pipefail
+          IFS=' ' read -r -a ARR <<< "$SYMBOLS"
+          for SYM in "${ARR[@]}"; do
+            echo "=== Train for ${SYM} ==="
             python scripts/train.py \
-              --symbol "$SYM" \
-              --start  "$START_DATE" \
-              --end    "$END_DATE" \
-              --epochs "$EPOCHS" \
+              --symbol "${SYM}" \
+              --start  "${START_DATE}" \
+              --end    "${END_DATE}" \
+              --epochs "${EPOCHS}" \
               --artifacts-dir "artifacts/${SYM}" \
               --models-dir    "models" \
               --configs-dir   "configs"
