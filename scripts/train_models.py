@@ -1,13 +1,3 @@
-<<<<<<< HEAD
-import os
-import sys
-
-if os.getenv("CI_DRY_RUN") == "1":
-    print("CI_DRY_RUN=1 -> skip train_models heavy run")
-    sys.exit(0)
-
-print("train_models: implement training here")
-=======
 # scripts/train_models.py
 from __future__ import annotations
 
@@ -98,4 +88,73 @@ def train_one(hz_tag: str, frames: List[pd.DataFrame]) -> str:
     """
     Возвращает путь к сохранённой модели для горизонта hz_tag.
     Горизонты: ST≈5 дней, MID≈20 дней, LT≈60 дней.
->>>>>>> origin/main
+    """
+    hz_to_days = {"ST": 5, "MID": 20, "LT": 60}
+    days = hz_to_days.get(hz_tag, 5)
+
+    # объединяем все тикеры
+    feats, ys = [], []
+    for f in frames:
+        ff = features_frame(f)
+        y = label_forward_up(f["close"], days)
+        xx = ff.loc[y.index]
+        mask = xx.notna().all(axis=1) & y.notna()
+        feats.append(xx[mask])
+        ys.append(y[mask])
+
+    X = pd.concat(feats).astype(float)
+    y = pd.concat(ys).astype(int)
+
+    # тренировка
+    clf = HistGradientBoostingClassifier(
+        max_depth=None,
+        max_leaf_nodes=31,
+        learning_rate=0.05,
+        max_iter=600,
+        l2_regularization=0.0,
+        validation_fraction=0.1,
+        random_state=42,
+    )
+    clf.fit(X, y)
+
+    # валидационная AUC по holdout'у внутри модели
+    try:
+        y_proba = clf.predict_proba(X)[:, 1]
+        auc = roc_auc_score(y, y_proba)
+        print(f"[{hz_tag}] AUC(all)={auc:.3f} · rows={len(X)}")
+    except Exception:
+        print(f"[{hz_tag}] trained rows={len(X)}")
+
+    Path("models").mkdir(parents=True, exist_ok=True)
+    out_path = f"models/hgb_{hz_tag}.joblib"
+    joblib.dump(clf, out_path)
+    print("Saved:", out_path)
+    return out_path
+
+
+def main() -> None:
+    if os.getenv("CI_DRY_RUN") == "1":
+        print("CI_DRY_RUN=1 -> skip train_models heavy run")
+        sys.exit(0)
+
+    ap = argparse.ArgumentParser(description="Train models for multiple horizons")
+    ap.add_argument(
+        "--tickers",
+        type=str,
+        default="AAPL,MSFT,TSLA,NVDA,SPY,QQQ",
+        help="Comma-separated list of tickers",
+    )
+    ap.add_argument("--days", type=int, default=1500)
+    ap.add_argument("--horizons", type=str, default="ST,MID,LT")
+    args = ap.parse_args()
+
+    cli = PolygonClient()
+    symbols = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
+    frames = [load_symbol(cli, s, days=args.days) for s in symbols]
+
+    for hz in [h.strip().upper() for h in args.horizons.split(",") if h.strip()]:
+        train_one(hz, frames)
+
+
+if __name__ == "__main__":
+    main()
