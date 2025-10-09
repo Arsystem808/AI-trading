@@ -6,6 +6,7 @@ on:
     paths:
       - "**.py"
       - "**.toml"
+      - ".flake8"
       - ".streamlit/**"
       - "requirements*.txt"
       - ".github/workflows/**"
@@ -15,6 +16,7 @@ on:
     paths:
       - "**.py"
       - "**.toml"
+      - ".flake8"
       - ".streamlit/**"
       - "requirements*.txt"
       - ".github/workflows/**"
