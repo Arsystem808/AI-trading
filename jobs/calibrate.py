@@ -3,16 +3,9 @@ from __future__ import annotations
 
 import csv
 import json
-<<<<<<< HEAD
-import math
-import os
-from pathlib import Path
-from typing import Any, Dict, List, Tuple
-=======
 import os
 from pathlib import Path
 from typing import Any, Dict, List
->>>>>>> origin/main
 
 import numpy as np
 
@@ -60,52 +53,33 @@ def read_rows(path: str) -> List[Dict[str, Any]]:
         return list(csv.DictReader(f))
 
 
-<<<<<<< HEAD
-def save_cal(cal: Dict[str, Any], path: str):
-=======
 def save_cal(cal: Dict[str, Any], path: str) -> None:
->>>>>>> origin/main
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(cal, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _default_cal() -> Dict[str, Any]:
+    return {
+        "Global": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}}},
+        "M7": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}}},
+        "W7": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}}},
+        "AlphaPulse": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}}},
+        "Octopus": {"conf": {"method": "sigmoid", "params": {"a": 1.2, "b": -0.10}}}},
+    }
+
+
 def load_cal(path: str) -> Dict[str, Any]:
     p = Path(path)
     if not p.exists():
-        return {
-            "Global": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
-            "M7": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
-            "W7": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
-            "AlphaPulse": {
-                "conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}
-            },
-<<<<<<< HEAD
-            "Octopus": {
-                "conf": {"method": "sigmoid", "params": {"a": 1.2, "b": -0.10}}
-            },
-=======
-            "Octopus": {"conf": {"method": "sigmoid", "params": {"a": 1.2, "b": -0.10}}},
->>>>>>> origin/main
-        }
+        return _default_cal()
     try:
         return json.loads(p.read_text(encoding="utf-8"))
     except Exception:
-        return {
-<<<<<<< HEAD
-            "Global": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
-            "M7": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
-            "W7": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
-            "AlphaPulse": {
-                "conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}
-            },
-            "Octopus": {
-                "conf": {"method": "sigmoid", "params": {"a": 1.2, "b": -0.10}}
-            },
-        }
+        return _default_cal()
 
 
-def main():
+def main() -> None:
     rows = read_rows(PERF_PATH)
     if not rows:
         print("no data in", PERF_PATH)
@@ -120,23 +94,26 @@ def main():
 
     # Калибруем по TP1, если есть разметка tp1_hit (1/0)
     for agent, rr in by_agent.items():
-        y, p = [], []
+        y_list: List[float] = []
+        p_list: List[float] = []
         for r in rr:
             hit = r.get("tp1_hit", "")
             if hit not in ("0", "1"):
                 continue
             try:
-                y.append(float(hit))
-                p.append(float(r.get("p_tp1", 0.0)))
+                y_list.append(float(hit))
+                p_list.append(float(r.get("p_tp1", 0.0)))
             except Exception:
                 continue
-        if len(y) < 100:
-            print(f"{agent}: not enough labeled rows for TP1 calibration ({len(y)})")
+
+        if len(y_list) < 100:
+            print(f"{agent}: not enough labeled rows for TP1 calibration ({len(y_list)})")
             continue
 
-        y = np.array(y, dtype=float)
-        p = np.array(p, dtype=float)
+        y = np.array(y_list, dtype=float)
+        p = np.array(p_list, dtype=float)
         res = platt_grid(p, y)
+
         cal.setdefault(agent, {}).setdefault(
             "conf", {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}
         )
@@ -156,6 +133,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-=======
-            "Global": {"conf": {"method": "sigmoid",
->>>>>>> origin/main
