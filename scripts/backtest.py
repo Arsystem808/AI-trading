@@ -1,13 +1,7 @@
-<<<<<<< HEAD
-import os, sys
-
-if os.getenv("CI_DRY_RUN") == "1":
-    print("CI_DRY_RUN=1 -> skip backtest heavy run")
-    sys.exit(0)
-print("backtest: implement backtest here")
-=======
 from __future__ import annotations
 
+import os
+import sys
 import argparse
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +13,12 @@ import pandas as pd
 from core.polygon_client import PolygonClient
 from core.strategy import analyze_asset
 from core.backtest_filters import dedupe_within_horizon
+
+
+# Лёгкий выход в CI, чтобы не гонять тяжёлый бэктест
+if os.getenv("CI_DRY_RUN") == "1":
+    print("CI_DRY_RUN=1 -> skip backtest heavy run")
+    sys.exit(0)
 
 
 def generate_signals(
@@ -167,4 +167,3 @@ if __name__ == "__main__":
         cooldown_days=args.cooldown,
     )
 
->>>>>>> origin/main
