@@ -49,7 +49,7 @@ jobs:
           set -euo pipefail
           test -n "${POLYGON_API_KEY:-}" || { echo "POLYGON_API_KEY is not set"; exit 1; }
           python -m pipelines.etl.daily_etl \
-            --tickers "AAPL,QQQ,SPY,OXY,NKE,AMD,SNOW,TLT,AFRM,X:BTCUSD,X:ETHUSD,MSFT,TSLA" \
+            --tickers "AAPL,SPY,NKE,AMD,SNOW,TLT,AFRM,BTCUSD,TSLA" \
             --days 300 \
             --out data/latest.parquet
 
