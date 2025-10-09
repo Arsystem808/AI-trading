@@ -3,6 +3,17 @@ name: ETL
 
 on:
   workflow_dispatch:
+    inputs:
+      etl_path:
+        description: "Relative path to ETL script (e.g., scripts/etl.py or etl/runner.py)"
+        required: false
+        default: ""
+        type: string
+      workdir:
+        description: "Working directory (monorepo subfolder, e.g., ai-trading)"
+        required: false
+        default: ""
+        type: string
   schedule:
     - cron: "0 5 * * *"
 
@@ -11,6 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+      ETL_PATH: ${{ inputs.etl_path }}
+      WORKDIR: ${{ inputs.workdir }}
 
     steps:
       - name: Checkout
@@ -30,38 +43,71 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -n "${WORKDIR:-}" ] && [ -f "${WORKDIR}/requirements.txt" ]; then pip install -r "${WORKDIR}/requirements.txt"; fi
 
       - name: Verify tree
         shell: bash
         run: |
+          echo "WORKDIR='${WORKDIR:-.}'"
+          echo "ETL_PATH='${ETL_PATH:-<auto>}'"
           pwd
           ls -la
-          find . -maxdepth 3 -type f -name 'etl.py' -print || true
+          if [ -n "${WORKDIR:-}" ]; then ls -la "${WORKDIR}" || true; fi
+          find "${WORKDIR:-.}" -maxdepth 4 -type f -name 'etl.py' -print || true
 
       - name: Resolve ETL path
         id: resolve
         shell: bash
         run: |
           set -euo pipefail
-          CANDIDATES=("scripts/etl.py" "etl.py")
-          FOUND=""
+          cd "${WORKDIR:-.}"
+
+          # 1) If input path provided, validate it
+          if [ -n "${ETL_PATH:-}" ]; then
+            if [ -f "${ETL_PATH}" ]; then
+              echo "ETL_FILE=${ETL_PATH}" >> "$GITHUB_ENV"
+              echo "Resolved via input: ${ETL_PATH}"
+              exit 0
+            else
+              echo "Provided etl_path='${ETL_PATH}' does not exist in WORKDIR='${WORKDIR:-.}'" >&2
+              exit 2
+            fi
+          fi
+
+          # 2) Auto-discovery common locations
+          CANDIDATES=(
+            "scripts/etl.py"
+            "etl.py"
+            "etl/etl.py"
+            "etl/main.py"
+            "src/etl.py"
+            "src/etl/main.py"
+          )
           for c in "${CANDIDATES[@]}"; do
-            if [ -f "$c" ]; then FOUND="$c"; break; fi
+            if [ -f "$c" ]; then
+              echo "ETL_FILE=$c" >> "$GITHUB_ENV"
+              echo "Resolved via auto-discovery: $c"
+              exit 0
+            fi
           done
-          if [ -z "$FOUND" ]; then
-            FOUND=$(git ls-files | grep -E '(^|/)etl\.py$' | head -n 1 || true)
+
+          # 3) Last resort: grep for any etl.py
+          FOUND="$(git ls-files | grep -E '(^|/)etl\.py$' | head -n 1 || true)"
+          if [ -n "$FOUND" ] && [ -f "$FOUND" ]; then
+            echo "ETL_FILE=$FOUND" >> "$GITHUB_ENV"
+            echo "Resolved via git index: $FOUND"
+            exit 0
           fi
-          if [ -z "$FOUND" ]; then
-            echo "etl.py not found in repository tree" >&2
-            exit 2
-          fi
-          echo "ETL_FILE=$FOUND" >> "$GITHUB_ENV"
-          echo "Resolved ETL_FILE=$FOUND"
+
+          echo "etl.py not found; pass etl_path input or place script in a standard location" >&2
+          exit 2
 
       - name: Run ETL
         shell: bash
         env:
           POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
         run: |
+          set -euo pipefail
           test -n "${POLYGON_API_KEY:-}" || { echo "POLYGON_API_KEY is not set"; exit 1; }
-          python "$ETL_FILE"
+          cd "${WORKDIR:-.}"
+          python "${ETL_FILE}"
