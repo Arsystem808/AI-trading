@@ -1,20 +1,67 @@
 # .github/workflows/etl.yml
 name: ETL
+
 on:
   workflow_dispatch:
   schedule:
     - cron: "0 5 * * *"
+
 jobs:
   etl:
     runs-on: ubuntu-latest
     env:
       POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Verify tree
+        shell: bash
+        run: |
+          pwd
+          ls -la
+          find . -maxdepth 3 -type f -name 'etl.py' -print || true
+
+      - name: Resolve ETL path
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          CANDIDATES=("scripts/etl.py" "etl.py")
+          FOUND=""
+          for c in "${CANDIDATES[@]}"; do
+            if [ -f "$c" ]; then FOUND="$c"; break; fi
+          done
+          if [ -z "$FOUND" ]; then
+            FOUND=$(git ls-files | grep -E '(^|/)etl\.py$' | head -n 1 || true)
+          fi
+          if [ -z "$FOUND" ]; then
+            echo "etl.py not found in repository tree" >&2
+            exit 2
+          fi
+          echo "ETL_FILE=$FOUND" >> "$GITHUB_ENV"
+          echo "Resolved ETL_FILE=$FOUND"
+
       - name: Run ETL
+        shell: bash
+        env:
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
         run: |
           test -n "${POLYGON_API_KEY:-}" || { echo "POLYGON_API_KEY is not set"; exit 1; }
-          python scripts/etl.py
+          python "$ETL_FILE"
