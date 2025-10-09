@@ -24,6 +24,10 @@ jobs:
       SYMBOLS: "BTCUSD ETHUSD"
       START_DATE: "2019-01-01"
       EPOCHS: "12"
+      # Параметры публикации в Hugging Face Hub:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}      # добавьте секрет в Settings → Secrets and variables → Actions
+      HF_REPO:  ${{ vars.HF_REPO }}          # например: org-or-user/nightly-models (добавьте как Repository variable)
+      HF_PRIVATE: "true"                     # приватный репозиторий на Hub
 
     steps:
       - name: Checkout
@@ -101,6 +105,60 @@ jobs:
               done
             fi
           done
+
+      # Публикация весов в Hugging Face Hub
+      - name: Install huggingface_hub
+        if: ${{ env.HF_TOKEN != '' }}
+        run: |
+          python -m pip install -U huggingface_hub
+
+      - name: Publish models to Hugging Face Hub
+        if: ${{ env.HF_TOKEN != '' }}
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, sys, pathlib
+          from huggingface_hub import HfApi
+          token = os.environ.get("HF_TOKEN")
+          if not token:
+              print("HF_TOKEN is not set; skipping publish")
+              sys.exit(0)
+
+          # Определяем repo_id: берём из HF_REPO, иначе <owner>/nightly-models
+          repo_id = os.environ.get("HF_REPO")
+          if not repo_id:
+              owner = os.environ.get("GITHUB_REPOSITORY","_/_").split("/")[0]
+              repo_id = f"{owner}/nightly-models"
+
+          private  = os.environ.get("HF_PRIVATE","true").lower() in ("1","true","yes")
+          revision = os.environ.get("END_DATE","latest")
+
+          if not pathlib.Path("models").exists():
+              print("No 'models' directory; nothing to publish")
+              sys.exit(0)
+
+          api = HfApi(token=token)
+          api.create_repo(repo_id=repo_id, repo_type="model", private=private, exist_ok=True)
+          api.upload_folder(
+              folder_path="models",
+              repo_id=repo_id,
+              repo_type="model",
+              commit_message=f"nightly publish: {revision}",
+              revision=revision
+          )
+          if pathlib.Path("configs/calibration.json").exists():
+              api.upload_file(
+                  path_or_fileobj="configs/calibration.json",
+                  path_in_repo="configs/calibration.json",
+                  repo_id=repo_id,
+                  repo_type="model",
+                  commit_message=f"calibration: {revision}",
+                  revision=revision
+              )
+          print(f"Published to hf.co/{repo_id}@{revision}")
+          PY
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
