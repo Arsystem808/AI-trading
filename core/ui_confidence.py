@@ -1,12 +1,7 @@
 # core/ui_confidence.py
-<<<<<<< HEAD
-from typing import Any, Dict
-
-=======
 # Безопасный Breakdown из Session State; при отсутствии/ошибках возвращает согласованный fallback.
 
 from typing import Dict, Any
->>>>>>> origin/main
 
 
 def _get_state_float(key: str, default: float) -> float:
@@ -77,3 +72,4 @@ def render_confidence_breakdown_inline(
         },
         "shap_top": [],
     }
+
