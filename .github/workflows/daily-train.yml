@@ -1,3 +1,4 @@
+
 # .github/workflows/daily-train.yml
 name: Daily Training
 
@@ -6,7 +7,7 @@ on:
     - cron: "30 22 * * 1-5"   # будни в 22:30 UTC
   workflow_dispatch: {}
 
-# Нужны права для пуша ветки и открытия PR
+# Права для пуша ветки и открытия PR
 permissions:
   contents: write        # git push, commit
   pull-requests: write   # создание/обновление PR
@@ -15,7 +16,6 @@ jobs:
   train:
     runs-on: ubuntu-latest
 
-    # Секрет доступен как переменная окружения
     env:
       POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
 
@@ -39,6 +39,8 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          # движок для pandas.to_parquet
+          pip install pyarrow
           mkdir -p data models config
 
       - name: ETL
@@ -69,7 +71,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pipelines.smoke.smoke_test --tickers "AAPL,QQQ,SPY,OXY,NKE,AMD,SNOW,TLT,AFRM,X:BTCUSD,X:ETHUSD,MSFT,TSLA"
+          python -m pipelines.smoke.smoke_test --tickers "AAPL,QQQ,SPY,TLT,BTCUSD,TSLA"
 
       - name: Commit models and calib
         shell: bash
@@ -79,9 +81,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           BR="chore/daily-models-${{ github.run_id }}"
           git checkout -b "$BR"
-          # Добавляем всё из целевых папок (не падаем, если файлов пока нет)
           git add -A models config || true
-          # Коммит только если есть изменения
           if ! git diff --cached --quiet; then
             git commit -m "chore: daily models + calibration"
             git push --set-upstream origin "$BR"
