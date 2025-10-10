@@ -1,3 +1,4 @@
+# .github/workflows/ci.yml
 name: CI
 
 on:
@@ -44,6 +45,7 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
+            pyproject.toml
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
@@ -61,10 +63,38 @@ jobs:
             echo "No lint targets"
           fi
 
+  typecheck:
+    name: CI / typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            pyproject.toml
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+          pip install mypy
+      - name: Mypy (soft)
+        run: |
+          if compgen -G "core/**/*.py" > /dev/null; then
+            mypy .
+          else
+            echo "No Python sources for mypy"
+          fi
+
   test:
     name: CI / test
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       PYTHONPATH: ${{ github.workspace }}
     steps:
@@ -75,6 +105,7 @@ jobs:
           cache: pip
           cache-dependency-path: |
             requirements.txt
+            pyproject.toml
       - name: Detect tests
         run: |
           if git ls-files "tests/*.py" "tests/**/*.py" | grep -q .; then
@@ -87,11 +118,18 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install pytest
+          pip install pytest pytest-cov
       - name: Run tests (soft)
         if: env.HAS_TESTS == 'true'
         continue-on-error: true
-        run: pytest -q
+        run: |
+          pytest -q --maxfail=1 --disable-warnings --cov=./ --cov-report=xml
+      - name: Upload coverage
+        if: env.HAS_TESTS == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
       - name: Skip note
         if: env.HAS_TESTS != 'true'
         run: echo "No tests found, skipping"
