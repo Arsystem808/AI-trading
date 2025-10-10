@@ -61,11 +61,11 @@ def save_cal(cal: Dict[str, Any], path: str) -> None:
 
 def _default_cal() -> Dict[str, Any]:
     return {
-        "Global": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}}},
-        "M7": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}}},
-        "W7": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}}},
-        "AlphaPulse": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}}},
-        "Octopus": {"conf": {"method": "sigmoid", "params": {"a": 1.2, "b": -0.10}}}},
+        "Global": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
+        "M7": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
+        "W7": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
+        "AlphaPulse": {"conf": {"method": "sigmoid", "params": {"a": 1.0, "b": 0.0}}},
+        "Octopus": {"conf": {"method": "sigmoid", "params": {"a": 1.2, "b": -0.10}}},
     }
 
 
