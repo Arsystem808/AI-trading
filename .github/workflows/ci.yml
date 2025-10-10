@@ -52,14 +52,38 @@ jobs:
           pip install black flake8
       - name: Lint (soft)
         run: |
-          paths=("scripts" "services" "core/strategy.py")
-          any=0; for p in "${paths[@]}"; do [[ -e "$p" ]] && any=1; done
-          if [[ $any -eq 1 ]]; then
-            black --check --diff "${paths[@]}" || true
-            flake8 "${paths[@]}" || true
-          else
-            echo "No lint targets"
-          fi
+          # Чекаем весь репозиторий, но временно исключаем проблемный файл
+          BLACK_EXCL='(^|/)(jobs/calibrate\.py)($|/)'
+          black --check --diff . \
+            --force-exclude "$BLACK_EXCL" \
+            --exclude '(^|/)(\.git|\.venv|venv|build|dist|__pycache__)($|/)' || true
+
+          # flake8 тоже мягко и с исключениями служебных директорий и файла
+          flake8 . --exclude=".git,.venv,venv,build,dist,__pycache__,jobs/calibrate.py" || true
+
+  typecheck:
+    name: CI / typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+          pip install mypy
+      - name: mypy
+        run: |
+          # Ожидается, что в mypy.ini уже есть exclude для jobs/calibrate.py
+          mypy . --pretty --show-error-codes
 
   test:
     name: CI / test
@@ -95,3 +119,4 @@ jobs:
       - name: Skip note
         if: env.HAS_TESTS != 'true'
         run: echo "No tests found, skipping"
+
