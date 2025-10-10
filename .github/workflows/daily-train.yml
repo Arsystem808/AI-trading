@@ -1,4 +1,3 @@
-
 # .github/workflows/daily-train.yml
 name: Daily Training
 
@@ -68,12 +67,15 @@ jobs:
           python -m pipelines.calib.calibrate_conf --data data/latest.parquet --out config/calibration.json
 
       - name: Smoke test
+        continue-on-error: true
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
           python -m pipelines.smoke.smoke_test --tickers "AAPL,QQQ,SPY,TLT,BTCUSD,TSLA"
 
       - name: Commit models and calib
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
@@ -90,6 +92,7 @@ jobs:
           fi
 
       - name: Open PR
+        if: always()
         uses: peter-evans/create-pull-request@v6
         with:
           branch: chore/daily-models-${{ github.run_id }}
