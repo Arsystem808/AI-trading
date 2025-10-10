@@ -6,6 +6,8 @@ on:
     paths:
       - "**.py"
       - "**.toml"
+      - "**.ini"
+      - "mypy.ini"
       - ".flake8"
       - ".streamlit/**"
       - "requirements*.txt"
@@ -16,6 +18,8 @@ on:
     paths:
       - "**.py"
       - "**.toml"
+      - "**.ini"
+      - "mypy.ini"
       - ".flake8"
       - ".streamlit/**"
       - "requirements*.txt"
