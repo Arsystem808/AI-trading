@@ -50,6 +50,7 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           # Устанавливаем pyarrow для to_parquet
           pip install pyarrow
+
       - name: Verify tree
         run: |
           echo "WORKDIR='${WORKDIR}'"
@@ -108,4 +109,30 @@ jobs:
 
           echo "No ETL entrypoint resolved"
           exit 2
+
+      # Гарантируем наличие каталога артефактов в рабочей директории
+      - name: Prepare artifacts directory
+        run: |
+          mkdir -p ./artifacts
+
+      # Листинг рабочей директории и ./artifacts перед загрузкой
+      - name: List workspace and artifacts
+        if: always()
+        run: |
+          echo "Workspace listing:"
+          ls -la
+          echo "Artifacts listing (./artifacts):"
+          ls -la ./artifacts || true
+          echo "Artifacts count:"
+          find ./artifacts -mindepth 1 -printf '.' 2>/dev/null | wc -c || true
+
+      # Загрузка артефактов из ./artifacts с жёсткой ошибкой при пустой папке
+      - name: Upload ETL artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: etl-artifacts-${{ github.run_id }}
+          path: ./artifacts/
+          if-no-files-found: error
+          include-hidden-files: true
+          # retention-days: 7  # опционально
 
