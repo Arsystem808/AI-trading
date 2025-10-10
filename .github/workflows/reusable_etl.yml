@@ -1,0 +1,71 @@
+# .github/workflows/reusable_etl.yml
+name: Reusable ETL
+
+on:
+  workflow_call:
+    inputs:
+      env:
+        description: "Target environment"
+        type: string
+        required: false
+        default: "dev"
+      command:
+        description: "ETL entrypoint command"
+        type: string
+        required: false
+        default: "python -m core.etl.transform"
+    secrets:
+      DB_URL:
+        required: false
+      API_KEY:
+        required: false
+      AWS_ROLE_ARN:
+        required: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+
+      - name: Install deps
+        run: |
+          python -m pip install -U pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f pyproject.toml ]; then pip install ".[etl]" || true; fi
+
+      - name: Configure AWS (OIDC)
+        if: secrets.AWS_ROLE_ARN != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-central-1' }}
+
+      - name: Run ETL
+        env:
+          ETL_ENV: ${{ inputs.env }}
+          DB_URL: ${{ secrets.DB_URL }}
+          API_KEY: ${{ secrets.API_KEY }}
+        run: ${{ inputs.command }}
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: etl-${{ inputs.env }}-${{ github.run_id }}
+          path: artifacts
+
