@@ -31,17 +31,12 @@ on:
 permissions:
   contents: read
 
-defaults:
-  run:
-    shell: bash
-    # В reusable‑workflow допускается опираться на inputs.* (а не на secrets.*)
-    working-directory: ${{ inputs.workdir }}
-
 jobs:
   etl:
     runs-on: ubuntu-latest
     env:
       ENV: ${{ inputs.env }}
+      WORKDIR: ${{ inputs.workdir }}
       DB_URL: ${{ secrets.DB_URL }}
       API_KEY: ${{ secrets.API_KEY }}
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
@@ -65,24 +60,26 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install pyarrow
+        working-directory: ${{ env.WORKDIR }}
 
       - name: Verify tree
         run: |
           echo "ENV='${ENV}'"
-          echo "WORKDIR='${{ inputs.workdir }}'"
+          echo "WORKDIR='${WORKDIR}'"
           pwd
           ls -la | sed -n '1,200p'
+        working-directory: ${{ env.WORKDIR }}
 
       - name: Run ETL
         run: |
           set -euo pipefail
-          # если требуются ключи, проверяем их явно
           test -n "${POLYGON_API_KEY:-}" || echo "WARN: POLYGON_API_KEY is empty"
-          # команда приходит из вызывающего workflow
           eval "${{ inputs.command }}"
+        working-directory: ${{ env.WORKDIR }}
 
       - name: Prepare artifacts directory
         run: mkdir -p ./artifacts
+        working-directory: ${{ env.WORKDIR }}
 
       - name: List workspace and artifacts
         if: always()
@@ -92,6 +89,7 @@ jobs:
           echo "Artifacts listing (./artifacts):"
           ls -la ./artifacts || { echo "No ./artifacts directory"; exit 1; }
           echo "Artifacts count: $(find ./artifacts -mindepth 1 -printf '.' 2>/dev/null | wc -c)"
+        working-directory: ${{ env.WORKDIR }}
 
       - name: Upload ETL artifacts
         uses: actions/upload-artifact@v4
@@ -100,4 +98,3 @@ jobs:
           path: ./artifacts/
           if-no-files-found: error
           include-hidden-files: true
-          # retention-days: 7
