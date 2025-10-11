@@ -14,7 +14,6 @@ on:
   schedule:
     - cron: "0 5 * * *"
 
-# В defaults.run НЕЛЬЗЯ использовать contexts/expressions — оставляем только shell
 defaults:
   run:
     shell: bash
@@ -37,9 +36,15 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Normalize WORKDIR
+      - name: Compute paths
         run: |
-          echo "WORKDIR=${WORKDIR:-.}" >> "$GITHUB_ENV"
+          set -euo pipefail
+          WD="${WORKDIR:-.}"
+          ART_DIR="${GITHUB_WORKSPACE}/${WD#/}/artifacts"
+          echo "WORKDIR_NORM=$WD" >> "$GITHUB_ENV"
+          echo "ARTIFACTS_DIR=$ART_DIR" >> "$GITHUB_ENV"
+          mkdir -p "$ART_DIR"
+          echo "Artifacts will be saved to: $ART_DIR"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -53,15 +58,15 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install pyarrow
-        working-directory: ${{ env.WORKDIR }}
+        working-directory: ${{ env.WORKDIR_NORM }}
 
       - name: Verify tree
         run: |
-          echo "WORKDIR='${WORKDIR}'"
+          echo "WORKDIR='${WORKDIR_NORM}'"
           echo "ETL_PATH_RAW='${ETL_PATH_RAW:-<empty>}'"
           pwd
           ls -R . | head -n 200
-        working-directory: ${{ env.WORKDIR }}
+        working-directory: ${{ env.WORKDIR_NORM }}
 
       - name: Resolve ETL entrypoint
         id: resolve
@@ -77,7 +82,7 @@ jobs:
               echo "ETL_MODULE=$ETL_IN" >> "$GITHUB_ENV"
               exit 0
             fi
-            echo "Provided etl_path='$ETL_IN' not found in WORKDIR='${WORKDIR}'" >&2
+            echo "Provided etl_path='$ETL_IN' not found in WORKDIR='${WORKDIR_NORM}'" >&2
             exit 2
           fi
           for c in pipelines/etl/daily_etl.py scripts/etl.py etl.py; do
@@ -85,7 +90,7 @@ jobs:
           done
           echo "ETL entrypoint not found" >&2
           exit 2
-        working-directory: ${{ env.WORKDIR }}
+        working-directory: ${{ env.WORKDIR_NORM }}
 
       - name: Run ETL
         env:
@@ -112,27 +117,18 @@ jobs:
 
           echo "No ETL entrypoint resolved"
           exit 2
-        working-directory: ${{ env.WORKDIR }}
-
-      - name: Prepare artifacts directory
-        run: mkdir -p ./artifacts
-        working-directory: ${{ env.WORKDIR }}
+        working-directory: ${{ env.WORKDIR_NORM }}
 
       - name: List workspace and artifacts
         if: always()
         run: |
-          echo "Workspace listing:"
-          ls -la
-          echo "Artifacts listing (./artifacts):"
-          ls -la ./artifacts || { echo "No ./artifacts directory"; exit 1; }
-          echo "Artifacts count: $(find ./artifacts -mindepth 1 -printf '.' 2>/dev/null | wc -c)"
-        working-directory: ${{ env.WORKDIR }}
+          echo "Workspace listing:" && ls -la
+          echo "Artifacts listing (${ARTIFACTS_DIR}):" && ls -la "${ARTIFACTS_DIR}" || echo "No artifacts dir yet"
 
       - name: Upload ETL artifacts
         uses: actions/upload-artifact@v4
         with:
           name: etl-artifacts-${{ github.run_id }}
-          path: ./artifacts/
+          path: ${{ env.ARTIFACTS_DIR }}/
           if-no-files-found: error
           include-hidden-files: true
-
