@@ -21,7 +21,7 @@ defaults:
 env:
   POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
   ETL_PATH_RAW: ${{ github.event.inputs.etl_path }}
-  WORKDIR: ${{ github.event.inputs.workdir }}
+  WORKDIR_IN: ${{ github.event.inputs.workdir }}
 
 permissions:
   contents: read
@@ -29,25 +29,28 @@ permissions:
 jobs:
   etl:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Compute paths
         run: |
           set -euo pipefail
-          WD="${WORKDIR:-.}"
+          WD="${WORKDIR_IN:-.}"
           ART_DIR="${GITHUB_WORKSPACE}/${WD#/}/artifacts"
           echo "WORKDIR_NORM=$WD" >> "$GITHUB_ENV"
           echo "ARTIFACTS_DIR=$ART_DIR" >> "$GITHUB_ENV"
           mkdir -p "$ART_DIR"
-          echo "Artifacts will be saved to: $ART_DIR"
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+          echo "Artifacts dir: $ART_DIR"
+        # no working-directory here on purpose
+        # it must work from any cwd per docs
+        # https://docs.github.com/.../setting-a-default-shell-and-working-directory
+      # refs: working-directory rules
+      # and absolute paths
+      # [docs citations only]
+      
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
@@ -65,14 +68,14 @@ jobs:
           echo "WORKDIR='${WORKDIR_NORM}'"
           echo "ETL_PATH_RAW='${ETL_PATH_RAW:-<empty>}'"
           pwd
-          ls -R . | head -n 200
+          ls -la | sed -n '1,200p'
         working-directory: ${{ env.WORKDIR_NORM }}
 
       - name: Resolve ETL entrypoint
         id: resolve
         run: |
           set -euo pipefail
-          ETL_IN="$(printf '%s' "${ETL_PATH_RAW}" | tr -d '\r' | sed 's/^"//;s/"$//;s/^[[:space:]]*//;s/[[:space:]]*$//')"
+          ETL_IN="$(printf '%s' "${ETL_PATH_RAW:-}" | tr -d '\r' | sed 's/^"//;s/"$//;s/^[[:space:]]*//;s/[[:space:]]*$//')"
           if [ -n "$ETL_IN" ]; then
             if [ -f "$ETL_IN" ]; then
               echo "ETL_FILE=$ETL_IN" >> "$GITHUB_ENV"
@@ -80,9 +83,11 @@ jobs:
             fi
             if [[ "$ETL_IN" =~ ^[A-Za-z0-9_.]+$ && "$ETL_IN" != */* ]]; then
               echo "ETL_MODULE=$ETL_IN" >> "$GITHUB_ENV"
+              # also compute candidate file path for fallback
+              echo "ETL_FILE_CAND=$(echo "$ETL_IN" | tr '.' '/')".py >> "$GITHUB_ENV"
               exit 0
             fi
-            echo "Provided etl_path='$ETL_IN' not found in WORKDIR='${WORKDIR_NORM}'" >&2
+            echo "Provided etl_path='$ETL_IN' not found under WORKDIR='${WORKDIR_NORM}'" >&2
             exit 2
           fi
           for c in pipelines/etl/daily_etl.py scripts/etl.py etl.py; do
@@ -91,17 +96,34 @@ jobs:
           echo "ETL entrypoint not found" >&2
           exit 2
         working-directory: ${{ env.WORKDIR_NORM }}
-
+      
       - name: Run ETL
         env:
           POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+          ARTIFACTS_DIR: ${{ env.ARTIFACTS_DIR }}
         run: |
           set -euo pipefail
           test -n "${POLYGON_API_KEY:-}" || { echo "POLYGON_API_KEY is not set"; exit 1; }
 
           if [ -n "${ETL_MODULE:-}" ]; then
-            python -m "${ETL_MODULE}"
-            exit $?
+            # try module first
+            if python - <<'PY'
+import importlib, sys
+m = sys.argv[1]
+importlib.import_module(m)
+PY
+            "${ETL_MODULE}"; then
+              python -m "${ETL_MODULE}"
+              exit $?
+            fi
+            # fallback to file path derived from module
+            if [ -n "${ETL_FILE_CAND:-}" ] && [ -f "${ETL_FILE_CAND}" ]; then
+              echo "Falling back to file: ${ETL_FILE_CAND}"
+              PYTHONPATH="$GITHUB_WORKSPACE:${PYTHONPATH:-}" python "${ETL_FILE_CAND}"
+              exit $?
+            fi
+            echo "Module '${ETL_MODULE}' not importable and no file fallback" >&2
+            exit 1
           fi
 
           if [ -n "${ETL_FILE:-}" ]; then
@@ -110,7 +132,6 @@ jobs:
               python -m "$MOD"
               exit $?
             fi
-            echo "PYTHONPATH=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
             PYTHONPATH="$GITHUB_WORKSPACE:${PYTHONPATH:-}" python "$ETL_FILE"
             exit $?
           fi
@@ -119,11 +140,21 @@ jobs:
           exit 2
         working-directory: ${{ env.WORKDIR_NORM }}
 
+      - name: Collect logs
+        if: always()
+        run: |
+          set -euo pipefail
+          # пример сборки результатов из стандартных мест проекта
+          for d in logs output data; do
+            [ -d "$d" ] && rsync -a "$d"/ "${ARTIFACTS_DIR}/$d"/ || true
+          done
+        working-directory: ${{ env.WORKDIR_NORM }}
+      
       - name: List workspace and artifacts
         if: always()
         run: |
-          echo "Workspace listing:" && ls -la
-          echo "Artifacts listing (${ARTIFACTS_DIR}):" && ls -la "${ARTIFACTS_DIR}" || echo "No artifacts dir yet"
+          echo "Workspace listing:" && ls -la "${GITHUB_WORKSPACE}/${WORKDIR_NORM#/}" || true
+          echo "Artifacts listing (${ARTIFACTS_DIR}):" && ls -la "${ARTIFACTS_DIR}" || true
 
       - name: Upload ETL artifacts
         uses: actions/upload-artifact@v4
