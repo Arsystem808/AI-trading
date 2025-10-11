@@ -43,16 +43,23 @@ jobs:
       POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
+
+      - name: Compute paths
+        run: |
+          set -euo pipefail
+          WD="${WORKDIR:-.}"
+          ART_DIR="${GITHUB_WORKSPACE}/${WD#/}/artifacts"
+          echo "WORKDIR_NORM=$WD" >> "$GITHUB_ENV"
+          echo "ARTIFACTS_DIR=$ART_DIR" >> "$GITHUB_ENV"
+          mkdir -p "$ART_DIR"
 
       - name: Install dependencies
         run: |
@@ -60,41 +67,33 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install pyarrow
-        working-directory: ${{ env.WORKDIR }}
+        working-directory: ${{ env.WORKDIR_NORM }}
 
       - name: Verify tree
         run: |
           echo "ENV='${ENV}'"
-          echo "WORKDIR='${WORKDIR}'"
+          echo "WORKDIR='${WORKDIR_NORM}'"
           pwd
           ls -la | sed -n '1,200p'
-        working-directory: ${{ env.WORKDIR }}
+        working-directory: ${{ env.WORKDIR_NORM }}
 
       - name: Run ETL
         run: |
           set -euo pipefail
           test -n "${POLYGON_API_KEY:-}" || echo "WARN: POLYGON_API_KEY is empty"
           eval "${{ inputs.command }}"
-        working-directory: ${{ env.WORKDIR }}
-
-      - name: Prepare artifacts directory
-        run: mkdir -p ./artifacts
-        working-directory: ${{ env.WORKDIR }}
+        working-directory: ${{ env.WORKDIR_NORM }}
 
       - name: List workspace and artifacts
         if: always()
         run: |
-          echo "Workspace listing:"
-          ls -la
-          echo "Artifacts listing (./artifacts):"
-          ls -la ./artifacts || { echo "No ./artifacts directory"; exit 1; }
-          echo "Artifacts count: $(find ./artifacts -mindepth 1 -printf '.' 2>/dev/null | wc -c)"
-        working-directory: ${{ env.WORKDIR }}
+          echo "Workspace listing:" && ls -la
+          echo "Artifacts listing (${ARTIFACTS_DIR}):" && ls -la "${ARTIFACTS_DIR}" || echo "No artifacts dir yet"
 
       - name: Upload ETL artifacts
         uses: actions/upload-artifact@v4
         with:
           name: etl-artifacts-${{ github.run_id }}
-          path: ./artifacts/
+          path: ${{ env.ARTIFACTS_DIR }}/
           if-no-files-found: error
           include-hidden-files: true
