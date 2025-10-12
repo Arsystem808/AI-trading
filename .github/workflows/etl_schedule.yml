@@ -3,16 +3,16 @@ name: ETL Production Run
 
 on:
   schedule:
-    - cron: "5 5 * * *"     # каждый день 05:05 UTC
-  workflow_dispatch:        # ручной запуск из UI
+    - cron: "5 5 * * *"   # ежедневно 05:05 UTC
+  workflow_dispatch:
 
 permissions:
   contents: read
-  id-token: write           # для OIDC, если используете облако
+  id-token: write          # для OIDC при работе с облаком
 
 concurrency:
   group: etl-prod
-  cancel-in-progress: true  # не допускать наложения ETL-запусков
+  cancel-in-progress: true # не допускать наложения запусков
 
 jobs:
   etl:
@@ -35,13 +35,23 @@ jobs:
 
       - name: Install runtime deps
         run: |
+          set -euo pipefail
           python -m pip install -U pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           if [ -f pyproject.toml ]; then pip install ".[etl]" || true; fi
 
-      # Опционально: AWS OIDC (если нужен доступ к S3/RS/Athena/Glue и т.п.)
+      - name: Compute paths
+        run: |
+          set -euo pipefail
+          ART_DIR="${GITHUB_WORKSPACE}/artifacts"
+          echo "ARTIFACTS_DIR=$ART_DIR" >> "$GITHUB_ENV"
+          mkdir -p "$ART_DIR"
+      # Абсолютный путь исключает проблемы с cwd/working-directory
+      # и делает поведение шагов предсказуемым
+
+      # OIDC (опционально)
       - name: Configure AWS (OIDC)
-        if: env.AWS_ROLE_ARN != ''
+        if: ${{ secrets.AWS_ROLE_ARN != '' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
@@ -50,22 +60,43 @@ jobs:
       - name: Run ETL
         env:
           ETL_ENV: prod
-          # пример секретов: строки подключения/токены
           DB_URL: ${{ secrets.DB_URL }}
           API_KEY: ${{ secrets.API_KEY }}
+          ARTIFACTS_DIR: ${{ env.ARTIFACTS_DIR }}
         run: |
           set -euo pipefail
           python -m core.etl.transform
 
       - name: Collect logs
         if: always()
+        env:
+          ARTIFACTS_DIR: ${{ env.ARTIFACTS_DIR }}
         run: |
-          mkdir -p artifacts
-          cp -R logs/* artifacts/ 2>/dev/null || true
+          set -euo pipefail
+          mkdir -p "${ARTIFACTS_DIR}"
+          # Собираем типовые выходы, если есть
+          for d in logs output data; do
+            if [ -d "$d" ]; then
+              rsync -a "$d"/ "${ARTIFACTS_DIR}/$d"/
+            fi
+          done
+          # Гарантируем хотя бы один файл для строгой загрузки
+          echo "run_id=${GITHUB_RUN_ID} date=$(date -Is)" | tee "${ARTIFACTS_DIR}/run.log" >/dev/null
+
+      - name: List artifacts
+        if: always()
+        env:
+          ARTIFACTS_DIR: ${{ env.ARTIFACTS_DIR }}
+        run: |
+          echo "Artifacts at: ${ARTIFACTS_DIR}"
+          ls -la "${ARTIFACTS_DIR}" || true
 
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: etl-run-${{ github.run_id }}
-          path: artifacts
+          path: ${{ env.ARTIFACTS_DIR }}/
+          if-no-files-found: error
+          include-hidden-files: true
+
