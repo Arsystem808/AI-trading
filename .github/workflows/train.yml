@@ -62,9 +62,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "${ARTIFACTS_DIR}/logs" "${ARTIFACTS_DIR}/models/${{ matrix.symbol }}"
-
-          # Собираем аргументы ТОЛЬКО если значение непустое,
-          # чтобы не передавать '' в argparse для числовых флагов
+          echo "EPOCHS=${EPOCHS} CV_SPLITS=${CV_SPLITS} TEST_SIZE=${TEST_SIZE}"
           args=( "scripts/train.py"
                  "--artifacts-dir" "${ARTIFACTS_DIR}"
                  "--models-dir" "${ARTIFACTS_DIR}/models/${{ matrix.symbol }}"
