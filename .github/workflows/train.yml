@@ -1,108 +1,69 @@
+
 name: Train
 
 on:
   workflow_dispatch:
-    inputs:
-      start:
-        description: 'Start (YYYY-MM-DD)'
-        required: true
-        type: string
-        default: '2020-01-01'
-      end:
-        description: 'End (YYYY-MM-DD)'
-        required: true
-        type: string
-        default: '2025-10-01'
-      epochs:
-        description: 'Epochs'
-        required: false
-        type: number
-        default: 10
   schedule:
-    - cron: '0 2 * * *'  # ежедневно в 02:00 UTC
+    - cron: "30 5 * * *"
 
-# нужно для коммитов метрик
-permissions:
-  contents: write
-
-# не допускаем наложений ночных прогонов/ручных запусков
-concurrency:
-  group: train-${{ github.ref }}
-  cancel-in-progress: true
+defaults:
+  run:
+    shell: bash
 
 jobs:
   prepare:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.build.outputs.matrix }}
+      artifacts_dir: ${{ steps.paths.outputs.artifacts_dir }}
     steps:
-      - name: Ensure jq
+      - uses: actions/checkout@v4
+      - id: paths
         run: |
-          if ! command -v jq >/dev/null 2>&1; then
-            sudo apt-get update -y && sudo apt-get install -y jq
-          fi
-      - name: Build unique matrix
-        id: build
-        run: |
-          # исходный список тикеров из текущего файла (дубликаты будут убраны)
-          SYMS='["AAPL","BTCUSD","TLT","SOXL","GLD","IWM","XLY","GS","NVDA","SPY","TSLA"]'
-          MATRIX=$(echo "$SYMS" | jq -c 'unique | map({symbol:.})')
-          echo "matrix={\"include\":$MATRIX}" >> "$GITHUB_OUTPUT"
+          ART_DIR="${GITHUB_WORKSPACE}/artifacts-train"
+          mkdir -p "$ART_DIR"
+          echo "artifacts_dir=$ART_DIR" >> "$GITHUB_OUTPUT"
 
   train:
     needs: prepare
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      max-parallel: 3
-      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
-
-    defaults:
-      run:
-        shell: bash
-        working-directory: ./
-
+      matrix:
+        symbol: [AAPL, BTCUSD, GLD, GS, IWM, NVDA, SOXL, SPY, TLT, TSLA, XLY]
+        include:
+          - symbol: GLD
+            epochs: 10
+            cv_splits: 5
+            test_size: 0.2
+    env:
+      ARTIFACTS_DIR: ${{ needs.prepare.outputs.artifacts_dir }}
+      EPOCHS: ${{ matrix.epochs || 10 }}
+      CV_SPLITS: ${{ matrix.cv_splits || 5 }}
+      TEST_SIZE: ${{ matrix.test_size || 0.2 }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-          cache-dependency-path: requirements.txt
-
+        with: { python-version: "3.11", cache: pip }
       - name: Install deps
         run: |
-          python -m pip install -U pip
-          pip install -r requirements.txt
-
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
       - name: Run training
-        env:
-          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
         run: |
+          set -euo pipefail
+          mkdir -p "${ARTIFACTS_DIR}/logs" "${ARTIFACTS_DIR}/models/${{ matrix.symbol }}"
           python scripts/train.py \
+            --artifacts-dir "${ARTIFACTS_DIR}" \
+            --models-dir "${ARTIFACTS_DIR}/models/${{ matrix.symbol }}" \
             --symbol "${{ matrix.symbol }}" \
-            --start "${{ inputs.start }}" \
-            --end "${{ inputs.end }}" \
-            --epochs "${{ inputs.epochs }}" \
-            --outdir "artifacts/${{ matrix.symbol }}"
-
-      - name: Publish perf to repo
-        if: success()
-        run: |
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git config user.name  "github-actions[bot]"
-          mkdir -p data/perf/M7/${{ matrix.symbol }}
-          cp artifacts/${{ matrix.symbol }}/metrics.json data/perf/M7/${{ matrix.symbol }}/metrics.json || true
-          cp artifacts/${{ matrix.symbol }}/predictions.csv data/perf/M7/${{ matrix.symbol }}/predictions.csv || true
-          git add data/perf/M7/${{ matrix.symbol }}/* || true
-          git commit -m "perf: ${{ matrix.symbol }} ${{ github.run_id }}" || echo "Nothing to commit"
-          for i in {1..5}; do git pull --rebase || true; git push && break || sleep 2; done
-
+            --epochs "${EPOCHS}" \
+            --cv-splits "${CV_SPLITS}" \
+            --test-size "${TEST_SIZE}"
       - name: Upload models and logs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: model-${{ matrix.symbol }}-${{ github.run_id }}
-          path: artifacts/${{ matrix.symbol }}/**
+          name: train-${{ matrix.symbol }}-${{ github.run_id }}
+          path: ${{ env.ARTIFACTS_DIR }}/
           if-no-files-found: error
-          retention-days: 14
+          include-hidden-files: true
