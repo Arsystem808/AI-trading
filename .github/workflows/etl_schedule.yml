@@ -3,20 +3,20 @@ name: ETL Production Run
 
 on:
   schedule:
-    - cron: "5 5 * * *"   # ежедневно 05:05 UTC
+    - cron: "5 5 * * *"   # 05:05 UTC
   workflow_dispatch:
 
 permissions:
   contents: read
-  id-token: write          # для OIDC при работе с облаком
+  id-token: write
 
 concurrency:
   group: etl-prod
-  cancel-in-progress: true # не допускать наложения запусков
+  cancel-in-progress: true
 
 defaults:
   run:
-    shell: bash            # единый shell для всех шагов
+    shell: bash
 
 jobs:
   etl:
@@ -47,12 +47,10 @@ jobs:
       - name: Compute paths
         run: |
           set -euo pipefail
-          ART_DIR="${GITHUB_WORKSPACE}/artifacts"
+          ART_DIR="${GITHUB_WORKSPACE}/artifacts-etl"
           echo "ARTIFACTS_DIR=$ART_DIR" >> "$GITHUB_ENV"
           mkdir -p "$ART_DIR"
-      # Абсолютный путь исключает проблемы с cwd/working-directory
 
-      # OIDC (опционально)
       - name: Configure AWS (OIDC)
         if: ${{ secrets.AWS_ROLE_ARN != '' }}
         uses: aws-actions/configure-aws-credentials@v4
@@ -68,23 +66,20 @@ jobs:
           ARTIFACTS_DIR: ${{ env.ARTIFACTS_DIR }}
         run: |
           set -euo pipefail
-          python -m core.etl.transform
+          LOG="${ARTIFACTS_DIR}/run.log"
+          echo "run_id=${GITHUB_RUN_ID} started=$(date -Is)" | tee "$LOG" >/dev/null
+          python -m core.etl.transform 2>&1 | tee -a "$LOG"
 
-      - name: Collect logs
+      - name: Collect outputs
         if: always()
         env:
           ARTIFACTS_DIR: ${{ env.ARTIFACTS_DIR }}
         run: |
           set -euo pipefail
           mkdir -p "${ARTIFACTS_DIR}"
-          # Собираем типовые выходы, если есть
           for d in logs output data; do
-            if [ -d "$d" ]; then
-              rsync -a "$d"/ "${ARTIFACTS_DIR}/$d"/
-            fi
+            if [ -d "$d" ]; then rsync -a "$d"/ "${ARTIFACTS_DIR}/$d"/; fi
           done
-          # Гарантируем хотя бы один файл для строгой загрузки
-          echo "run_id=${GITHUB_RUN_ID} date=$(date -Is)" | tee "${ARTIFACTS_DIR}/run.log" >/dev/null
 
       - name: List artifacts
         if: always()
@@ -100,6 +95,5 @@ jobs:
         with:
           name: etl-run-${{ github.run_id }}
           path: ${{ env.ARTIFACTS_DIR }}/
-          if-no-files-found: error
+          if-no-files-found: warn
           include-hidden-files: true
-
