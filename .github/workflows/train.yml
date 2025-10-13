@@ -12,7 +12,7 @@ on:
         required: false
         default: '2024-12-31'
   schedule:
-    - cron: "30 5 * * *" # 05:30 UTC
+    - cron: "30 5 * * *"
 
 defaults:
   run:
@@ -60,6 +60,7 @@ jobs:
       EPOCHS: ${{ matrix.epochs || 10 }}
       CV_SPLITS: ${{ matrix.cv_splits || 5 }}
       TEST_SIZE: ${{ matrix.test_size || 0.2 }}
+      POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
     steps:
       - uses: actions/checkout@v4
 
