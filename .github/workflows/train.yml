@@ -89,4 +89,3 @@ jobs:
           path: ${{ env.ARTIFACTS_DIR }}/
           if-no-files-found: error
           include-hidden-files: true
-
