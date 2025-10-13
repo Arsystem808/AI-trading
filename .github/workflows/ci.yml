@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
     paths:
       - "**.py"
       - "**.toml"
@@ -14,7 +14,7 @@ on:
       - ".github/workflows/**"
       - "docs/**"
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
     paths:
       - "**.py"
       - "**.toml"
@@ -99,3 +99,4 @@ jobs:
       - name: Skip note
         if: env.HAS_TESTS != 'true'
         run: echo "No tests found, skipping"
+
