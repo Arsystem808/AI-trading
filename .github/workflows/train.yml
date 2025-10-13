@@ -2,8 +2,17 @@ name: Train
 
 on:
   workflow_dispatch:
+    inputs:
+      start:
+        description: 'Start date (YYYY-MM-DD)'
+        required: false
+        default: '2023-01-01'
+      end:
+        description: 'End date (YYYY-MM-DD)'
+        required: false
+        default: '2024-12-31'
   schedule:
-    - cron: "30 5 * * *" # 05:30 UTC, не локальное время
+    - cron: "30 5 * * *" # 05:30 UTC
 
 defaults:
   run:
@@ -14,6 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       artifacts_dir: ${{ steps.paths.outputs.artifacts_dir }}
+      start_date: ${{ steps.dates.outputs.start_date }}
+      end_date: ${{ steps.dates.outputs.end_date }}
     steps:
       - uses: actions/checkout@v4
       - id: paths
@@ -22,6 +33,13 @@ jobs:
           ART_DIR="${GITHUB_WORKSPACE}/artifacts-train"
           mkdir -p "$ART_DIR"
           echo "artifacts_dir=$ART_DIR" >> "$GITHUB_OUTPUT"
+      - id: dates
+        run: |
+          set -euo pipefail
+          START="${{ github.event.inputs.start || '2023-01-01' }}"
+          END="${{ github.event.inputs.end || '2024-12-31' }}"
+          echo "start_date=$START" >> "$GITHUB_OUTPUT"
+          echo "end_date=$END" >> "$GITHUB_OUTPUT"
 
   train:
     needs: prepare
@@ -37,6 +55,8 @@ jobs:
             test_size: 0.2
     env:
       ARTIFACTS_DIR: ${{ needs.prepare.outputs.artifacts_dir }}
+      START_DATE: ${{ needs.prepare.outputs.start_date }}
+      END_DATE: ${{ needs.prepare.outputs.end_date }}
       EPOCHS: ${{ matrix.epochs || 10 }}
       CV_SPLITS: ${{ matrix.cv_splits || 5 }}
       TEST_SIZE: ${{ matrix.test_size || 0.2 }}
@@ -68,13 +88,14 @@ jobs:
           args=( "scripts/train.py"
                  "--artifacts-dir" "${ARTIFACTS_DIR}"
                  "--models-dir" "${ARTIFACTS_DIR}/models/${{ matrix.symbol }}"
-                 "--symbol" "${{ matrix.symbol }}" )
+                 "--symbol" "${{ matrix.symbol }}"
+                 "--start" "${START_DATE}"
+                 "--end" "${END_DATE}" )
 
           [ -n "${EPOCHS:-}" ]    && args+=( "--epochs" "${EPOCHS}" )
           [ -n "${CV_SPLITS:-}" ] && args+=( "--cv-splits" "${CV_SPLITS}" )
           [ -n "${TEST_SIZE:-}" ] && args+=( "--test-size" "${TEST_SIZE}" )
 
-          # поток в лог + корректный код возврата пайплайна
           python "${args[@]}" 2>&1 | tee -a "$LOG"
 
       - name: List artifacts
@@ -91,4 +112,3 @@ jobs:
           path: ${{ env.ARTIFACTS_DIR }}/
           if-no-files-found: warn
           include-hidden-files: true
-
