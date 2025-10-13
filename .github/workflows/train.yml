@@ -63,6 +63,7 @@ jobs:
           set -euo pipefail
           mkdir -p "${ARTIFACTS_DIR}/logs" "${ARTIFACTS_DIR}/models/${{ matrix.symbol }}"
           echo "EPOCHS=${EPOCHS} CV_SPLITS=${CV_SPLITS} TEST_SIZE=${TEST_SIZE}"
+          
           args=( "scripts/train.py"
                  "--artifacts-dir" "${ARTIFACTS_DIR}"
                  "--models-dir" "${ARTIFACTS_DIR}/models/${{ matrix.symbol }}"
