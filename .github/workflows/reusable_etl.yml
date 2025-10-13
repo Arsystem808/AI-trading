@@ -22,6 +22,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   etl:
     runs-on: ubuntu-latest
@@ -31,10 +35,13 @@ jobs:
       POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
 
     steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
@@ -42,14 +49,22 @@ jobs:
       - name: Compute paths
         run: |
           set -euo pipefail
+          # Нормализуем рабочий каталог и собираем абсолютные пути
           WD="${WORKDIR_IN:-.}"
-          ART_DIR="${GITHUB_WORKSPACE}/${WD#/}/artifacts"
-          echo "WORKDIR_NORM=$WD" >> "$GITHUB_ENV"
-          echo "ARTIFACTS_DIR=$ART_DIR" >> "$GITHUB_ENV"
-          mkdir -p "$ART_DIR"
+          if [ "$WD" = "." ]; then
+            BASE="${GITHUB_WORKSPACE}"
+          else
+            # убираем ведущие ./ для аккуратной конкатенации
+            BASE="${GITHUB_WORKSPACE}/${WD#./}"
+          fi
+          ART_DIR="${BASE}/artifacts"
+          echo "WORKDIR_NORM=${WD}" >> "$GITHUB_ENV"
+          echo "ARTIFACTS_DIR=${ART_DIR}" >> "$GITHUB_ENV"
+          mkdir -p "${ART_DIR}"
 
       - name: Install dependencies
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install pyarrow
@@ -64,14 +79,35 @@ jobs:
           eval "${{ inputs.command }}"
         working-directory: ${{ env.WORKDIR_NORM }}
 
-      - name: List & upload
+      - name: Collect outputs
         if: always()
+        env:
+          ARTIFACTS_DIR: ${{ env.ARTIFACTS_DIR }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${ARTIFACTS_DIR}"
+          # Собираем типовые каталоги, если они появились в ходе ETL
+          for d in logs output data; do
+            if [ -d "$d" ]; then
+              rsync -a "$d"/ "${ARTIFACTS_DIR}/$d"/
+            fi
+          done
+          # Гарантируем наличие хотя бы одного файла для строгой загрузки
+          echo "run_id=${GITHUB_RUN_ID} env=${ENV} date=$(date -Is)" \
+            | tee "${ARTIFACTS_DIR}/run.log" >/dev/null
+        working-directory: ${{ env.WORKDIR_NORM }}
+
+      - name: List artifacts
+        if: always()
+        env:
+          ARTIFACTS_DIR: ${{ env.ARTIFACTS_DIR }}
         run: |
           echo "Artifacts at: ${ARTIFACTS_DIR}"
           ls -la "${ARTIFACTS_DIR}" || true
-        shell: bash
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: etl-artifacts-${{ github.run_id }}
           path: ${{ env.ARTIFACTS_DIR }}/
