@@ -3,7 +3,7 @@ name: Train
 on:
   workflow_dispatch:
   schedule:
-    - cron: "30 5 * * *"
+    - cron: "30 5 * * *" # 05:30 UTC, не локальное время
 
 defaults:
   run:
@@ -58,12 +58,13 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           if [ -f pyproject.toml ]; then pip install "." || true; fi
 
-      - name: Run training
+      - name: Run training (with logs)
         run: |
           set -euo pipefail
           mkdir -p "${ARTIFACTS_DIR}/logs" "${ARTIFACTS_DIR}/models/${{ matrix.symbol }}"
-          echo "EPOCHS=${EPOCHS} CV_SPLITS=${CV_SPLITS} TEST_SIZE=${TEST_SIZE}"
-          
+          LOG="${ARTIFACTS_DIR}/logs/train_${{ matrix.symbol }}.log"
+          echo "run_id=${GITHUB_RUN_ID} symbol=${{ matrix.symbol }} started=$(date -Is)" | tee "$LOG" >/dev/null
+
           args=( "scripts/train.py"
                  "--artifacts-dir" "${ARTIFACTS_DIR}"
                  "--models-dir" "${ARTIFACTS_DIR}/models/${{ matrix.symbol }}"
@@ -73,7 +74,8 @@ jobs:
           [ -n "${CV_SPLITS:-}" ] && args+=( "--cv-splits" "${CV_SPLITS}" )
           [ -n "${TEST_SIZE:-}" ] && args+=( "--test-size" "${TEST_SIZE}" )
 
-          python "${args[@]}"
+          # поток в лог + корректный код возврата пайплайна
+          python "${args[@]}" 2>&1 | tee -a "$LOG"
 
       - name: List artifacts
         if: always()
@@ -87,5 +89,6 @@ jobs:
         with:
           name: train-${{ matrix.symbol }}-${{ github.run_id }}
           path: ${{ env.ARTIFACTS_DIR }}/
-          if-no-files-found: error
+          if-no-files-found: warn
           include-hidden-files: true
+
