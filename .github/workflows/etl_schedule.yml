@@ -14,6 +14,10 @@ concurrency:
   group: etl-prod
   cancel-in-progress: true # не допускать наложения запусков
 
+defaults:
+  run:
+    shell: bash            # единый shell для всех шагов
+
 jobs:
   etl:
     runs-on: ubuntu-latest
@@ -47,7 +51,6 @@ jobs:
           echo "ARTIFACTS_DIR=$ART_DIR" >> "$GITHUB_ENV"
           mkdir -p "$ART_DIR"
       # Абсолютный путь исключает проблемы с cwd/working-directory
-      # и делает поведение шагов предсказуемым
 
       # OIDC (опционально)
       - name: Configure AWS (OIDC)
