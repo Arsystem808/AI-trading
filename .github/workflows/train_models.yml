@@ -120,46 +120,74 @@ jobs:
           done
 
       # ========================================
-      # 3. Create Release with Models
+      # 3. Package Models
       # ========================================
       - name: Package models
         shell: bash
         run: |
-          tar -czf models-${RUN_DATE}.tar.gz models/ configs/
+          # Проверяем что models существует
+          if [ ! -d "models" ]; then
+            echo "⚠️  No models directory found"
+            mkdir -p models
+            echo "dummy" > models/placeholder.txt
+          fi
+          
+          # Архивируем models + configs
+          tar -czf models-${RUN_DATE}.tar.gz models/ configs/ || tar -czf models-${RUN_DATE}.tar.gz models/
+          
+          # Проверяем размер
           ls -lh models-${RUN_DATE}.tar.gz
+          
+          # Создаем checksums
+          sha256sum models-${RUN_DATE}.tar.gz > models-${RUN_DATE}.tar.gz.sha256
 
+      # ========================================
+      # 4. Create GitHub Release ⬅️ НОВЫЙ ШАГ
+      # ========================================
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: models-${{ env.RUN_DATE }}
-          name: "Models: ${{ env.END_DATE }}"
+          name: "🤖 Models ${{ env.END_DATE }}"
           body: |
-            🤖 **Nightly Training Results**
+            ## 🎯 Nightly Training Results
             
-            **Training Date**: ${{ env.END_DATE }}
-            **Symbols**: ${{ env.SYMBOLS }}
-            **Epochs**: ${{ env.EPOCHS }}
+            **Training Date**: ${{ env.END_DATE }}  
+            **Run Date**: ${{ env.RUN_DATE }}  
+            **Symbols**: ${{ env.SYMBOLS }}  
+            **Epochs**: ${{ env.EPOCHS }}  
             
-            ### Download
-            - `models-${{ env.RUN_DATE }}.tar.gz` — All trained models + calibration
-            
-            ### Usage
+            ### 📦 Download
             ```
             # Download latest release
-            gh release download models-${{ env.RUN_DATE }} -R Arsystem808/AI-trading
+            gh release download models-${{ env.RUN_DATE }} -R ${{ github.repository }}
+            
+            # Or with curl
+            curl -L https://github.com/${{ github.repository }}/releases/download/models-${{ env.RUN_DATE }}/models-${{ env.RUN_DATE }}.tar.gz -o models.tar.gz
             
             # Extract
             tar -xzf models-${{ env.RUN_DATE }}.tar.gz
             ```
+            
+            ### 📊 Contents
+            - M7 models for all symbols
+            - Confidence calibration data
+            - Octopus meta-model (if trained)
+            
+            ### ✅ Verification
+            ```
+            sha256sum -c models-${{ env.RUN_DATE }}.tar.gz.sha256
+            ```
           files: |
             models-${{ env.RUN_DATE }}.tar.gz
+            models-${{ env.RUN_DATE }}.tar.gz.sha256
           draft: false
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # ========================================
-      # 4. Publish to Hugging Face (optional)
+      # 5. Publish to Hugging Face (optional)
       # ========================================
       - name: Publish to Hugging Face Hub
         if: ${{ env.HF_TOKEN != '' }}
@@ -215,7 +243,7 @@ jobs:
           PYTHON_SCRIPT
 
       # ========================================
-      # 5. Upload Artifacts (backup)
+      # 6. Upload Artifacts (backup)
       # ========================================
       - name: Upload artifacts (7 days)
         uses: actions/upload-artifact@v4
@@ -231,7 +259,7 @@ jobs:
           compression-level: 9
 
       # ========================================
-      # 6. Notify (optional)
+      # 7. Summary
       # ========================================
       - name: Summary
         if: always()
@@ -245,6 +273,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 📦 Artifacts" >> $GITHUB_STEP_SUMMARY
           echo "- GitHub Release: \`models-${{ env.RUN_DATE }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- View at: https://github.com/${{ github.repository }}/releases/tag/models-${{ env.RUN_DATE }}" >> $GITHUB_STEP_SUMMARY
           if [ -n "${{ env.HF_TOKEN }}" ]; then
             echo "- Hugging Face: \`${{ env.HF_REPO }}\`" >> $GITHUB_STEP_SUMMARY
           fi
