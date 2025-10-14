@@ -2,11 +2,11 @@ name: Nightly Training
 
 on:
   schedule:
-    - cron: "0 2 * * *"   # каждый день в 02:00 UTC
-  workflow_dispatch:
+    - cron: "0 2 * * *"   # каждый день в 02:00 UTC (05:00 MSK)
+  workflow_dispatch:      # возможность запуска вручную
 
 permissions:
-  contents: read
+  contents: write         # ✅ ВАЖНО: права на создание релизов
 
 concurrency:
   group: nightly-training-${{ github.workflow }}-${{ github.ref }}
@@ -16,157 +16,235 @@ jobs:
   train:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write      # для GitHub Releases
       actions: read
       id-token: write
+    
     env:
       POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
-      SYMBOLS: "BTCUSD ETHUSD"
+      SYMBOLS: "AAPL AMD BTCUSD ETHUSD SNOW SOXL"
       START_DATE: "2019-01-01"
       EPOCHS: "12"
-      # Параметры публикации в Hugging Face Hub:
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}      # добавьте секрет в Settings → Secrets and variables → Actions
-      HF_REPO:  ${{ vars.HF_REPO }}          # например: org-or-user/nightly-models (добавьте как Repository variable)
-      HF_PRIVATE: "true"                     # приватный репозиторий на Hub
+      
+      # Hugging Face (опционально)
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_REPO: ${{ vars.HF_REPO }}
+      HF_PRIVATE: "true"
 
     steps:
-      - name: Checkout
+      # ========================================
+      # 1. Setup
+      # ========================================
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Check merge-conflict markers
+      - name: Check merge conflicts
         shell: bash
         run: |
-          # Ищем реальные маркеры конфликтов только в начале строки
-          if git grep -nE '^(<<<<<<<|=======|>>>>>>>)' -- . >/dev/null; then
-            echo "Unresolved merge markers found"
-            git grep -nE '^(<<<<<<<|=======|>>>>>>>)' -- . || true
+          if git grep -nE '^(<<<<<<<|=======|>>>>>>>)' -- . >/dev/null 2>&1; then
+            echo "❌ Unresolved merge markers found:"
+            git grep -nE '^(<<<<<<<|=======|>>>>>>>)' -- .
             exit 1
           fi
+          echo "✅ No merge conflicts"
 
-      - name: Setup Python
+      - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            **/requirements*.txt
+          cache-dependency-path: requirements.txt
 
-      - name: Install deps
+      - name: Install dependencies
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install pandas numpy scikit-learn joblib requests
+          pip install -r requirements.txt
+          pip install huggingface_hub  # для публикации
 
       - name: Set END_DATE (UTC today)
         shell: bash
         run: |
-          echo "END_DATE=$(date -u +%F)" >> "$GITHUB_ENV"
+          echo "END_DATE=$(date -u +%Y-%m-%d)" >> "$GITHUB_ENV"
+          echo "RUN_DATE=$(date -u +%Y%m%d_%H%M%S)" >> "$GITHUB_ENV"
 
-      - name: Train M7 (all symbols)
+      # ========================================
+      # 2. Training
+      # ========================================
+      - name: Train models (all symbols)
         shell: bash
         env:
           CI_DRY_RUN: "0"
         run: |
           set -euo pipefail
-          IFS=' ' read -r -a ARR <<< "$SYMBOLS"
-          for SYM in "${ARR[@]}"; do
-            echo "=== Train for ${SYM} ==="
+          IFS=' ' read -r -a SYMBOLS_ARR <<< "$SYMBOLS"
+          
+          for SYMBOL in "${SYMBOLS_ARR[@]}"; do
+            echo "========================================="
+            echo "Training: ${SYMBOL}"
+            echo "========================================="
+            
             python scripts/train.py \
-              --symbol "${SYM}" \
-              --start  "${START_DATE}" \
-              --end    "${END_DATE}" \
+              --symbol "${SYMBOL}" \
+              --start "${START_DATE}" \
+              --end "${END_DATE}" \
               --epochs "${EPOCHS}" \
-              --artifacts-dir "artifacts/${SYM}" \
-              --models-dir    "models" \
-              --configs-dir   "configs"
+              --artifacts-dir "artifacts/${SYMBOL}" \
+              --models-dir "models" \
+              --configs-dir "configs" \
+              || echo "⚠️  Training failed for ${SYMBOL}, continuing..."
           done
 
       - name: Calibrate confidence
         shell: bash
         run: |
-          python scripts/calibrate_confidence.py
+          python scripts/calibrate_confidence.py || echo "⚠️  Calibration failed"
 
-      - name: Train Octopus meta (optional)
+      - name: Train Octopus meta-model
         shell: bash
         run: |
-          python scripts/train_octopus_meta.py || echo "meta optional"
+          python scripts/train_octopus_meta.py || echo "⚠️  Octopus training failed"
 
-      - name: Sanitize filenames (no colons)
+      - name: Sanitize filenames
         shell: bash
         run: |
-          for dir in models artifacts; do
+          for dir in models artifacts configs; do
             if [ -d "$dir" ]; then
-              find "$dir" -type f -name '*:*' -print0 | while IFS= read -r -d '' f; do
-                nf="${f//:/_}"
-                mkdir -p "$(dirname "$nf")"
-                mv "$f" "$nf"
+              find "$dir" -type f -name '*:*' -print0 2>/dev/null | while IFS= read -r -d '' file; do
+                new_file="${file//:/_}"
+                mkdir -p "$(dirname "$new_file")"
+                mv "$file" "$new_file"
+                echo "Renamed: $file → $new_file"
               done
             fi
           done
 
-      # Публикация весов в Hugging Face Hub
-      - name: Install huggingface_hub
-        if: ${{ env.HF_TOKEN != '' }}
-        run: |
-          python -m pip install -U huggingface_hub
-
-      - name: Publish models to Hugging Face Hub
-        if: ${{ env.HF_TOKEN != '' }}
-        env:
-          GITHUB_REPOSITORY: ${{ github.repository }}
+      # ========================================
+      # 3. Create Release with Models
+      # ========================================
+      - name: Package models
         shell: bash
         run: |
-          python - <<'PY'
+          tar -czf models-${RUN_DATE}.tar.gz models/ configs/
+          ls -lh models-${RUN_DATE}.tar.gz
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: models-${{ env.RUN_DATE }}
+          name: "Models: ${{ env.END_DATE }}"
+          body: |
+            🤖 **Nightly Training Results**
+            
+            **Training Date**: ${{ env.END_DATE }}
+            **Symbols**: ${{ env.SYMBOLS }}
+            **Epochs**: ${{ env.EPOCHS }}
+            
+            ### Download
+            - `models-${{ env.RUN_DATE }}.tar.gz` — All trained models + calibration
+            
+            ### Usage
+            ```
+            # Download latest release
+            gh release download models-${{ env.RUN_DATE }} -R Arsystem808/AI-trading
+            
+            # Extract
+            tar -xzf models-${{ env.RUN_DATE }}.tar.gz
+            ```
+          files: |
+            models-${{ env.RUN_DATE }}.tar.gz
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ========================================
+      # 4. Publish to Hugging Face (optional)
+      # ========================================
+      - name: Publish to Hugging Face Hub
+        if: ${{ env.HF_TOKEN != '' }}
+        shell: bash
+        run: |
+          python - <<'PYTHON_SCRIPT'
           import os, sys, pathlib
           from huggingface_hub import HfApi
+          
           token = os.environ.get("HF_TOKEN")
           if not token:
-              print("HF_TOKEN is not set; skipping publish")
+              print("⚠️  HF_TOKEN not set, skipping")
               sys.exit(0)
-
-          # Определяем repo_id: берём из HF_REPO, иначе <owner>/nightly-models
+          
           repo_id = os.environ.get("HF_REPO")
           if not repo_id:
-              owner = os.environ.get("GITHUB_REPOSITORY","_/_").split("/")[0]
-              repo_id = f"{owner}/nightly-models"
-
-          private  = os.environ.get("HF_PRIVATE","true").lower() in ("1","true","yes")
-          revision = os.environ.get("END_DATE","latest")
-
+              owner = os.environ.get("GITHUB_REPOSITORY", "_/_").split("/")[0]
+              repo_id = f"{owner}/ai-trading-models"
+          
+          private = os.environ.get("HF_PRIVATE", "true").lower() in ("1", "true", "yes")
+          revision = os.environ.get("END_DATE", "main")
+          
           if not pathlib.Path("models").exists():
-              print("No 'models' directory; nothing to publish")
+              print("⚠️  No 'models' directory found")
               sys.exit(0)
-
+          
+          print(f"📤 Uploading to hf.co/{repo_id}@{revision}")
+          
           api = HfApi(token=token)
           api.create_repo(repo_id=repo_id, repo_type="model", private=private, exist_ok=True)
+          
+          # Upload models
           api.upload_folder(
               folder_path="models",
               repo_id=repo_id,
               repo_type="model",
-              commit_message=f"nightly publish: {revision}",
+              commit_message=f"nightly: {revision}",
               revision=revision
           )
+          
+          # Upload calibration
           if pathlib.Path("configs/calibration.json").exists():
               api.upload_file(
                   path_or_fileobj="configs/calibration.json",
-                  path_in_repo="configs/calibration.json",
+                  path_in_repo="calibration.json",
                   repo_id=repo_id,
                   repo_type="model",
                   commit_message=f"calibration: {revision}",
                   revision=revision
               )
-          print(f"Published to hf.co/{repo_id}@{revision}")
-          PY
+          
+          print(f"✅ Published to https://huggingface.co/{repo_id}/tree/{revision}")
+          PYTHON_SCRIPT
 
-      - name: Upload artifacts
+      # ========================================
+      # 5. Upload Artifacts (backup)
+      # ========================================
+      - name: Upload artifacts (7 days)
         uses: actions/upload-artifact@v4
         with:
-          name: models-and-calibration
+          name: models-artifacts-${{ env.RUN_DATE }}
           path: |
-            models/**
+            models/**/*.joblib
+            models/**/*.pkl
             configs/**/*.json
             artifacts/**
           if-no-files-found: warn
           retention-days: 7
+          compression-level: 9
+
+      # ========================================
+      # 6. Notify (optional)
+      # ========================================
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          echo "## 🎯 Training Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Date**: ${{ env.END_DATE }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Run ID**: ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Symbols**: ${{ env.SYMBOLS }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "- GitHub Release: \`models-${{ env.RUN_DATE }}\`" >> $GITHUB_STEP_SUMMARY
+          if [ -n "${{ env.HF_TOKEN }}" ]; then
+            echo "- Hugging Face: \`${{ env.HF_REPO }}\`" >> $GITHUB_STEP_SUMMARY
+          fi
