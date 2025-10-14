@@ -1,19 +1,23 @@
 name: Auto Update Models
 
 on:
-  release:
-    types: [published]
-  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'  # ✅ Каждые 6 часов
+  workflow_dispatch:       # ✅ Ручной запуск
+  push:
+    branches: [main]       # ✅ При push в main (опционально)
+
+permissions:
+  contents: write
 
 jobs:
   update:
     runs-on: ubuntu-latest
     
-    permissions:
-      contents: write
-    
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -28,15 +32,20 @@ jobs:
         run: |
           python scripts/download_models.py
       
-      - name: Commit Changes
+      - name: Check for changes
+        id: check_changes
+        run: |
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Commit and Push Changes
+        if: steps.check_changes.outputs.changed == 'true'
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add -f models/  # Принудительно добавить модели
-          git diff --quiet && git diff --staged --quiet || git commit -m "🤖 Auto-update models from release"
-      
-      - name: Push changes
-        uses: ad-m/github-push-action@master
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          branch: ${{ github.ref }}
+          git add models/
+          git commit -m "🤖 Auto-update models [skip ci]"
+          git push origin HEAD:main
