@@ -22,7 +22,7 @@ jobs:
     
     env:
       POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
-      SYMBOLS: "AAPL AMD BTCUSD ETHUSD SNOW SOXL"
+      SYMBOLS: "AAPL SPY BTCUSD ETHUSD QQQ TLT TSLA"
       START_DATE: "2019-01-01"
       EPOCHS: "12"
       
