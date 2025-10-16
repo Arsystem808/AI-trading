@@ -2,7 +2,7 @@ name: Auto Update Models
 
 on:
   schedule:
-    - cron: '0 */6 * * *'  # ✅ Каждые 6 часов
+    - cron: '0 0 * * *'    # ✅ Каждый день в полночь UTC (09:30 MSK)
   workflow_dispatch:       # ✅ Ручной запуск
   push:
     branches: [main]       # ✅ При push в main (опционально)
@@ -46,6 +46,7 @@ jobs:
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add models/
+          git add -f models/
           git commit -m "🤖 Auto-update models [skip ci]"
           git push origin HEAD:main
+
