@@ -640,12 +640,12 @@ class M7MLModel:
         
         logger.info(f"[M7] Loading model for {ticker}")
         
-        try:
+       try:
             # Load model with automatic normalization (BTCUSD -> X:BTCUSD)
             self.model_data = load_model_for(ticker, agent="arxora_m7pro")
             
             # ИСПРАВЛЕНО: было self.model_, теперь self.model_data
-             if not self.model_:
+            if not self.model_  # ← 12 пробелов + правильная переменная!
                 logger.warning(f"[M7] No model found for {ticker}")
                 return False
             
