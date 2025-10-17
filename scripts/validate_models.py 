@@ -1,0 +1,356 @@
+#!/usr/bin/env python3
+"""
+Валидация моделей из GitHub Release
+====================================
+
+Проверяет корректность установленных моделей:
+- Наличие файлов
+- Загрузка моделей
+- Проверка feature_names
+- Соответствие конфигам
+
+Usage:
+    python scripts/validate_models.py [--verbose] [--fix]
+    
+    --verbose: Подробный вывод
+    --fix: Попытаться исправить проблемы
+"""
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Dict, List, Optional
+
+import joblib
+
+# Настройки
+MODELS_DIR = Path("models")
+CONFIG_DIR = Path("config")
+
+def load_model_safe(model_path: Path) -> Optional[object]:
+    """
+    Безопасная загрузка модели.
+    
+    Args:
+        model_path: Путь к модели
+        
+    Returns:
+        model или None при ошибке
+    """
+    try:
+        return joblib.load(model_path)
+    except Exception as e:
+        print(f"    ❌ Ошибка загрузки: {e}")
+        return None
+
+
+def extract_features(model: object) -> Optional[List[str]]:
+    """
+    Извлечь список фич из модели.
+    
+    Args:
+        model: Загруженная модель
+        
+    Returns:
+        List фич или None
+    """
+    # LightGBM
+    if hasattr(model, "feature_name_"):
+        return list(model.feature_name_)
+    
+    # Scikit-learn
+    if hasattr(model, "feature_names_in_"):
+        return list(model.feature_names_in_)
+    
+    # XGBoost
+    if hasattr(model, "get_booster"):
+        try:
+            booster = model.get_booster()
+            return booster.feature_names
+        except:
+            pass
+    
+    return None
+
+
+def validate_model_file(
+    model_path: Path, 
+    verbose: bool = False
+) -> Dict[str, any]:
+    """
+    Проверить один файл модели.
+    
+    Args:
+        model_path: Путь к модели
+        verbose: Подробный вывод
+        
+    Returns:
+        dict с результатами проверки
+    """
+    result = {
+        "path": model_path,
+        "valid": True,
+        "issues": [],
+        "features": None,
+        "model_type": None
+    }
+    
+    if verbose:
+        print(f"\n📦 Проверка: {model_path.name}")
+    
+    # Проверка размера
+    size_kb = model_path.stat().st_size / 1024
+    
+    if size_kb < 1:
+        result["valid"] = False
+        result["issues"].append("Файл слишком маленький (< 1 KB)")
+        return result
+    
+    if verbose:
+        print(f"  Размер: {size_kb:.1f} KB")
+    
+    # Загрузка модели
+    model = load_model_safe(model_path)
+    
+    if model is None:
+        result["valid"] = False
+        result["issues"].append("Не удалось загрузить модель")
+        return result
+    
+    # Тип модели
+    model_type = type(model).__name__
+    result["model_type"] = model_type
+    
+    if verbose:
+        print(f"  Тип: {model_type}")
+    
+    # Извлечение фич
+    features = extract_features(model)
+    result["features"] = features
+    
+    if features:
+        if verbose:
+            print(f"  Фичи: {len(features)}")
+            
+            # Показать первые 5
+            for feat in features[:5]:
+                print(f"    • {feat}")
+            
+            if len(features) > 5:
+                print(f"    ... (всего {len(features)})")
+    else:
+        result["issues"].append("Не удалось извлечь feature_names")
+    
+    # Проверка predict (если возможно)
+    try:
+        # Попробовать создать dummy предсказание
+        import numpy as np
+        
+        if features:
+            n_features = len(features)
+        else:
+            # Попробовать угадать
+            n_features = 50
+        
+        dummy_input = np.zeros((1, n_features))
+        
+        # Попробовать predict
+        _ = model.predict(dummy_input)
+        
+        if verbose:
+            print(f"  ✅ predict() работает")
+            
+    except Exception as e:
+        result["issues"].append(f"predict() не работает: {e}")
+    
+    if result["issues"]:
+        result["valid"] = False
+    
+    return result
+
+
+def validate_config_file(
+    config_path: Path, 
+    verbose: bool = False
+) -> Dict[str, any]:
+    """
+    Проверить конфигурационный файл.
+    
+    Args:
+        config_path: Путь к конфигу
+        verbose: Подробный вывод
+        
+    Returns:
+        dict с результатами проверки
+    """
+    result = {
+        "path": config_path,
+        "valid": True,
+        "issues": [],
+        "config": None
+    }
+    
+    if verbose:
+        print(f"\n📋 Проверка конфига: {config_path.name}")
+    
+    # Загрузка JSON
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        
+        result["config"] = config
+        
+    except Exception as e:
+        result["valid"] = False
+        result["issues"].append(f"Ошибка чтения JSON: {e}")
+        return result
+    
+    # Проверка обязательных полей
+    required_fields = ["model_artifact", "agent", "ticker"]
+    
+    for field in required_fields:
+        if field not in config:
+            result["valid"] = False
+            result["issues"].append(f"Отсутствует поле: {field}")
+    
+    # Проверка пути к модели
+    if "model_artifact" in config:
+        model_path = Path(config["model_artifact"])
+        
+        if not model_path.exists():
+            result["valid"] = False
+            result["issues"].append(f"Модель не найдена: {model_path}")
+        elif verbose:
+            print(f"  ✅ Модель существует: {model_path.name}")
+    
+    # Проверка пути к scaler
+    if "scaler_artifact" in config:
+        scaler_path = Path(config["scaler_artifact"])
+        
+        if not scaler_path.exists():
+            result["issues"].append(f"Scaler не найден: {scaler_path}")
+        elif verbose:
+            print(f"  ✅ Scaler существует: {scaler_path.name}")
+    
+    if verbose and not result["issues"]:
+        print(f"  ✅ Конфиг валиден")
+    
+    return result
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description="Validate installed models",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    parser.add_argument(
+        '--verbose',
+        action='store_true',
+        help='Verbose output'
+    )
+    
+    parser.add_argument(
+        '--fix',
+        action='store_true',
+        help='Try to fix issues automatically'
+    )
+    
+    args = parser.parse_args()
+    
+    print("🔍 Валидация моделей...\n")
+    
+    # Проверка моделей
+    model_files = []
+    
+    if MODELS_DIR.exists():
+        for ext in ["*.joblib", "*.pkl"]:
+            model_files.extend(MODELS_DIR.glob(ext))
+        
+        # Исключить scalers
+        model_files = [
+            f for f in model_files 
+            if 'scaler' not in f.name.lower()
+        ]
+    
+    if not model_files:
+        print("❌ Модели не найдены!")
+        sys.exit(1)
+    
+    print(f"📦 Найдено моделей: {len(model_files)}\n")
+    
+    # Валидация моделей
+    valid_models = 0
+    invalid_models = 0
+    
+    all_results = []
+    
+    for model_path in sorted(model_files):
+        result = validate_model_file(model_path, verbose=args.verbose)
+        all_results.append(result)
+        
+        if result["valid"]:
+            valid_models += 1
+            
+            if not args.verbose:
+                print(f"✅ {model_path.name}")
+        else:
+            invalid_models += 1
+            
+            print(f"❌ {model_path.name}")
+            
+            for issue in result["issues"]:
+                print(f"  • {issue}")
+    
+    # Проверка конфигов
+    print(f"\n📋 Проверка конфигураций...\n")
+    
+    config_files = []
+    
+    if CONFIG_DIR.exists():
+        config_files = list(CONFIG_DIR.glob("*.json"))
+    
+    if not config_files:
+        print("⚠️  Конфиги не найдены!")
+    else:
+        valid_configs = 0
+        invalid_configs = 0
+        
+        for config_path in sorted(config_files):
+            result = validate_config_file(config_path, verbose=args.verbose)
+            
+            if result["valid"]:
+                valid_configs += 1
+                
+                if not args.verbose:
+                    print(f"✅ {config_path.name}")
+            else:
+                invalid_configs += 1
+                
+                print(f"❌ {config_path.name}")
+                
+                for issue in result["issues"]:
+                    print(f"  • {issue}")
+        
+        print(f"\n📊 Конфиги: {valid_configs}/{len(config_files)} валидны")
+    
+    # Summary
+    print(f"\n{'='*60}")
+    print("📊 ИТОГИ")
+    print(f"{'='*60}")
+    print(f"✅ Валидных моделей: {valid_models}")
+    print(f"❌ Невалидных моделей: {invalid_models}")
+    print(f"\nВсего: {len(model_files)}")
+    
+    # Exit code
+    if invalid_models > 0:
+        sys.exit(1)
+    else:
+        print("\n✅ Все модели валидны!")
+        sys.exit(0)
+
+
+if __name__ == '__main__':
+    main()
