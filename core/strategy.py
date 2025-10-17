@@ -518,7 +518,7 @@ class M7MLModel:
             # Load model with automatic normalization (BTCUSD -> X:BTCUSD)
             self.model_data = load_model_for(ticker, agent="arxora_m7pro")
             
-            if not self.model_
+            if not self.model_:
                 logger.warning(f"[M7] No model found for {ticker}")
                 return False
             
