@@ -1,0 +1,101 @@
+name: update
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Setup Git LFS
+        run: |
+          git lfs install
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Download Latest Models
+        run: |
+          echo "Downloading models..."
+          
+          # Создаём директорию models, если её нет
+          mkdir -p models
+          
+          # Пример: скачиваем модели с внешнего источника
+          # ЗАМЕНИТЕ URLs НА ВАШИ РЕАЛЬНЫЕ ИСТОЧНИКИ
+          
+          # Вариант 1: Скачивание с прямых URL
+          # curl -L -o models/arxora_m7pro_AAPL.joblib "https://example.com/models/arxora_m7pro_AAPL.joblib"
+          # curl -L -o models/arxora_m7pro_TLT.joblib "https://example.com/models/arxora_m7pro_TLT.joblib"
+          
+          # Вариант 2: Копирование из другого репозитория
+          # git clone https://github.com/username/models-repo temp-models
+          # cp temp-models/*.joblib models/
+          # rm -rf temp-models
+          
+          # Вариант 3: Скачивание из Hugging Face
+          # pip install huggingface-hub
+          # python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='username/models', filename='model.joblib', local_dir='models')"
+          
+          # Вариант 4: AWS S3
+          # pip install awscli
+          # aws s3 sync s3://your-bucket/models/ models/
+          
+          # Пример для демонстрации (создаём пустые файлы)
+          touch models/arxora_m7pro_AAPL.joblib
+          touch models/arxora_m7pro_TLT.joblib
+          
+          echo "Models downloaded successfully"
+
+      - name: Add models to Git LFS
+        run: |
+          git lfs track "*.joblib"
+          git add .gitattributes
+          git add models/
+
+      - name: Check for changes
+        id: verify_diff
+        run: |
+          git diff --quiet . || echo "changed=true" >> $GITHUB_OUTPUT
+
+      - name: Create Pull Request
+        if: steps.verify_diff.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "🤖 Auto-update models [skip ci]"
+          title: "🤖 Auto-update models"
+          body: |
+            ## 📦 Auto-updated models
+            
+            This PR was automatically created by GitHub Actions.
+            
+            ### Changes:
+            - Updated ML models in `models/` directory
+            - Automated by workflow: `update.yml`
+            
+            ### Models updated:
+            - `arxora_m7pro_AAPL.joblib`
+            - `arxora_m7pro_TLT.joblib`
+            - `arxora_m7pro_TSLA.joblib`
+            - `arxora_m7pro_X_BTCUSD.joblib`
+            - `arxora_m7pro_X_ETHUSD.joblib`
+            - `octopus_meta.joblib`
+            
+            ---
+            🤖 **Automated update** • Created at: ${{ github.run_id }}
+          branch: auto-update-models-${{ github.run_id }}
+          delete-branch: true
+          labels: |
+            automated
+            models
+            bot
