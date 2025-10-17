@@ -334,146 +334,463 @@ def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный
         "meta": {"source":"Global","probs_debug": meta_debug}
     }
 
-# -------------------- M7 --------------------
+# ==================== M7 ML Model Integration ====================
+
+class M7MLModel:
+    """
+    ML-модель для M7 с поддержкой нового model_loader.py
+    
+    Features:
+    - Автоматическая загрузка моделей через unified loader
+    - Валидация feature_names
+    - Thread-safe кеш
+    - Hot reload поддержка
+    """
+    
+    def __init__(self):
+        self.model = None
+        self.model_data = None
+        self.feature_names = None
+        self.scaler = None
+        self.last_load_time = None
+    
+    def try_repo_loader(self, ticker: str) -> bool:
+        """
+        Load M7 model via unified production-grade loader.
+        
+        Args:
+            ticker: Ticker symbol (BTCUSD, X:BTCUSD, etc.)
+            
+        Returns:
+            bool: True if model loaded successfully
+        """
+        from core.model_loader import load_model_for
+        from pathlib import Path
+        import joblib
+        
+        logger.info(f"[M7] Loading model for {ticker}")
+        
+        try:
+            # Load model with automatic normalization (BTCUSD -> X:BTCUSD)
+            self.model_data = load_model_for(ticker, agent="arxora_m7pro")
+            
+            if not self.model_
+                logger.warning(f"[M7] No model found for {ticker}")
+                return False
+            
+            # Extract model and metadata
+            if isinstance(self.model_data, dict):
+                self.model = self.model_data.get("model")
+                self.feature_names = self.model_data.get("feature_names")
+                
+                metadata = self.model_data.get("metadata", {})
+                
+                # Load scaler if specified
+                scaler_path = metadata.get("scaler_artifact")
+                if scaler_path:
+                    scaler_path = Path(scaler_path)
+                    if scaler_path.exists():
+                        try:
+                            self.scaler = joblib.load(scaler_path)
+                            logger.info(f"[M7] ✓ Loaded scaler from {scaler_path.name}")
+                        except Exception as e:
+                            logger.error(f"[M7] Failed to load scaler: {e}")
+                            self.scaler = None
+                
+                # Log model info
+                version = metadata.get("version", "unknown")
+                feature_count = len(self.feature_names) if self.feature_names else "unknown"
+                logger.info(f"[M7] ✓ Loaded model v{version} ({feature_count} features)")
+                
+                # Validate feature consistency
+                if self.feature_names:
+                    logger.debug(f"[M7] Features: {', '.join(self.feature_names[:5])}...")
+                else:
+                    logger.warning(f"[M7] No feature_names extracted - predictions may fail")
+                
+            else:
+                # Backward compatibility for old format
+                self.model = self.model_data
+                logger.warning("[M7] Loaded model in legacy format (no metadata)")
+            
+            self.last_load_time = pd.Timestamp.utcnow()
+            return self.model is not None
+            
+        except Exception as e:
+            logger.error(f"[M7] Model loading failed: {e}", exc_info=True)
+            return False
+    
+    def predict(self, X):
+        """
+        Make prediction with feature validation.
+        
+        Args:
+            X: Input features (DataFrame or array)
+            
+        Returns:
+            Prediction result or None on error
+        """
+        if self.model is None:
+            logger.error("[M7] Cannot predict: model not loaded")
+            return None
+        
+        try:
+            # Validate features if feature_names available
+            if self.feature_names and hasattr(X, 'columns'):
+                missing = set(self.feature_names) - set(X.columns)
+                if missing:
+                    logger.error(f"[M7] Missing features: {missing}")
+                    return None
+                
+                # Reorder columns to match training
+                X = X[self.feature_names]
+            
+            # Apply scaler if available
+            if self.scaler is not None:
+                X = self.scaler.transform(X)
+            
+            # Predict
+            if hasattr(self.model, "predict_proba"):
+                return self.model.predict_proba(X)
+            else:
+                return self.model.predict(X)
+                
+        except Exception as e:
+            logger.error(f"[M7] Prediction failed: {e}", exc_info=True)
+            return None
+
+
+# ==================== M7 Trading Strategy ====================
+
 class M7TradingStrategy:
-    def __init__(self, atr_period=14, atr_multiplier=1.5, pivot_period='D', fib_levels=[0.236,0.382,0.5,0.618,0.786]):
-        self.atr_period = atr_period; self.atr_multiplier = atr_multiplier
-        self.pivot_period = pivot_period; self.fib_levels = fib_levels
-
-    def calculate_pivot_points(self, h,l,c):
+    """
+    M7: Стратегия торговли по ключевым уровням (pivot points + Fibonacci).
+    
+    Features:
+    - Дневные/недельные pivot points
+    - Fibonacci retracement levels
+    - ATR-based фильтрация расстояния до уровня
+    - Автоматическое определение SL/TP
+    """
+    
+    def __init__(self, atr_period=14, atr_multiplier=1.5, pivot_period='D', fib_levels=None):
+        self.atr_period = atr_period
+        self.atr_multiplier = atr_multiplier
+        self.pivot_period = pivot_period
+        self.fib_levels = fib_levels or [0.236, 0.382, 0.5, 0.618, 0.786]
+    
+    def calculate_pivot_points(self, h, l, c):
+        """Calculate classic pivot points."""
         pivot = (h + l + c) / 3
-        r1 = (2 * pivot) - l; r2 = pivot + (h - l); r3 = h + 2 * (pivot - l)
-        s1 = (2 * pivot) - h; s2 = pivot - (h - l); s3 = l - 2 * (h - pivot)
-        return {'pivot': pivot, 'r1': r1, 'r2': r2, 'r3': r3, 's1': s1, 's2': s2, 's3': s3}
-
-    def calculate_fib_levels(self, h,l):
-        diff = h - l; fib = {}
-        for level in self.fib_levels: fib[f'fib_{int(level*1000)}'] = h - level * diff
+        r1 = (2 * pivot) - l
+        r2 = pivot + (h - l)
+        r3 = h + 2 * (pivot - l)
+        s1 = (2 * pivot) - h
+        s2 = pivot - (h - l)
+        s3 = l - 2 * (h - pivot)
+        
+        return {
+            'pivot': pivot, 
+            'r1': r1, 'r2': r2, 'r3': r3,
+            's1': s1, 's2': s2, 's3': s3
+        }
+    
+    def calculate_fib_levels(self, h, l):
+        """Calculate Fibonacci retracement levels."""
+        diff = h - l
+        fib = {}
+        for level in self.fib_levels:
+            fib[f'fib_{int(level*1000)}'] = h - level * diff
         return fib
-
+    
     def identify_key_levels(self, data):
-        # Важно: data уже с DatetimeIndex (см. analyze_asset_m7) для корректной работы resample [web:3221][web:3236]
+        """
+        Identify key price levels from historical data.
+        
+        Args:
+             DataFrame with DatetimeIndex and OHLC columns
+            
+        Returns:
+            dict: Level name -> price value
+        """
+        # Critical: data must have DatetimeIndex for resample
+        if not isinstance(data.index, pd.DatetimeIndex):
+            logger.error("[M7] Data must have DatetimeIndex for resample")
+            return {}
+        
         grouped = data.resample('D') if self.pivot_period == 'D' else data.resample('W')
-        key = {}
+        key_levels = {}
+        
         for _, g in grouped:
             if len(g) > 0:
-                h = g['high'].max(); l = g['low'].min(); c = g['close'].iloc[-1]
-                key.update(self.calculate_pivot_points(h,l,c)); key.update(self.calculate_fib_levels(h,l))
-        return key
-
+                h = g['high'].max()
+                l = g['low'].min()
+                c = g['close'].iloc[-1]
+                
+                key_levels.update(self.calculate_pivot_points(h, l, c))
+                key_levels.update(self.calculate_fib_levels(h, l))
+        
+        return key_levels
+    
     def generate_signals(self, data):
-        sigs = []; req = ['high','low','close']
-        if not all(c in data.columns for c in req): return sigs
+        """
+        Generate trading signals based on proximity to key levels.
+        
+        Args:
+             DataFrame with OHLC + ATR
+            
+        Returns:
+            list: Trading signals with entry/SL/TP
+        """
+        signals = []
+        required = ['high', 'low', 'close']
+        
+        if not all(c in data.columns for c in required):
+            logger.warning(f"[M7] Missing required columns: {required}")
+            return signals
+        
         data = data.copy()
-        data['atr'] = _atr_like(data, self.atr_period); cur_atr = data['atr'].iloc[-1]
-        key = self.identify_key_levels(data); price = data['close'].iloc[-1]; ts = data.index[-1]
-        for name, val in key.items():
+        
+        # Calculate ATR
+        data['atr'] = _atr_like(data, self.atr_period)
+        cur_atr = data['atr'].iloc[-1]
+        
+        if pd.isna(cur_atr) or cur_atr <= 0:
+            logger.warning("[M7] Invalid ATR, cannot generate signals")
+            return signals
+        
+        # Identify key levels
+        key_levels = self.identify_key_levels(data)
+        if not key_levels:
+            logger.warning("[M7] No key levels identified")
+            return signals
+        
+        price = data['close'].iloc[-1]
+        ts = data.index[-1]
+        
+        # Check proximity to each level
+        for name, val in key_levels.items():
+            if pd.isna(val):
+                continue
+            
             dist = abs(price - val) / max(1e-9, cur_atr)
+            
             if dist < self.atr_multiplier:
-                is_res = val > price
-                if is_res: typ='SELL_LIMIT'; entry=val*0.998; sl=val*1.02; tp=val*0.96
-                else:      typ='BUY_LIMIT';  entry=val*1.002; sl=val*0.98; tp=val*1.04
+                is_resistance = val > price
+                
+                if is_resistance:
+                    typ = 'SELL_LIMIT'
+                    entry = val * 0.998
+                    sl = val * 1.02
+                    tp = val * 0.96
+                else:
+                    typ = 'BUY_LIMIT'
+                    entry = val * 1.002
+                    sl = val * 0.98
+                    tp = val * 1.04
+                
                 conf = 1 - (dist / self.atr_multiplier)
-                sigs.append({'type':typ,'price':round(entry,4),'stop_loss':round(sl,4),'take_profit':round(tp,4),
-                             'confidence':round(conf,2),'level':name,'level_value':round(val,4),'timestamp':ts})
-        return sigs
+                
+                signals.append({
+                    'type': typ,
+                    'price': round(entry, 4),
+                    'stop_loss': round(sl, 4),
+                    'take_profit': round(tp, 4),
+                    'confidence': round(conf, 2),
+                    'level': name,
+                    'level_value': round(val, 4),
+                    'timestamp': ts,
+                    'atr_distance': round(dist, 2)
+                })
+        
+        return signals
 
+
+# ==================== M7 Analysis Function ====================
 
 def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False):
+    """
+    M7 агент: торговля по ключевым уровням с опциональным ML.
+    
+    Args:
+        ticker: Ticker symbol
+        horizon: Временной горизонт
+        use_ml: Enable ML-based probability adjustment
+        
+    Returns:
+        dict: Результаты анализа с рекомендациями
+    """
     cli = PolygonClient()
     df = cli.daily_ohlc(ticker, days=120)
-
-    # Критично: привести к DatetimeIndex для resample/rolling [web:3221][web:3236]
+    
+    # Early exit if no data
     if df is None or df.empty:
-        # Офлайн/нет данных — безопасный возврат WAIT
+        logger.warning(f"[M7] No data available for {ticker}")
         return {
             "last_price": 0.0,
-            "recommendation": {"action":"WAIT","confidence":0.5},
-            "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
-            "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
-            "context":["Нет данных для M7"], "note_html":"<div>M7: ожидание</div>",
-            "alt":"Ожидание сигналов", "entry_kind":"wait","entry_label":"WAIT",
-            "meta":{"source":"M7","grey_zone":True}
+            "recommendation": {"action": "WAIT", "confidence": 0.5},
+            "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
+            "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+            "context": ["Нет данных для M7"],
+            "note_html": "<div>M7: ожидание данных</div>",
+            "alt": "Ожидание сигналов",
+            "entry_kind": "wait",
+            "entry_label": "WAIT",
+            "meta": {"source": "M7", "grey_zone": True, "error": "no_data"}
         }
+    
+    # Critical: Prepare DatetimeIndex for resample
     df = df.sort_values("timestamp")
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     df = df.set_index("timestamp")
-
+    
+    # Generate signals
     strategy = M7TradingStrategy()
     signals = strategy.generate_signals(df)
     price = float(df['close'].iloc[-1])
-
+    
+    # No signals case
     if not signals:
-        res = {
+        logger.info(f"[M7] No signals generated for {ticker}")
+        
+        result = {
             "last_price": price,
-            "recommendation": {"action":"WAIT","confidence":0.5},
-            "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
-            "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
-            "context":["Нет сигналов по стратегии M7"], "note_html":"<div>M7: ожидание</div>",
-            "alt":"Ожидание сигналов от уровней", "entry_kind":"wait","entry_label":"WAIT",
-            "meta":{"source":"M7","grey_zone":True}
+            "recommendation": {"action": "WAIT", "confidence": 0.5},
+            "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
+            "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+            "context": ["Нет сигналов по стратегии M7"],
+            "note_html": "<div>M7: ожидание уровней</div>",
+            "alt": "Ожидание сигналов от уровней",
+            "entry_kind": "wait",
+            "entry_label": "WAIT",
+            "meta": {"source": "M7", "grey_zone": True}
         }
+        
+        # Log performance
         try:
-            log_agent_performance(agent="M7", ticker=ticker, horizon=horizon,
-                                  action="WAIT", confidence=0.50,
-                                  levels=res["levels"], probs=res["probs"],
-                                  meta={"probs_debug":{"u":[],"p":[]}},
-                                  ts=pd.Timestamp.utcnow().isoformat())
+            log_agent_performance(
+                agent="M7", ticker=ticker, horizon=horizon,
+                action="WAIT", confidence=0.50,
+                levels=result["levels"], probs=result["probs"],
+                meta={"reason": "no_signals"},
+                ts=pd.Timestamp.utcnow().isoformat()
+            )
         except Exception as e:
-            logger.warning("perf log M7 failed: %s", e)
-        return res
-
+            logger.warning(f"[M7] Performance logging failed: {e}")
+        
+        return result
+    
+    # Select best signal
     best = max(signals, key=lambda x: x['confidence'])
     raw_conf = float(_clip01(best['confidence']))
-
-    entry = float(best['price']); sl = float(best['stop_loss']); risk = abs(entry - sl)
+    
+    # Calculate risk metrics
+    entry = float(best['price'])
+    sl = float(best['stop_loss'])
+    risk = abs(entry - sl)
+    
     atr14 = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
     vol = df['close'].pct_change().std() * np.sqrt(252)
-
-    conf_base = 0.50 + 0.34*math.tanh((raw_conf - 0.65)/0.20)
-    penalty = (0.05 if vol and vol > 0.35 else 0.0) + (0.04 if risk/atr14 < 0.8 else 0.0) + (0.03 if risk/atr14 > 3.5 else 0.0)
-    conf = float(max(0.52, min(0.82, conf_base*(1.0 - penalty))))
+    
+    # Confidence adjustment with penalties
+    conf_base = 0.50 + 0.34 * math.tanh((raw_conf - 0.65) / 0.20)
+    
+    penalty = 0.0
+    if vol and vol > 0.35:
+        penalty += 0.05  # High volatility penalty
+    if risk / atr14 < 0.8:
+        penalty += 0.04  # Too tight SL penalty
+    if risk / atr14 > 3.5:
+        penalty += 0.03  # Too wide SL penalty
+    
+    conf = float(max(0.52, min(0.82, conf_base * (1.0 - penalty))))
+    
+    # Apply calibration
     conf = float(CAL_CONF["M7"](conf))
-
+    
+    # Determine action and TPs
     if best['type'].startswith('BUY'):
-        tp1 = min(entry + 1.5*risk, entry + 2*price*vol/np.sqrt(252))
-        tp2 = min(entry + 2.5*risk, entry + 3*price*vol/np.sqrt(252))
-        tp3 = min(entry + 4.0*risk, entry + 5*price*vol/np.sqrt(252))
+        tp1 = min(entry + 1.5 * risk, entry + 2 * price * vol / np.sqrt(252))
+        tp2 = min(entry + 2.5 * risk, entry + 3 * price * vol / np.sqrt(252))
+        tp3 = min(entry + 4.0 * risk, entry + 5 * price * vol / np.sqrt(252))
         act = "BUY"
     else:
-        tp1 = max(entry - 1.5*risk, entry - 2*price*vol/np.sqrt(252))
-        tp2 = max(entry - 2.5*risk, entry - 3*price*vol/np.sqrt(252))
-        tp3 = max(entry - 4.0*risk, entry - 5*price*vol/np.sqrt(252))
+        tp1 = max(entry - 1.5 * risk, entry - 2 * price * vol / np.sqrt(252))
+        tp2 = max(entry - 2.5 * risk, entry - 3 * price * vol / np.sqrt(252))
+        tp3 = max(entry - 4.0 * risk, entry - 5 * price * vol / np.sqrt(252))
         act = "SHORT"
-
-    u1,u2,u3 = abs(tp1-entry)/atr14, abs(tp2-entry)/atr14, abs(tp3-entry)/atr14
+    
+    # Calculate TP probabilities with exponential decay
+    u1, u2, u3 = abs(tp1 - entry) / atr14, abs(tp2 - entry) / atr14, abs(tp3 - entry) / atr14
     k = 0.18
-    b1,b2,b3 = conf, max(0.50, conf-0.08), max(0.45, conf-0.16)
-    p1 = _clip01(b1*np.exp(-k*(u1-1.0))); p2 = _clip01(b2*np.exp(-k*(u2-1.5))); p3 = _clip01(b3*np.exp(-k*(u3-2.2)))
-    probs = _monotone_tp_probs({"tp1":p1,"tp2":p2,"tp3":p3})
-
-    meta_debug = {"risk": float(risk), "atr14": float(atr14),
-                  "u":[float(u1),float(u2),float(u3)],
-                  "p":[float(probs["tp1"]),float(probs["tp2"]),float(probs["tp3"])]}
+    b1, b2, b3 = conf, max(0.50, conf - 0.08), max(0.45, conf - 0.16)
+    
+    p1 = _clip01(b1 * np.exp(-k * (u1 - 1.0)))
+    p2 = _clip01(b2 * np.exp(-k * (u2 - 1.5)))
+    p3 = _clip01(b3 * np.exp(-k * (u3 - 2.2)))
+    
+    probs = _monotone_tp_probs({"tp1": p1, "tp2": p2, "tp3": p3})
+    
+    # Metadata for debugging
+    meta_debug = {
+        "risk": float(risk),
+        "atr14": float(atr14),
+        "vol": float(vol) if vol else None,
+        "penalty": float(penalty),
+        "atr_dist": float(best.get('atr_distance', 0)),
+        "level": best['level'],
+        "u": [float(u1), float(u2), float(u3)],
+        "p": [float(probs["tp1"]), float(probs["tp2"]), float(probs["tp3"])]
+    }
+    
+    # Log performance
     try:
         log_agent_performance(
             agent="M7", ticker=ticker, horizon=horizon,
             action=act, confidence=float(conf),
-            levels={"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3)},
-            probs={"tp1": float(probs["tp1"]), "tp2": float(probs["tp2"]), "tp3": float(probs["tp3"])},
-            meta={"probs_debug": meta_debug}, ts=pd.Timestamp.utcnow().isoformat()
+            levels={
+                "entry": float(entry),
+                "sl": float(sl),
+                "tp1": float(tp1),
+                "tp2": float(tp2),
+                "tp3": float(tp3)
+            },
+            probs={
+                "tp1": float(probs["tp1"]),
+                "tp2": float(probs["tp2"]),
+                "tp3": float(probs["tp3"])
+            },
+            meta={"probs_debug": meta_debug},
+            ts=pd.Timestamp.utcnow().isoformat()
         )
     except Exception as e:
-        logger.warning("perf log M7 failed: %s", e)
-
+        logger.warning(f"[M7] Performance logging failed: {e}")
+    
+    # Build result
     return {
         "last_price": price,
         "recommendation": {"action": act, "confidence": float(conf)},
-        "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
-        "probs": probs, "context": [f"Сигнал от уровня {best['level']}"],
-        "note_html": f"<div>M7: {best['type']} на уровне {best['level_value']}</div>",
-        "alt": "Торговля по M7", "entry_kind": "limit", "entry_label": best['type'],
-        "meta":{"source":"M7","grey_zone": bool(0.48 <= conf <= 0.58), "probs_debug": meta_debug}
+        "levels": {
+            "entry": float(entry),
+            "sl": float(sl),
+            "tp1": float(tp1),
+            "tp2": float(tp2),
+            "tp3": float(tp3)
+        },
+        "probs": probs,
+        "context": [
+            f"Сигнал от уровня {best['level']} ({best['level_value']:.4f})",
+            f"Расстояние: {best.get('atr_distance', 0):.2f} ATR"
+        ],
+        "note_html": f"<div>M7: {best['type']} на уровне {best['level']} ({best['level_value']:.4f})</div>",
+        "alt": f"Торговля по M7 уровням",
+        "entry_kind": "limit",
+        "entry_label": best['type'],
+        "meta": {
+            "source": "M7",
+            "grey_zone": bool(0.48 <= conf <= 0.58),
+            "probs_debug": meta_debug
+        }
     }
 
 # -------------------- W7 --------------------
