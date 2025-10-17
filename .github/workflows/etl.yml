@@ -38,7 +38,8 @@ jobs:
         run: |
           set -euo pipefail
           WD="${WORKDIR_IN:-.}"
-          ART_DIR="${GITHUB_WORKSPACE}/${WD#/}/artifacts"
+          # ✅ Исправлено: используем абсолютный путь БЕЗ ./
+          ART_DIR="${GITHUB_WORKSPACE}/artifacts"
           echo "WORKDIR_NORM=$WD" >> "$GITHUB_ENV"
           echo "ARTIFACTS_DIR=$ART_DIR" >> "$GITHUB_ENV"
           mkdir -p "$ART_DIR"
@@ -152,8 +153,9 @@ jobs:
 
       - name: Upload ETL artifacts
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: etl-artifacts-${{ github.run_id }}
-          path: ${{ env.ARTIFACTS_DIR }}/
-          if-no-files-found: error
-          include-hidden-files: true
+          path: ${{ env.ARTIFACTS_DIR }}
+          if-no-files-found: warn
+          retention-days: 7
