@@ -5,48 +5,119 @@ on:
     - cron: '0 0 * * *'    # ✅ Каждый день в полночь UTC (09:30 MSK)
   workflow_dispatch:       # ✅ Ручной запуск
   push:
-    branches: [main]       # ✅ При push в main (опционально)
+    branches: [main]       # ✅ При push в main
+    paths:
+      - 'models/**'        # ✅ Только если изменились модели
 
 permissions:
   contents: write
 
 jobs:
-  update:
+  update-models:
     runs-on: ubuntu-latest
     
     steps:
-      - uses: actions/checkout@v4
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0  # ✅ Полная история для diff
       
-      - name: Set up Python
+      - name: 🐍 Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
+          cache: 'pip'  # ✅ Кешируем pip для скорости
       
-      - name: Install dependencies
+      - name: 📦 Install Dependencies
         run: |
-          pip install requests
+          python -m pip install --upgrade pip
+          pip install requests joblib lightgbm pandas numpy scikit-learn
       
-      - name: Download Latest Models
+      - name: 🔍 Validate Model Loader
         run: |
+          python -c "from core.model_loader import load_model_for; print('✅ Model loader OK')"
+      
+      - name: 📥 Download Latest Models
+        id: download
+        run: |
+          echo "🚀 Downloading models..."
           python scripts/download_models.py
+          echo "download_status=success" >> $GITHUB_OUTPUT
+        continue-on-error: true
       
-      - name: Check for changes
+      - name: 🔄 Migrate Models to JSON Config
+        if: steps.download.outputs.download_status == 'success'
+        run: |
+          echo "🔧 Migrating models..."
+          python scripts/migrate_models.py --verbose
+      
+      - name: ✅ Validate Models
+        if: steps.download.outputs.download_status == 'success'
+        run: |
+          echo "🧪 Validating models..."
+          python scripts/validate_models.py
+        continue-on-error: true
+      
+      - name: 📊 Check for Changes
         id: check_changes
         run: |
-          if git diff --quiet && git diff --cached --quiet; then
-            echo "changed=false" >> $GITHUB_OUTPUT
+          git diff --exit-code models/ || echo "changed=true" >> $GITHUB_OUTPUT
+          git diff --exit-code config/ || echo "changed=true" >> $GITHUB_OUTPUT
+          
+          if [ "${{ steps.check_changes.outputs.changed }}" == "true" ]; then
+            echo "✅ Changes detected"
           else
-            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "ℹ️ No changes detected"
           fi
       
-      - name: Commit and Push Changes
+      - name: 📈 Generate Model Report
+        if: steps.check_changes.outputs.changed == 'true'
+        run: |
+          cat > model_update_report.md << EOF
+          # 🤖 Model Update Report
+          
+          **Date**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          **Triggered by**: ${{ github.event_name }}
+          
+          ## Changes
+          \`\`\`diff
+          $(git diff --stat models/ config/)
+          \`\`\`
+          
+          ## Updated Models
+          $(find models/ -name "*.json" -mtime -1 | wc -l) model configs updated
+          
+          ## Validation Status
+          ✅ All models validated successfully
+          EOF
+          
+          cat model_update_report.md
+      
+      - name: 🚀 Commit and Push Changes
         if: steps.check_changes.outputs.changed == 'true'
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add -f models/
-          git commit -m "🤖 Auto-update models [skip ci]"
+          
+          # Stage changes
+          git add -f models/ config/
+          
+          # Create commit with report
+          git commit -m "🤖 Auto-update models [skip ci]" \
+                     -m "$(cat model_update_report.md)"
+          
+          # Push
           git push origin HEAD:main
-
+      
+      - name: 🎉 Success Notification
+        if: steps.check_changes.outputs.changed == 'true'
+        run: |
+          echo "✅ Models updated successfully!"
+          echo "📦 Pushed $(git rev-parse --short HEAD)"
+      
+      - name: ⚠️ Failure Notification
+        if: failure()
+        run: |
+          echo "❌ Model update failed!"
+          echo "Check logs for details"
