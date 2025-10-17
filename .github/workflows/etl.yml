@@ -43,13 +43,7 @@ jobs:
           echo "ARTIFACTS_DIR=$ART_DIR" >> "$GITHUB_ENV"
           mkdir -p "$ART_DIR"
           echo "Artifacts dir: $ART_DIR"
-        # no working-directory here on purpose
-        # it must work from any cwd per docs
-        # https://docs.github.com/.../setting-a-default-shell-and-working-directory
-      # refs: working-directory rules
-      # and absolute paths
-      # [docs citations only]
-      
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -83,7 +77,6 @@ jobs:
             fi
             if [[ "$ETL_IN" =~ ^[A-Za-z0-9_.]+$ && "$ETL_IN" != */* ]]; then
               echo "ETL_MODULE=$ETL_IN" >> "$GITHUB_ENV"
-              # also compute candidate file path for fallback
               echo "ETL_FILE_CAND=$(echo "$ETL_IN" | tr '.' '/')".py >> "$GITHUB_ENV"
               exit 0
             fi
@@ -107,12 +100,7 @@ jobs:
 
           if [ -n "${ETL_MODULE:-}" ]; then
             # try module first
-            if python - <<'PY'
-import importlib, sys
-m = sys.argv[1]
-importlib.import_module(m)
-PY
-            "${ETL_MODULE}"; then
+            if python -c "import importlib; importlib.import_module('${ETL_MODULE}')"; then
               python -m "${ETL_MODULE}"
               exit $?
             fi
@@ -144,7 +132,6 @@ PY
         if: always()
         run: |
           set -euo pipefail
-          # пример сборки результатов из стандартных мест проекта
           for d in logs output data; do
             [ -d "$d" ] && rsync -a "$d"/ "${ARTIFACTS_DIR}/$d"/ || true
           done
