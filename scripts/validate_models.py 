@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""
+Validate all models after download.
+"""
+import sys
+from pathlib import Path
+from core.model_loader import load_model_for, list_available_models
+
+def validate_all_models():
+    """Validate all available models."""
+    models = list_available_models()
+    
+    if not models:
+        print("⚠️ No models found!")
+        return False
+    
+    failed = []
+    for model_id in models:
+        try:
+            ticker, agent = model_id.split('/')
+            result = load_model_for(ticker, agent=agent)
+            
+            if result is None:
+                failed.append(model_id)
+                print(f"❌ {model_id}: Failed to load")
+            else:
+                print(f"✅ {model_id}: OK")
+        except Exception as e:
+            failed.append(model_id)
+            print(f"❌ {model_id}: {e}")
+    
+    if failed:
+        print(f"\n⚠️ {len(failed)} models failed validation:")
+        for m in failed:
+            print(f"  - {m}")
+        return False
+    
+    print(f"\n✅ All {len(models)} models validated successfully!")
+    return True
+
+if __name__ == "__main__":
+    success = validate_all_models()
+    sys.exit(0 if success else 1)
