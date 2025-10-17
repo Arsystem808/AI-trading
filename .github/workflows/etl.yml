@@ -57,6 +57,13 @@ jobs:
           pip install pyarrow
         working-directory: ${{ env.WORKDIR_NORM }}
 
+      - name: Create required directories
+        run: |
+          set -euo pipefail
+          mkdir -p data logs output models
+          echo "Created directories: data, logs, output, models"
+        working-directory: ${{ env.WORKDIR_NORM }}
+
       - name: Verify tree
         run: |
           echo "WORKDIR='${WORKDIR_NORM}'"
