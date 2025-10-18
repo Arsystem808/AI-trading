@@ -1,5 +1,6 @@
 # venv and caches
 .venv/
+venv/
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -12,7 +13,30 @@ data/
 *.parquet
 *.csv
 
+# Performance tracking data (explicitly exclude)
+performance_data/
+performance_summary.csv
+
+# Streamlit cache
+.streamlit/
+
 # OS / IDE
 .DS_Store
 .idea/
 .vscode/
+
+# Logs
+*.log
+
+# Environment variables
+.env
+.env.local
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
