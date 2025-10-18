@@ -1,0 +1,6 @@
+# ui/__init__.py
+"""
+UI modules for Arxora trading platform.
+"""
+
+__all__ = ['performance_viewer']
