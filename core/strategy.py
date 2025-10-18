@@ -640,26 +640,26 @@ class M7MLModel:
         
         logger.info(f"[M7] Loading model for {ticker}")
         
-              try:
-            # Load model with automatic normalization (BTCUSD -> X:BTCUSD)
-            self.model_data = load_model_for(ticker, agent="arxora_m7pro")
-            
-            # ИСПРАВЛЕНО: было self.model_, теперь self.model_data
-            if not self.model_data  
-                logger.warning(f"[M7] No model found for {ticker}")
-                return False
-                
-            # Extract model and metadata
-            self.model = self.model_data.get("model")
-            self.metadata = self.model_data.get("metadata", {})
-            
-            logger.info(f"[M7] Model loaded successfully for {ticker}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"[M7] Error loading model: {e}")
-            return False
-            
+  try:
+    # Load model with automatic normalization (BTCUSD -> X:BTCUSD)
+    self.model_data = load_model_for(ticker, agent="arxora_m7pro")
+
+    # ИСПРАВЛЕНО: было self.model_, теперь self.model_data
+    if not self.model_
+        logger.warning(f"[M7] No model found for {ticker}")
+        return False
+
+    # Extract model and metadata
+    self.model = self.model_data.get("model")
+    self.metadata = self.model_data.get("metadata", {})
+
+    logger.info(f"[M7] Model loaded successfully for {ticker}")
+    return True
+
+except Exception as e:
+    logger.error(f"[M7] Error loading model: {e}")
+    return False
+
             # Extract model and metadata
             if isinstance(self.model_data, dict):
                 self.model = self.model_data.get("model")
