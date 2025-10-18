@@ -1,0 +1,48 @@
+# -*- coding: utf-8 -*-
+# generate_performance_data.py — Генератор тестовых данных для графиков
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+from pathlib import Path
+
+# Создаём папку
+Path("performance_data").mkdir(exist_ok=True)
+
+# Настройки
+agents = ["Octopus", "W7", "M7", "Global", "AlphaPulse"]
+tickers = ["SPY", "QQQ", "BTCUSD", "ETHUSD"]
+days = 90
+
+print("🚀 Генерация тестовых данных...\n")
+
+for agent in agents:
+    for ticker in tickers:
+        # Даты за последние 90 дней
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days)
+        dates = pd.date_range(start=start_date, end=end_date, freq='D')
+        
+        # Случайные доходности (небольшой тренд вверх)
+        np.random.seed(hash(f"{agent}{ticker}") % 100000)
+        daily_returns = np.random.normal(0.002, 0.015, len(dates))
+        
+        # Кумулятивная доходность
+        cumulative = (1 + pd.Series(daily_returns)).cumprod() - 1
+        
+        # DataFrame
+        df = pd.DataFrame({
+            'date': dates.strftime('%Y-%m-%d'),
+            'agent': agent,
+            'ticker': ticker,
+            'daily_return': daily_returns,
+            'cumulative_return': cumulative.values
+        })
+        
+        # Сохраняем
+        filename = f"performance_data/performance_{agent}_{ticker}.csv"
+        df.to_csv(filename, index=False)
+        print(f"✅ {filename}")
+
+print(f"\n🎉 Создано {len(agents) * len(tickers)} файлов!")
+print("\n📊 Теперь запусти: streamlit run app.py")
