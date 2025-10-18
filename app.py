@@ -503,13 +503,18 @@ if run and ticker:
             )
         st.caption(CUSTOM_PHRASES["DISCLAIMER"])
 
-        # ====== Performance chart (3 месяца) из единой сводки с кэшем до EOD ======
+        # ====== ИСПРАВЛЕННЫЙ БЛОК ГРАФИКОВ ======
         st.subheader(
             f"Эффективность модели {model} по ключевым инструментам (3 месяца)"
         )
+
         try:
+            # Пытаемся загрузить сводку
             df_all = load_summary_df()
-        except Exception:
+        except Exception as e:
+            st.warning(
+                f"⚠️ Файл performance_summary.csv не найден. Запустите: python3 generate_performance_data.py"
+            )
             df_all = pd.DataFrame()
 
         cols = st.columns(2)
@@ -517,33 +522,39 @@ if run and ticker:
             with cols[i % 2]:
                 st.markdown(f"**{tk}**")
                 try:
-                    d = df_all[
-                        (df_all["agent"].str.lower() == model.lower())
-                        & (df_all["ticker"].str.upper() == tk)
-                    ].copy()
-                    if not d.empty:
-                        d["date"] = pd.to_datetime(d["date"], errors="coerce", utc=True)
-                        d = d.sort_values("date")
-                        cutoff = datetime.now(timezone.utc) - timedelta(days=90)
-                        d = d[d["date"] >= cutoff]
-                        d["cumulative_return"] = (
-                            1.0 + d["daily_return"].astype(float)
-                        ).cumprod() - 1.0
-                        st.line_chart(d.set_index("date")["cumulative_return"])
-                    else:
-                        # Fallback на старый источник, если сводки нет по тикеру
-                        perf_data = None
-                        try:
-                            perf_data = get_agent_performance(model, tk)
-                        except Exception:
-                            perf_data = None
-                        if perf_data is not None and not perf_data.empty:
-                            perf_data = perf_data.set_index("date")
-                            st.line_chart(perf_data["cumulative_return"])
+                    if not df_all.empty:
+                        # Фильтруем по агенту и тикеру
+                        d = df_all[
+                            (df_all["agent"].str.lower() == model.lower())
+                            & (df_all["ticker"].str.upper() == tk)
+                        ].copy()
+
+                        if not d.empty:
+                            # Преобразуем даты и сортируем
+                            d["date"] = pd.to_datetime(
+                                d["date"], errors="coerce", utc=True
+                            )
+                            d = d.sort_values("date")
+
+                            # Фильтруем последние 90 дней
+                            cutoff = datetime.now(timezone.utc) - timedelta(days=90)
+                            d = d[d["date"] >= cutoff]
+
+                            # Пересчитываем кумулятивную доходность
+                            d["cumulative_return"] = (
+                                1.0 + d["daily_return"].astype(float)
+                            ).cumprod() - 1.0
+
+                            # Рисуем график
+                            st.line_chart(d.set_index("date")["cumulative_return"])
                         else:
-                            st.info("Данных пока нет")
-                except Exception:
-                    st.info("Данных пока нет")
+                            st.info("Данных по этому инструменту пока нет")
+                    else:
+                        st.info(
+                            "📊 Запустите generate_performance_data.py для создания данных"
+                        )
+                except Exception as e:
+                    st.error(f"Ошибка отображения графика: {e}")
 
         # Лог перфоманса (нулевой, как триггер отслеживания сессий)
         try:
