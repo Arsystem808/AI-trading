@@ -38,6 +38,12 @@ try:
 except Exception:
     pass
 
+# ===== Import modular performance viewer =====
+try:
+    from ui.performance_viewer import render_performance_section
+except Exception:
+    render_performance_section = None
+
 # ===== Page / Branding =====
 st.set_page_config(
     page_title="Arxora — трейд‑ИИ (MVP)",
@@ -288,27 +294,54 @@ def _seconds_until_eod_utc() -> int:
 
 
 def _aggregate_performance_to_csv():
+    """
+    Агрегация всех performance CSV из performance_data/ в единый performance_summary.csv.
+    Улучшения:
+    - Автоматическое определение разделителя (sep=None)
+    - Пропуск битых строк (on_bad_lines='skip')
+    - Извлечение agent/ticker из имени файла, если колонок нет
+    - Нормализация имён колонок (lowercase, strip)
+    """
     DATA_DIR.mkdir(exist_ok=True)
     frames = []
+    
     for p in DATA_DIR.glob("performance_*_*.csv"):
         try:
-            df = pd.read_csv(
-                p, sep=None, engine="python", on_bad_lines="skip"
-            )  # авто‑разделитель, пропуск битых строк
-        except Exception:
+            # Гибкое чтение: автоматический разделитель, пропуск битых строк
+            df = pd.read_csv(p, sep=None, engine="python", on_bad_lines="skip")
+        except Exception as e:
+            # Если файл совсем битый — пропускаем
+            print(f"⚠️  Пропущен {p.name}: {e}")
             continue
-        m = re.match(r"^performance_(.+)_(.+)\.csv$", p.name)
+        
+        # Извлекаем agent и ticker из имени файла (pattern: performance_<agent>_<ticker>.csv)
+        m = re.match(r"^performance_(.+?)_(.+)\.csv$", p.name)
         if m:
-            a, t = m.group(1), m.group(2)
+            agent_from_file, ticker_from_file = m.group(1), m.group(2)
+            
+            # Если в CSV нет колонок — добавляем из имени файла
             if "agent" not in df.columns:
-                df["agent"] = a
+                df["agent"] = agent_from_file
             if "ticker" not in df.columns:
-                df["ticker"] = t
+                df["ticker"] = ticker_from_file
+        
+        # Нормализуем имена колонок (lowercase, убираем пробелы)
+        df.columns = [str(c).strip().lower() for c in df.columns]
+        
         frames.append(df)
+    
+    # Объединяем все фреймы
     if frames:
         out = pd.concat(frames, ignore_index=True)
+        
+        # Итоговая нормализация колонок
         out.columns = [c.strip().lower() for c in out.columns]
+        
+        # Сохраняем
         out.to_csv(SUMMARY_PATH, index=False)
+        print(f"✅ Создан {SUMMARY_PATH} ({len(out)} записей из {len(frames)} файлов)")
+    else:
+        print("⚠️  Нет данных для агрегации")
 
 
 def _ensure_summary_up_to_date():
@@ -503,47 +536,11 @@ if run and ticker:
             )
         st.caption(CUSTOM_PHRASES["DISCLAIMER"])
 
-        # ====== Performance chart (3 месяца) из единой сводки с кэшем до EOD ======
-        st.subheader(
-            f"Эффективность модели {model} по ключевым инструментам (3 месяца)"
-        )
-        try:
-            df_all = load_summary_df()
-        except Exception:
-            df_all = pd.DataFrame()
-
-        cols = st.columns(2)
-        for i, tk in enumerate(["SPY", "QQQ", "BTCUSD", "ETHUSD"]):
-            with cols[i % 2]:
-                st.markdown(f"**{tk}**")
-                try:
-                    d = df_all[
-                        (df_all["agent"].str.lower() == model.lower())
-                        & (df_all["ticker"].str.upper() == tk)
-                    ].copy()
-                    if not d.empty:
-                        d["date"] = pd.to_datetime(d["date"], errors="coerce", utc=True)
-                        d = d.sort_values("date")
-                        cutoff = datetime.now(timezone.utc) - timedelta(days=90)
-                        d = d[d["date"] >= cutoff]
-                        d["cumulative_return"] = (
-                            1.0 + d["daily_return"].astype(float)
-                        ).cumprod() - 1.0
-                        st.line_chart(d.set_index("date")["cumulative_return"])
-                    else:
-                        # Fallback на старый источник, если сводки нет по тикеру
-                        perf_data = None
-                        try:
-                            perf_data = get_agent_performance(model, tk)
-                        except Exception:
-                            perf_data = None
-                        if perf_data is not None and not perf_data.empty:
-                            perf_data = perf_data.set_index("date")
-                            st.line_chart(perf_data["cumulative_return"])
-                        else:
-                            st.info("Данных пока нет")
-                except Exception:
-                    st.info("Данных пока нет")
+        # ====== Performance charts (модульный подход) ======
+        if render_performance_section:
+            render_performance_section(model)
+        else:
+            st.info("Performance viewer недоступен")
 
         # Лог перфоманса (нулевой, как триггер отслеживания сессий)
         try:
@@ -580,3 +577,4 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
