@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# app.py — Arxora UI (final EOD): Valid until = конец дня (UTC), примеры тикеров, блок «О проекте» внизу
+# app.py — Arxora UI (final EOD + debug button): Valid until = конец дня (UTC), примеры тикеров, блок «О проекте» внизу
 
 import glob
 import importlib
@@ -453,6 +453,14 @@ symbol_for_engine = normalize_for_polygon(ticker)
 
 run = st.button("Проанализировать", type="primary", key="main_analyze")
 st.write(f"Mode: AI · Model: {model}")
+
+# ===== DEBUG: Кнопка пересборки performance_summary.csv =====
+if st.button("🔄 Пересобрать performance_summary.csv", key="rebuild_summary"):
+    try:
+        _aggregate_performance_to_csv()
+        st.success("✅ Файл пересобран! Обнови страницу (F5)")
+    except Exception as e:
+        st.error(f"❌ Ошибка: {e}")
 
 if run and ticker:
     try:
