@@ -1,646 +1,260 @@
-# -*- coding: utf-8 -*-
-# app.py — Arxora UI (final EOD + debug button): Valid until = конец дня (UTC), примеры тикеров, блок «О проекте» внизу
-
-import glob
-import importlib
-import os
-import re
-import subprocess
-import sys
-import traceback
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import Any, Dict, List, Optional
-
-import pandas as pd
 import streamlit as st
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+import plotly.graph_objects as go
+from core.strategy import TradingStrategy
+import glob
+import os
 
-# Защита от отсутствующей зависимости filelock (без падения UI)
-try:
-    from filelock import FileLock  # pip install filelock
-except Exception:
-
-    class FileLock:
-        def __init__(self, *a, **k):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-
-try:
-    from dotenv import load_dotenv
-
-    load_dotenv()
-except Exception:
-    pass
-
-# ===== Встроенная функция performance (без отдельного модуля) =====
-def render_performance_section(model: str):
-    """Рендерит секцию performance charts для указанной модели"""
-    from datetime import datetime, timedelta, timezone
-    import pandas as pd
-    
-    st.subheader(f"📊 Эффективность модели **{model}** (3 месяца)")
-    
-    try:
-        df_all = load_summary_df()
-    except Exception:
-        df_all = pd.DataFrame()
-    
-    if df_all.empty:
-        st.info("📂 Нет данных performance для отображения")
-        return
-    
-    # Фильтрация по модели (case-insensitive)
-    df_model = df_all[df_all["agent"].str.lower() == model.lower()].copy()
-    
-    if df_model.empty:
-        st.info(f"Нет данных для модели **{model}**")
-        return
-    
-    # Ключевые тикеры
-    key_tickers = ["SPY", "QQQ", "BTCUSD", "ETHUSD"]
-    
-    # 2 колонки для графиков
-    cols = st.columns(2)
-    
-    for i, ticker in enumerate(key_tickers):
-        with cols[i % 2]:
-            st.markdown(f"**{ticker}**")
-            
-            # Данные по тикеру
-            df_ticker = df_model[df_model["ticker"].str.upper() == ticker].copy()
-            
-            if df_ticker.empty:
-                st.info("Нет данных")
-                continue
-            
-            try:
-                # Парсинг даты
-                df_ticker["date"] = pd.to_datetime(df_ticker["date"], errors="coerce", utc=True)
-                df_ticker = df_ticker.dropna(subset=["date"]).sort_values("date")
-                
-                # Фильтр: последние 90 дней
-                cutoff = datetime.now(timezone.utc) - timedelta(days=90)
-                df_ticker = df_ticker[df_ticker["date"] >= cutoff]
-                
-                if df_ticker.empty:
-                    st.info("Нет данных за последние 90 дней")
-                    continue
-                
-                # Кумулятивная доходность
-                df_ticker["cumulative_return"] = (
-                    (1.0 + df_ticker["daily_return"].astype(float)).cumprod() - 1.0
-                )
-                
-                # График
-                st.line_chart(
-                    df_ticker.set_index("date")["cumulative_return"],
-                    use_container_width=True
-                )
-                
-            except Exception as e:
-                st.warning(f"⚠️ Ошибка обработки: {e}")
-
-# ===== Page / Branding =====
+# Настройка страницы
 st.set_page_config(
-    page_title="Arxora — трейд‑ИИ (MVP)",
-    page_icon="assets/arxora_favicon_512.png",
-    layout="centered",
+    page_title="Arxora - AI Trading Platform",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
+# Стили
+st.markdown("""
+    <style>
+    .main {
+        background-color: #0E1117;
+    }
+    .stButton>button {
+        background-color: #5865F2;
+        color: white;
+        border-radius: 8px;
+        border: none;
+        padding: 0.5rem 2rem;
+        font-weight: 600;
+    }
+    .stButton>button:hover {
+        background-color: #4752C4;
+    }
+    h1 {
+        color: #5865F2;
+        font-weight: 700;
+    }
+    .metric-card {
+        background-color: #1E2130;
+        padding: 1rem;
+        border-radius: 10px;
+        border-left: 3px solid #5865F2;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
-def render_arxora_header():
-    hero_path = "assets/arxora_logo_hero.png"
-    if os.path.exists(hero_path):
-        st.image(hero_path, use_container_width=True)
-    else:
-        st.markdown(
-            """
-        <div style="border-radius:8px;overflow:hidden;
-                    box-shadow:0 0 0 1px rgba(0,0,0,.06),0 12px 32px rgba(0,0,0,.18);">
-          <div style="background:#5B5BF7;padding:28px 16px;">
-            <div style="max-width:1120px;margin:0 auto;">
-              <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
-                          color:#fff;font-weight:700;letter-spacing:.4px;
-                          font-size:clamp(36px,7vw,72px);line-height:1.05;">
-                Arxora
-              </div>
-            </div>
-          </div>
-          <div style="background:#000;padding:12px 16px 16px 16px;">
-            <div style="max-width:1120px;margin:0 auto;">
-              <div style="color:#fff;font-size:clamp(16px,2.4vw,28px);opacity:.92;">trade smarter.</div>
-            </div>
-          </div>
-        </div>
-        """,
-            unsafe_allow_html=True,
-        )
+# Заголовок
+st.markdown("<h1 style='text-align: center; color: #5865F2;'>Arxora</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: #8E9297;'>trade smarter.</p>", unsafe_allow_html=True)
 
+# Сайдбар
+st.sidebar.title("AI agents")
+st.sidebar.markdown("**Выберите модель**")
 
-render_arxora_header()
+# Модели агентов
+model_options = {
+    "Octopus": "Orchestrator",
+    "AlphaPulse": "Alpha signals",
+    "Global": "Global market analysis",
+    "M7": "Magnificent 7 stocks",
+    "W7": "Week 7 day signals"
+}
 
-# ===== Optional performance (оригинальный интерфейс) =====
-try:
-    from core.performance_tracker import get_agent_performance, log_agent_performance
-except Exception:
+selected_model = st.sidebar.radio(
+    "Модель:",
+    options=list(model_options.keys()),
+    format_func=lambda x: f"{x} - {model_options[x]}"
+)
 
-    def log_agent_performance(*args, **kwargs):
-        pass
+# Ввод тикера
+st.sidebar.markdown("---")
+ticker = st.sidebar.text_input("Тикер", value="QQQ", placeholder="Введите тикер...")
 
-    def get_agent_performance(*args, **kwargs):
-        return None
+# Кнопка анализа
+analyze_button = st.sidebar.button("Проанализировать", use_container_width=True)
 
+# Табы
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Analysis", "🤖 AI Insights", "📈 Charts", "⚡ Performance"])
 
-# ===== Helpers =====
-ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))
-MIN_TP_STEP_PCT = float(os.getenv("ARXORA_MIN_TP_STEP_PCT", "0.0010"))
-
-
-def _fmt(x: Any) -> str:
-    try:
-        return f"{float(x):.2f}"
-    except Exception:
-        return "0.00"
-
-
-def sanitize_targets(action: str, entry: float, tp1: float, tp2: float, tp3: float):
-    step = max(MIN_TP_STEP_PCT * max(1.0, abs(entry)), 1e-6 * max(1.0, abs(entry)))
-    if action == "BUY":
-        a = sorted([tp1, tp2, tp3])
-        a[0] = max(a[0], entry + step)
-        a[1] = max(a[1], a[0] + step)
-        a[2] = max(a[2], a[1] + step)
-        return a[0], a[1], a[2]
-    if action == "SHORT":
-        a = sorted([tp1, tp2, tp3], reverse=True)
-        a[0] = min(a[0], entry - step)
-        a[1] = min(a[1], a[0] - step)
-        a[2] = min(a[2], a[1] - step)
-        return a[0], a[1], a[2]
-    return tp1, tp2, tp3
-
-
-def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
-    if action not in ("BUY", "SHORT"):
-        return "WAIT", "Entry"
-    if abs(entry - last_price) <= eps * max(1.0, abs(last_price)):
-        return "Market price", "Entry (Market)"
-    if action == "BUY":
-        return (
-            ("Buy Stop", "Entry (Buy Stop)")
-            if entry > last_price
-            else ("Buy Limit", "Entry (Buy Limit)")
-        )
-    else:
-        return (
-            ("Sell Stop", "Entry (Sell Stop)")
-            if entry < last_price
-            else ("Sell Limit", "Entry (Sell Limit)")
-        )
-
-
-def normalize_for_polygon(symbol: str) -> str:
-    s = (symbol or "").strip().upper().replace(" ", "")
-    if s.startswith(("X:", "C:", "O:")):
-        head, tail = s.split(":", 1)
-        tail = tail.replace("USDT", "USD").replace("USDC", "USD")
-        return f"{head}:{tail}"
-    if re.match(r"^[A-Z]{2,10}USD(T|C)?$", s):
-        s = s.replace("USDT", "USD").replace("USDC", "USD")
-        return f"X:{s}"
-    return s
-
-
-def rr_line(levels: Dict[str, float]) -> str:
-    risk = abs(levels["entry"] - levels["sl"])
-    if risk <= 1e-9:
-        return ""
-    rr1 = abs(levels["tp1"] - levels["entry"]) / risk
-    rr2 = abs(levels["tp2"] - levels["entry"]) / risk
-    rr3 = abs(levels["tp3"] - levels["entry"]) / risk
-    return f"RR ≈ 1:{rr1:.1f} (TP1) · 1:{rr2:.1f} (TP2) · 1:{rr3:.1f} (TP3)"
-
-
-def card_html(
-    title: str, value: str, sub: Optional[str] = None, color: Optional[str] = None
-) -> str:
-    bg = "#141a20"
-    if color == "green":
-        bg = "#006f6f"
-    elif color == "red":
-        bg = "#6f0000"
-    return f"""
-        <div style="background:{bg}; padding:12px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.06); margin:6px 0;">
-            <div style="font-size:0.9rem; opacity:0.85;">{title}</div>
-            <div style="font-size:1.4rem; font-weight:700; margin-top:4px;">{value}</div>
-            {f"<div style='font-size:0.8rem; opacity:0.7; margin-top:2px;'>{sub}</div>" if sub else ""}
-        </div>
-    """
-
-
-# ===== AlphaPulse alias (services.data -> core.data) =====
-try:
-    import services.data  # noqa
-except Exception:
-    try:
-        import core.data as _core_data
-
-        sys.modules["services.data"] = _core_data
-    except Exception:
-        pass
-
-
-# ===== Dynamic import of strategy =====
-def _load_strategy_module():
-    try:
-        mod = importlib.import_module("core.strategy")
-        try:
-            mod = importlib.reload(mod)
-        except Exception:
-            pass
-        return mod, None
-    except Exception as e:
-        return None, traceback.format_exc()
-
-
-def get_available_models() -> List[str]:
-    mod, _ = _load_strategy_module()
-    if not mod:
-        return ["Octopus"]
-    reg = getattr(mod, "STRATEGY_REGISTRY", {}) or {}
-    keys = list(reg.keys())
-    return (["Octopus"] if "Octopus" in keys else []) + [
-        k for k in sorted(keys) if k != "Octopus"
-    ]
-
-
-def run_model_by_name(ticker_norm: str, model_name: str) -> Dict[str, Any]:
-    mod, err = _load_strategy_module()
-    if not mod:
-        raise RuntimeError("Не удалось импортировать core.strategy:\n" + (err or ""))
-    if hasattr(mod, "analyze_asset"):
-        return mod.analyze_asset(ticker_norm, "Краткосрочный", model_name)
-    reg = getattr(mod, "STRATEGY_REGISTRY", {}) or {}
-    if model_name in reg and callable(reg[model_name]):
-        return reg[model_name](ticker_norm, "Краткосрочный")
-    fname = f"analyze_asset_{model_name.lower()}"
-    if hasattr(mod, fname):
-        return getattr(mod, fname)(ticker_norm, "Краткосрочный")
-    raise RuntimeError(f"Стратегия {model_name} недоступна.")
-
-
-# ===== Confidence breakdown (fallback) =====
-try:
-    from core.ui_confidence import (
-        get_confidence_breakdown_from_session as _get_conf_from_session,
-    )
-    from core.ui_confidence import (
-        render_confidence_breakdown_inline as _render_breakdown_native,
-    )
-except Exception:
-    _render_breakdown_native = None
-    _get_conf_from_session = None
-
-
-def render_confidence_breakdown_inline(ticker: str, conf_pct: float):
-    try:
-        st.session_state["last_overall_conf_pct"] = float(conf_pct or 0.0)
-        st.session_state.setdefault("last_rules_pct", 44.0)
-    except Exception:
-        pass
-    try:
-        if _render_breakdown_native:
-            return _render_breakdown_native(ticker, float(conf_pct or 0.0))
-    except Exception:
-        pass
-    data = (
-        _get_conf_from_session()
-        if _get_conf_from_session
-        else {
-            "overall_confidence_pct": float(
-                st.session_state.get("last_overall_conf_pct", conf_pct or 0.0)
-            ),
-            "breakdown": {
-                "rules_pct": float(st.session_state.get("last_rules_pct", 44.0)),
-                "ai_override_delta_pct": float(
-                    st.session_state.get("last_overall_conf_pct", conf_pct or 0.0)
-                )
-                - float(st.session_state.get("last_rules_pct", 44.0)),
-            },
-            "shap_top": [],
-        }
-    )
-    st.markdown("#### Confidence breakdown")
-    st.write(f"Общая уверенность: {data.get('overall_confidence_pct',0):.1f}%")
-    b = data.get("breakdown", {})
-    st.write(f"— Базовые правила: {b.get('rules_pct',0):.1f}%")
-    st.write(f"— AI override: {b.get('ai_override_delta_pct',0):.1f}%")
-
-
-# ====== DATA PIPELINE: Автосборка сводки + кэш до конца дня (UTC) ======
-DATA_DIR = Path("performance_data")
-SUMMARY_PATH = Path("performance_summary.csv")
-LOCK = FileLock(str(DATA_DIR / ".summary.lock"))
-
-
-def _seconds_until_eod_utc() -> int:
-    now = datetime.now(timezone.utc)
-    eod = now.replace(hour=23, minute=59, second=59, microsecond=0)
-    return max(5, int((eod - now).total_seconds()))
-
-
-def _aggregate_performance_to_csv():
-    """
-    Агрегация всех performance CSV из performance_data/ в единый performance_summary.csv.
-    Улучшения:
-    - Автоматическое определение разделителя (sep=None)
-    - Пропуск битых строк (on_bad_lines='skip')
-    - Извлечение agent/ticker из имени файла, если колонок нет
-    - Нормализация имён колонок (lowercase, strip)
-    """
-    DATA_DIR.mkdir(exist_ok=True)
-    frames = []
-    
-    for p in DATA_DIR.glob("performance_*_*.csv"):
-        try:
-            # Гибкое чтение: автоматический разделитель, пропуск битых строк
-            df = pd.read_csv(p, sep=None, engine="python", on_bad_lines="skip")
-        except Exception as e:
-            # Если файл совсем битый — пропускаем
-            print(f"⚠️  Пропущен {p.name}: {e}")
-            continue
-        
-        # Извлекаем agent и ticker из имени файла (pattern: performance_<agent>_<ticker>.csv)
-        m = re.match(r"^performance_(.+?)_(.+)\.csv$", p.name)
-        if m:
-            agent_from_file, ticker_from_file = m.group(1), m.group(2)
-            
-            # Если в CSV нет колонок — добавляем из имени файла
-            if "agent" not in df.columns:
-                df["agent"] = agent_from_file
-            if "ticker" not in df.columns:
-                df["ticker"] = ticker_from_file
-        
-        # Нормализуем имена колонок (lowercase, убираем пробелы)
-        df.columns = [str(c).strip().lower() for c in df.columns]
-        
-        frames.append(df)
-    
-    # Объединяем все фреймы
-    if frames:
-        out = pd.concat(frames, ignore_index=True)
-        
-        # Итоговая нормализация колонок
-        out.columns = [c.strip().lower() for c in out.columns]
-        
-        # Сохраняем
-        out.to_csv(SUMMARY_PATH, index=False)
-        print(f"✅ Создан {SUMMARY_PATH} ({len(out)} записей из {len(frames)} файлов)")
-    else:
-        print("⚠️  Нет данных для агрегации")
-
-
-def _ensure_summary_up_to_date():
-    DATA_DIR.mkdir(exist_ok=True)
-    with LOCK:
-        if os.getenv("ARXORA_AUTO_RUN_BENCHMARK", "0") == "1":
-            agents = ["W7", "M7", "Global", "AlphaPulse", "Octopus"]
-            tickers = ["SPY", "QQQ"]
-            cmd = [
-                "python3",
-                "jobs/daily_benchmarks.py",
-                "--agents",
-                *agents,
-                "--tickers",
-                *tickers,
-            ]
+# === ANALYSIS TAB ===
+with tab1:
+    if analyze_button:
+        with st.spinner("🔍 Анализируем рынок..."):
             try:
-                subprocess.run(cmd, check=False, capture_output=True)
-            except Exception:
-                pass
-        _aggregate_performance_to_csv()
+                # Инициализация стратегии
+                strategy = TradingStrategy()
+                
+                # Получение сигнала
+                result = strategy.analyze(ticker, selected_model)
+                
+                if result and 'signal' in result:
+                    st.success(f"✅ Анализ для {ticker} завершён!")
+                    
+                    # Отображение результатов
+                    col1, col2, col3 = st.columns(3)
+                    
+                    # Сигнал
+                    signal_color = {
+                        "STRONG BUY": "🟢",
+                        "BUY": "🟢",
+                        "HOLD": "🟡",
+                        "SELL": "🔴",
+                        "STRONG SELL": "🔴"
+                    }.get(result['signal'], "⚪")
+                    
+                    with col1:
+                        st.metric(
+                            label="Signal",
+                            value=f"{signal_color} {result['signal']}"
+                        )
+                    
+                    # Confidence
+                    with col2:
+                        confidence_val = result.get('confidence', 0)
+                        st.metric(
+                            label="Confidence",
+                            value=f"{confidence_val:.1f}%"
+                        )
+                    
+                    # Price
+                    with col3:
+                        current_price = result.get('current_price', 0)
+                        st.metric(
+                            label="Current Price",
+                            value=f"${current_price:.2f}"
+                        )
+                    
+                    # Breakdown
+                    st.markdown("### 📋 Signal Breakdown")
+                    
+                    if 'breakdown' in result and result['breakdown']:
+                        for agent, data in result['breakdown'].items():
+                            with st.expander(f"🤖 {agent}"):
+                                agent_col1, agent_col2 = st.columns(2)
+                                with agent_col1:
+                                    st.write(f"**Signal:** {data.get('signal', 'N/A')}")
+                                with agent_col2:
+                                    st.write(f"**Confidence:** {data.get('confidence', 0):.1f}%")
+                                
+                                if 'reasoning' in 
+                                    st.write(f"**Reasoning:** {data['reasoning']}")
+                    else:
+                        st.info("No detailed breakdown available")
+                else:
+                    st.error("❌ Не удалось получить сигнал. Проверьте тикер и попробуйте снова.")
+            
+            except Exception as e:
+                st.error(f"❌ Ошибка при анализе: {str(e)}")
+    else:
+        st.info("👈 Выберите модель и тикер, затем нажмите **Проанализировать**")
 
+# === AI INSIGHTS TAB ===
+with tab2:
+    st.header("🤖 AI Insights")
+    st.info("Подробная аналитика от AI агентов появится здесь после анализа.")
 
-@st.cache_data(ttl=_seconds_until_eod_utc())
-def load_summary_df() -> pd.DataFrame:
-    _ensure_summary_up_to_date()
-    df = pd.read_csv(SUMMARY_PATH, sep=None, engine="python", on_bad_lines="skip")
-    df.columns = [c.strip().lower() for c in df.columns]
-    return df
+# === CHARTS TAB ===
+with tab3:
+    st.header("📈 Charts")
+    st.info("Интерактивные графики появятся здесь после анализа.")
 
-
-# ===== Main UI =====
-st.subheader("AI agents")
-models = get_available_models()
-if not models:
-    models = ["Octopus"]
-model = st.radio(
-    "Выберите модель", options=models, index=0, horizontal=False, key="agent_radio"
-)
-
-ticker_input = st.text_input(
-    "Тикер",
-    placeholder="Примеры ввода: AAPL • SPY • BTCUSD • C:EURUSD • O:SPY240920C500",
-)
-ticker = ticker_input.strip().upper()
-symbol_for_engine = normalize_for_polygon(ticker)
-
-run = st.button("Проанализировать", type="primary", key="main_analyze")
-st.write(f"Mode: AI · Model: {model}")
-
-# ===== DEBUG: Кнопка пересборки performance_summary.csv =====
-if st.button("🔄 Пересобрать performance_summary.csv", key="rebuild_summary"):
-    try:
-        _aggregate_performance_to_csv()
-        st.success("✅ Файл пересобран! Обнови страницу (F5)")
-    except Exception as e:
-        st.error(f"❌ Ошибка: {e}")
-
-if run and ticker:
-    try:
-        out = run_model_by_name(symbol_for_engine, model)
-
-        rec = out.get("recommendation")
-        if not rec and ("action" in out or "confidence" in out):
-            rec = {
-                "action": out.get("action", "WAIT"),
-                "confidence": float(out.get("confidence", 0.0)),
-            }
-        if not rec:
-            rec = {"action": "WAIT", "confidence": 0.0}
-
-        action = str(rec.get("action", "WAIT"))
-        conf_val = float(rec.get("confidence", 0.0))
-        conf_pct_val = conf_val * 100.0 if conf_val <= 1.0 else conf_val
-        st.session_state["last_overall_conf_pct"] = conf_pct_val
-
-        last_price = float(out.get("last_price", 0.0) or 0.0)
-        st.markdown(
-            f"<div style='font-size:3rem; font-weight:800; text-align:center; margin:6px 0 14px 0;'>${last_price:.2f}</div>",
-            unsafe_allow_html=True,
-        )
-
-        lv = {
-            k: float(out.get("levels", {}).get(k, 0.0))
-            for k in ("entry", "sl", "tp1", "tp2", "tp3")
-        }
-        if action in ("BUY", "SHORT"):
-            tp1, tp2, tp3 = lv["tp1"], lv["tp2"], lv["tp3"]
-            t1, t2, t3 = sanitize_targets(action, lv["entry"], tp1, tp2, tp3)
-            lv["tp1"], lv["tp2"], lv["tp3"] = float(t1), float(t2), float(t3)
-
-        mode_text, entry_title = entry_mode_labels(
-            action, lv.get("entry", last_price), last_price, ENTRY_MARKET_EPS
-        )
-        header_text = "WAIT"
-        if action == "BUY":
-            header_text = f"Long • {mode_text}"
-        elif action == "SHORT":
-            header_text = f"Short • {mode_text}"
-
-        st.markdown(
-            f"""
-        <div style="background:#c57b0a; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:10px;">
-            <div style="font-size:1.15rem; font-weight:700;">{header_text}</div>
-            <div style="opacity:0.75; font-size:0.95rem; margin-top:2px;">{int(round(conf_pct_val))}% confidence</div>
-        </div>
-        """,
-            unsafe_allow_html=True,
-        )
-
-        # As‑of / Valid until = конец дня UTC
-        now_utc = datetime.now(timezone.utc)
-        eod_utc = now_utc.replace(hour=23, minute=59, second=59, microsecond=0)
-        st.caption(
-            f"As‑of: {now_utc.strftime('%Y-%m-%dT%H:%M:%SZ')} UTC • Valid until: {eod_utc.strftime('%Y-%m-%dT%H:%M:%SZ')} • Model: {model}"
-        )
-
-        # Breakdown
-        render_confidence_breakdown_inline(ticker, conf_pct_val)
-
-        # Targets
-        if action in ("BUY", "SHORT"):
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.markdown(
-                    card_html(entry_title, f"{lv['entry']:.2f}", color="green"),
-                    unsafe_allow_html=True,
-                )
-            with c2:
-                st.markdown(
-                    card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"),
-                    unsafe_allow_html=True,
-                )
-            with c3:
-                st.markdown(
-                    card_html(
-                        "TP 1",
-                        f"{lv['tp1']:.2f}",
-                        sub=f"Probability {int(round(out.get('probs', {}).get('tp1', 0)*100))}%",
-                    ),
-                    unsafe_allow_html=True,
-                )
-            c4, c5 = st.columns(2)
-            with c4:
-                st.markdown(
-                    card_html(
-                        "TP 2",
-                        f"{lv['tp2']:.2f}",
-                        sub=f"Probability {int(round(out.get('probs', {}).get('tp2', 0)*100))}%",
-                    ),
-                    unsafe_allow_html=True,
-                )
-            with c5:
-                st.markdown(
-                    card_html(
-                        "TP 3",
-                        f"{lv['tp3']:.2f}",
-                        sub=f"Probability {int(round(out.get('probs', {}).get('tp3', 0)*100))}%",
-                    ),
-                    unsafe_allow_html=True,
-                )
-            rr = rr_line(lv)
-            if rr:
-                st.markdown(
-                    f"<div style='margin-top:6px; color:#FFA94D; font-weight:600;'>{rr}</div>",
-                    unsafe_allow_html=True,
-                )
-
-        # Custom phrases (ваши тексты)
-        CUSTOM_PHRASES = {
-            "CONTEXT": {
-                "support": [
-                    "Цена у уровня покупательской активности. Оптимально — вход по ордеру из AI‑анализа с акцентом на рост; важен контроль риска и пересмотр плана при закреплении ниже зоны."
-                ],
-                "resistance": [
-                    "Риск коррекции повышен. Оптимально — короткий сценарий по ордеру из AI‑анализа; при прорыве и закреплении выше зоны — план пересмотреть."
-                ],
-                "neutral": ["Баланс. Действовать только по подтверждённому сигналу."],
-            },
-            "STOPLINE": ["Стоп‑лосс: {sl}. Потенциальный риск ~{risk_pct}% от входа."],
-            "DISCLAIMER": "AI‑анализ носит информационный характер, не является инвестрекомендацией; рынок меняется быстро, прошлые результаты не гарантируют будущие.",
-        }
-        ctx_key = (
-            "support"
-            if action == "BUY"
-            else ("resistance" if action == "SHORT" else "neutral")
-        )
-        st.markdown(
-            f"<div style='opacity:0.9'>{CUSTOM_PHRASES['CONTEXT'][ctx_key][0]}</div>",
-            unsafe_allow_html=True,
-        )
-        if action in ("BUY", "SHORT"):
-            stopline = CUSTOM_PHRASES["STOPLINE"][0].format(
-                sl=_fmt(lv["sl"]),
-                risk_pct=f"{abs(lv['entry']-lv['sl'])/max(1e-9,abs(lv['entry']))*100.0:.1f}",
-            )
-            st.markdown(
-                f"<div style='opacity:0.9; margin-top:4px'>{stopline}</div>",
-                unsafe_allow_html=True,
-            )
-        st.caption(CUSTOM_PHRASES["DISCLAIMER"])
-
-        # ====== Performance charts (встроенный подход) ======
-        render_performance_section(model)
-
-        # Лог перфоманса (нулевой, как триггер отслеживания сессий)
+# === PERFORMANCE TAB ===
+with tab4:
+    st.header("📊 Performance Tracking")
+    
+    # Кнопка пересоздания файла
+    if st.button("🔄 Пересобрать performance_summary.csv"):
+        perf_files = glob.glob("performance_data/*.csv")
+        
+        if not perf_files:
+            st.warning("⚠️ Нет файлов performance в папке performance_data/")
+        else:
+            all_data = []
+            for file in perf_files:
+                try:
+                    df = pd.read_csv(file)
+                    all_data.append(df)
+                except Exception as e:
+                    st.error(f"Ошибка чтения {file}: {e}")
+            
+            if all_
+                combined = pd.concat(all_data, ignore_index=True)
+                combined.to_csv("performance_summary.csv", index=False)
+                st.success("✅ Файл пересобран! Обнови страницу (F5)")
+    
+    st.markdown("---")
+    
+    # Загрузка и отображение графиков
+    if os.path.exists("performance_summary.csv"):
         try:
-            log_agent_performance(model, ticker, datetime.today(), 0.0)
-        except Exception:
-            pass
+            df_perf = pd.read_csv("performance_summary.csv")
+            
+            if not df_perf.empty and 'timestamp' in df_perf.columns:
+                # Преобразуем timestamp
+                df_perf['timestamp'] = pd.to_datetime(df_perf['timestamp'])
+                
+                # Получаем список агентов
+                agents = df_perf['agent'].unique() if 'agent' in df_perf.columns else []
+                
+                if len(agents) > 0:
+                    st.subheader("📈 Performance Charts")
+                    
+                    # График для каждого агента
+                    for agent in agents:
+                        agent_data = df_perf[df_perf['agent'] == agent].copy()
+                        agent_data = agent_data.sort_values('timestamp')
+                        
+                        # Создаём график
+                        fig = go.Figure()
+                        
+                        # Линия accuracy
+                        fig.add_trace(go.Scatter(
+                            x=agent_data['timestamp'],
+                            y=agent_data['accuracy'],
+                            mode='lines+markers',
+                            name='Accuracy',
+                            line=dict(color='#00D9FF', width=2),
+                            marker=dict(size=6)
+                        ))
+                        
+                        # Настройки графика
+                        fig.update_layout(
+                            title=f"📊 {agent} - Accuracy Over Time",
+                            xaxis_title="Time",
+                            yaxis_title="Accuracy (%)",
+                            template="plotly_dark",
+                            height=400,
+                            hovermode='x unified'
+                        )
+                        
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                        # Показываем статистику
+                        with st.expander(f"📋 {agent} Statistics"):
+                            col1, col2, col3 = st.columns(3)
+                            
+                            with col1:
+                                st.metric("Avg Accuracy", f"{agent_data['accuracy'].mean():.1f}%")
+                            with col2:
+                                st.metric("Max Accuracy", f"{agent_data['accuracy'].max():.1f}%")
+                            with col3:
+                                st.metric("Min Accuracy", f"{agent_data['accuracy'].min():.1f}%")
+                else:
+                    st.info("📊 Данных по агентам ещё нет.")
+            else:
+                st.warning("⚠️ Файл performance_summary.csv пуст или повреждён.")
+        
+        except Exception as e:
+            st.error(f"Ошибка загрузки данных: {e}")
+            st.info("💡 Попробуй нажать кнопку '🔄 Пересобрать performance_summary.csv'")
+    else:
+        st.info("📂 Файл performance_summary.csv не найден. Нажми кнопку выше, чтобы создать его.")
 
-    except Exception as e:
-        st.error(f"Ошибка анализа: {e}")
-        st.exception(e)
-
-elif not ticker:
-    st.info(
-        "Введите тикер и нажмите «Проанализировать». Примеры формата показаны в поле ввода."
-    )
-
-# ===== Footer / About =====
+# Footer
 st.markdown("---")
 st.markdown(
-    "<style>.stButton > button { font-weight: 600; }</style>", unsafe_allow_html=True
-)
-
-st.markdown(
-    """
-    <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 6px;">
-        <h4 style="font-weight: 600; margin-top: 0;">О проекте</h4>
-        <p style="font-weight: 300; margin-bottom: 0;">
-        Arxora — современное решение, которое помогает трейдерам принимать точные и обоснованные решения
-        с помощью ансамбля моделей и калибровки уверенности. Система автоматизирует анализ, повышает качество входов
-        и помогает управлять рисками. Несколько ИИ-агентов с разными подходами: трендовые и контртрендовые стратегии. 
-        Octopus-оркестратор взвешивает мнения всех агентов и выдает единый план сделки. Прошлые результаты не гарантируют будущие.
-        </p>
-    </div>
-    """,
-    unsafe_allow_html=True,
+    "<p style='text-align: center; color: #8E9297;'>Mode: AI • Model: {} • Powered by Arxora</p>".format(selected_model),
+    unsafe_allow_html=True
 )
