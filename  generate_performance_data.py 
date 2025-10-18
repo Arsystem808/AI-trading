@@ -1,21 +1,33 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# generate_performance_data.py — Генератор тестовых данных для графиков
+"""
+Генератор тестовых данных производительности для графиков Streamlit.
+Создает файлы performance_data/performance_{agent}_{ticker}.csv
+и сводную таблицу performance_summary.csv
+"""
 
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# Создаём папку
-Path("performance_data").mkdir(exist_ok=True)
+# ===== НАСТРОЙКИ =====
+DATA_DIR = Path("performance_data")
+SUMMARY_FILE = Path("performance_summary.csv")
 
-# Настройки
 agents = ["Octopus", "W7", "M7", "Global", "AlphaPulse"]
 tickers = ["SPY", "QQQ", "BTCUSD", "ETHUSD"]
-days = 90
+days = 90  # Последние 3 месяца
 
-print("🚀 Генерация тестовых данных...\n")
+print("🚀 Генерация тестовых данных производительности...\n")
 
+# Создаём папку
+DATA_DIR.mkdir(exist_ok=True)
+
+# Хранилище для сводки
+all_dfs = []
+
+# ===== ГЕНЕРАЦИЯ ДАННЫХ =====
 for agent in agents:
     for ticker in tickers:
         # Даты за последние 90 дней
@@ -23,14 +35,24 @@ for agent in agents:
         start_date = end_date - timedelta(days=days)
         dates = pd.date_range(start=start_date, end=end_date, freq='D')
         
-        # Случайные доходности (небольшой тренд вверх)
+        # Случайные доходности с уникальным seed для каждой комбинации
         np.random.seed(hash(f"{agent}{ticker}") % 100000)
-        daily_returns = np.random.normal(0.002, 0.015, len(dates))
+        
+        # Генерируем доходности с разным поведением для разных агентов
+        if agent == "Octopus":
+            # Octopus — лучшая производительность
+            daily_returns = np.random.normal(0.003, 0.012, len(dates))
+        elif agent == "AlphaPulse":
+            # AlphaPulse — высокая волатильность
+            daily_returns = np.random.normal(0.002, 0.020, len(dates))
+        else:
+            # Остальные агенты — средняя производительность
+            daily_returns = np.random.normal(0.0015, 0.015, len(dates))
         
         # Кумулятивная доходность
-        cumulative = (1 + pd.Series(daily_returns)).cumprod() - 1
+        cumulative = (1 + pd.Series(daily_returns)).cumprod() - 1.0
         
-        # DataFrame
+        # Создаём DataFrame
         df = pd.DataFrame({
             'date': dates.strftime('%Y-%m-%d'),
             'agent': agent,
@@ -39,10 +61,35 @@ for agent in agents:
             'cumulative_return': cumulative.values
         })
         
-        # Сохраняем
-        filename = f"performance_data/performance_{agent}_{ticker}.csv"
+        # Сохраняем файл
+        filename = DATA_DIR / f"performance_{agent}_{ticker}.csv"
         df.to_csv(filename, index=False)
         print(f"✅ {filename}")
+        
+        # Добавляем в сводку
+        all_dfs.append(df)
 
-print(f"\n🎉 Создано {len(agents) * len(tickers)} файлов!")
-print("\n📊 Теперь запусти: streamlit run app.py")
+print(f"\n🎉 Создано {len(agents) * len(tickers)} файлов производительности!")
+
+# ===== СОЗДАНИЕ СВОДКИ =====
+print("\n📊 Создаю сводную таблицу performance_summary.csv...")
+
+summary = pd.concat(all_dfs, ignore_index=True)
+summary.to_csv(SUMMARY_FILE, index=False)
+
+print(f"✅ {SUMMARY_FILE} создан ({len(summary)} строк)!")
+
+# ===== СТАТИСТИКА =====
+print("\n📈 Статистика:")
+print(f"   • Агенты: {', '.join(agents)}")
+print(f"   • Тикеры: {', '.join(tickers)}")
+print(f"   • Период: {days} дней ({start_date.strftime('%Y-%m-%d')} → {end_date.strftime('%Y-%m-%d')})")
+print(f"   • Всего записей: {len(summary)}")
+
+print("\n✨ Средняя кумулятивная доходность по агентам:")
+for agent in agents:
+    agent_data = summary[summary['agent'] == agent]
+    avg_return = agent_data['cumulative_return'].mean() * 100
+    print(f"   • {agent:12s}: {avg_return:+.2f}%")
+
+print("\n🚀 Готово! Запускай: streamlit run app.py")
