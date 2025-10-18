@@ -38,11 +38,73 @@ try:
 except Exception:
     pass
 
-# ===== Import modular performance viewer =====
-try:
-    from ui.performance_viewer import render_performance_section
-except Exception:
-    render_performance_section = None
+# ===== Встроенная функция performance (без отдельного модуля) =====
+def render_performance_section(model: str):
+    """Рендерит секцию performance charts для указанной модели"""
+    from datetime import datetime, timedelta, timezone
+    import pandas as pd
+    
+    st.subheader(f"📊 Эффективность модели **{model}** (3 месяца)")
+    
+    try:
+        df_all = load_summary_df()
+    except Exception:
+        df_all = pd.DataFrame()
+    
+    if df_all.empty:
+        st.info("📂 Нет данных performance для отображения")
+        return
+    
+    # Фильтрация по модели (case-insensitive)
+    df_model = df_all[df_all["agent"].str.lower() == model.lower()].copy()
+    
+    if df_model.empty:
+        st.info(f"Нет данных для модели **{model}**")
+        return
+    
+    # Ключевые тикеры
+    key_tickers = ["SPY", "QQQ", "BTCUSD", "ETHUSD"]
+    
+    # 2 колонки для графиков
+    cols = st.columns(2)
+    
+    for i, ticker in enumerate(key_tickers):
+        with cols[i % 2]:
+            st.markdown(f"**{ticker}**")
+            
+            # Данные по тикеру
+            df_ticker = df_model[df_model["ticker"].str.upper() == ticker].copy()
+            
+            if df_ticker.empty:
+                st.info("Нет данных")
+                continue
+            
+            try:
+                # Парсинг даты
+                df_ticker["date"] = pd.to_datetime(df_ticker["date"], errors="coerce", utc=True)
+                df_ticker = df_ticker.dropna(subset=["date"]).sort_values("date")
+                
+                # Фильтр: последние 90 дней
+                cutoff = datetime.now(timezone.utc) - timedelta(days=90)
+                df_ticker = df_ticker[df_ticker["date"] >= cutoff]
+                
+                if df_ticker.empty:
+                    st.info("Нет данных за последние 90 дней")
+                    continue
+                
+                # Кумулятивная доходность
+                df_ticker["cumulative_return"] = (
+                    (1.0 + df_ticker["daily_return"].astype(float)).cumprod() - 1.0
+                )
+                
+                # График
+                st.line_chart(
+                    df_ticker.set_index("date")["cumulative_return"],
+                    use_container_width=True
+                )
+                
+            except Exception as e:
+                st.warning(f"⚠️ Ошибка обработки: {e}")
 
 # ===== Page / Branding =====
 st.set_page_config(
@@ -536,11 +598,8 @@ if run and ticker:
             )
         st.caption(CUSTOM_PHRASES["DISCLAIMER"])
 
-        # ====== Performance charts (модульный подход) ======
-        if render_performance_section:
-            render_performance_section(model)
-        else:
-            st.info("Performance viewer недоступен")
+        # ====== Performance charts (встроенный подход) ======
+        render_performance_section(model)
 
         # Лог перфоманса (нулевой, как триггер отслеживания сессий)
         try:
@@ -577,4 +636,3 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-
