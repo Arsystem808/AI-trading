@@ -1,6 +1,5 @@
 """
 core/utils_naming.py — Naming utilities for file-safe identifiers
-=================================================================
 
 Provides consistent naming conventions across the system for:
 - Ticker symbol sanitization (Polygon API -> filesystem)
