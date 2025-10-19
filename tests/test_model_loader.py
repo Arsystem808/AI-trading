@@ -1,6 +1,5 @@
 """
 tests/test_model_loader.py — Unit tests for model loader
-========================================================
 """
 
 import json
