@@ -1,6 +1,5 @@
 """
 scripts/migrate_models.py — Auto-generate JSON configs for existing models
-===========================================================================
 
 Scans models/ directory and creates corresponding JSON configs in configs/
 with metadata extracted from model files.
