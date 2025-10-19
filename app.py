@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
-# app.py — Arxora UI (compact, fixed)
+# app.py — Arxora UI (compact, fixed v2)
 
 import os
 import re
 import sys
-import glob
 import traceback
 import importlib
 import subprocess
@@ -15,7 +14,7 @@ from pathlib import Path
 import streamlit as st
 import pandas as pd
 
-# -------- Optional deps guards
+# -------- Safe optional deps
 try:
     from filelock import FileLock
 except Exception:
@@ -30,37 +29,36 @@ try:
 except Exception:
     pass
 
-# -------- Page / Branding
-st.set_page_config(
-    page_title="Arxora — трейд‑ИИ (MVP)",
-    page_icon="assets/arxora_favicon_512.png",
-    layout="centered"
-)
+# -------- Page
+st.set_page_config(page_title="Arxora — трейд‑ИИ (MVP)", page_icon="assets/arxora_favicon_512.png", layout="centered")
 
 def render_arxora_header():
     hero_path = "assets/arxora_logo_hero.png"
     if os.path.exists(hero_path):
         st.image(hero_path, use_container_width=True)
     else:
-        st.markdown("""
-        <div style="border-radius:8px;overflow:hidden;
-                    box-shadow:0 0 0 1px rgba(0,0,0,.06),0 12px 32px rgba(0,0,0,.18);">
-          <div style="background:#5B5BF7;padding:28px 16px;">
-            <div style="max-width:1120px;margin:0 auto;">
-              <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
-                          color:#fff;font-weight:700;letter-spacing:.4px;
-                          font-size:clamp(36px,7vw,72px);line-height:1.05;">
-                Arxora
+        st.markdown(
+            """
+            <div style="border-radius:8px;overflow:hidden;
+                        box-shadow:0 0 0 1px rgba(0,0,0,.06),0 12px 32px rgba(0,0,0,.18);">
+              <div style="background:#5B5BF7;padding:28px 16px;">
+                <div style="max-width:1120px;margin:0 auto;">
+                  <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
+                              color:#fff;font-weight:700;letter-spacing:.4px;
+                              font-size:clamp(36px,7vw,72px);line-height:1.05;">
+                    Arxora
+                  </div>
+                </div>
+              </div>
+              <div style="background:#000;padding:12px 16px 16px 16px;">
+                <div style="max-width:1120px;margin:0 auto;">
+                  <div style="color:#fff;font-size:clamp(16px,2.4vw,28px);opacity:.92;">trade smarter.</div>
+                </div>
               </div>
             </div>
-          </div>
-          <div style="background:#000;padding:12px 16px 16px 16px;">
-            <div style="max-width:1120px;margin:0 auto;">
-              <div style="color:#fff;font-size:clamp(16px,2.4vw,28px);opacity:.92;">trade smarter.</div>
-            </div>
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
+            """,
+            unsafe_allow_html=True,
+        )
 
 render_arxora_header()
 
@@ -71,7 +69,7 @@ except Exception:
     def log_agent_performance(*args, **kwargs): pass
     def get_agent_performance(*args, **kwargs): return None
 
-# -------- Helpers and constants
+# -------- Helpers
 ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))
 MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT",  "0.0010"))
 
@@ -104,8 +102,7 @@ def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
         return "Market price", "Entry (Market)"
     if action == "BUY":
         return ("Buy Stop", "Entry (Buy Stop)") if entry > last_price else ("Buy Limit", "Entry (Buy Limit)")
-    else:
-        return ("Sell Stop", "Entry (Sell Stop)") if entry < last_price else ("Sell Limit", "Entry (Sell Limit)")
+    return ("Sell Stop", "Entry (Sell Stop)") if entry < last_price else ("Sell Limit", "Entry (Sell Limit)"
 
 def normalize_for_polygon(symbol: str) -> str:
     s = (symbol or "").strip().upper().replace(" ", "")
@@ -133,21 +130,22 @@ def card_html(title: str, value: str, sub: Optional[str] = None, color: Optional
         bg = "#006f6f"
     elif color == "red":
         bg = "#6f0000"
-    return f"""
-        <div style="background:{bg}; padding:12px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.06); margin:6px 0;">
-            <div style="font-size:0.9rem; opacity:0.85;">{title}</div>
-            <div style="font-size:1.4rem; font-weight:700; margin-top:4px;">{value}</div>
-            {f"<div style='font-size:0.8rem; opacity:0.7; margin-top:2px;'>{sub}</div>" if sub else ""}
-        </div>
-    """
+    sub_html = f"<div style='font-size:0.8rem; opacity:0.7; margin-top:2px;'>{sub}</div>" if sub else ""
+    return (
+        "<div style=\"background:%s; padding:12px 16px; border-radius:14px; "
+        "border:1px solid rgba(255,255,255,0.06); margin:6px 0;\">"
+        "<div style=\"font-size:0.9rem; opacity:0.85;\">%s</div>"
+        "<div style=\"font-size:1.4rem; font-weight:700; margin-top:4px;\">%s</div>%s</div>"
+        % (bg, title, value, sub_html)
+    )
 
-# ---- AlphaPulse module alias (best-effort)
+# ---- AlphaPulse alias
 try:
     import services.data  # noqa: F401
 except Exception:
     try:
         import core.data as _core_data
-        sys.modules['services.data'] = _core_data
+        sys.modules["services.data"] = _core_data
     except Exception:
         pass
 
@@ -185,7 +183,7 @@ def run_model_by_name(ticker_norm: str, model_name: str) -> Dict[str, Any]:
         return getattr(mod, fname)(ticker_norm, "Краткосрочный")
     raise RuntimeError(f"Стратегия {model_name} недоступна.")
 
-# ---- Confidence UI (compact, no Rules, no model efficiency)
+# ---- Confidence UI (compact, no Rules)
 try:
     from core.ui_confidence import render_confidence_breakdown_inline as _render_breakdown_native
     from core.ui_confidence import get_confidence_breakdown_from_session as _get_conf_from_session
@@ -197,72 +195,61 @@ def _inject_ai_css_once():
     if st.session_state.get("_ai_css_injected"):
         return
     st.session_state["_ai_css_injected"] = True
-    st.markdown("""
-    <style>
-      .ai-card{
-        background: radial-gradient(120% 160% at 10% 0%, rgba(0,255,255,0.06) 0%, rgba(0,0,0,0) 48%) #0b0f14;
-        border: 1px solid rgba(0,255,245,0.18);
-        border-radius: 18px;
-        padding: 14px 16px 14px 16px;
-        box-shadow: 0 0 0 1px rgba(0,255,245,0.05), 0 12px 40px rgba(0,0,0,0.35), inset 0 0 24px rgba(0,255,255,0.03);
-      }
-      .ai-title{ color:#cfeaf0; font-size:15px; letter-spacing:.2px; margin-bottom:6px; }
-      .ai-strong{ color:#19e6f7; font-weight:800; font-size:22px; }
-      .ai-sub{ color:#a7bac2; font-size:13px; margin:0 0 8px 0; }
-      .ai-meter{
-        position: relative;
-        width: 100%;
-        height: 18px;
-        border-radius: 999px;
-        background: linear-gradient(180deg,#1a222a,#12171d);
-        box-shadow: inset 0 2px 6px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.04);
-        overflow: hidden;
-      }
-      .ai-meter__fill{
-        position:absolute; left:0; top:0; bottom:0;
-        width: 0%;
-        background: linear-gradient(90deg,#22e8ff 0%, #07c5d8 60%, #05a9c0 100%);
-        box-shadow: inset 0 -1px 0 rgba(255,255,255,0.25), 0 0 16px rgba(24,232,255,0.35);
-      }
-      .ai-meter__tail{
-        position:absolute; right:0; top:0; bottom:0;
-        left: var(--fill, 40%);
-        background:
-          radial-gradient(circle at 2px 2px, rgba(255,255,255,0.16) 1px, transparent 1.2px) 0 0 / 8px 8px,
-          linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
-        opacity:.7;
-      }
-      .ai-meter__knob{
-        position:absolute; top:50%;
-        left: calc(var(--fill, 40%) - 10px);
-        width: 20px; height: 20px;
-        border-radius: 50%;
-        transform: translateY(-50%);
-        background: radial-gradient(40% 40% at 50% 50%, #a7f7ff 0%, #22e8ff 60%, #00c7d8 100%);
-        box-shadow: 0 0 0 6px rgba(34,232,255,0.16), 0 0 22px rgba(34,232,255,0.45);
-        border: 1px solid rgba(255,255,255,0.25);
-      }
-    </style>
-    """, unsafe_allow_html=True)
+    st.markdown(
+        """
+        <style>
+          .ai-card{
+            background: radial-gradient(120% 160% at 10% 0%, rgba(0,255,255,0.06) 0%, rgba(0,0,0,0) 48%) #0b0f14;
+            border: 1px solid rgba(0,255,245,0.18);
+            border-radius: 18px;
+            padding: 14px 16px;
+            box-shadow: 0 0 0 1px rgba(0,255,245,0.05), 0 12px 40px rgba(0,0,0,0.35), inset 0 0 24px rgba(0,255,255,0.03);
+          }
+          .ai-title{ color:#cfeaf0; font-size:15px; letter-spacing:.2px; margin-bottom:6px; }
+          .ai-strong{ color:#19e6f7; font-weight:800; font-size:22px; }
+          .ai-sub{ color:#a7bac2; font-size:13px; margin:0 0 8px 0; }
+          .ai-meter{
+            position: relative; width: 100%; height: 18px; border-radius: 999px;
+            background: linear-gradient(180deg,#1a222a,#12171d);
+            box-shadow: inset 0 2px 6px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.04);
+            overflow: hidden;
+          }
+          .ai-meter__fill{
+            position:absolute; left:0; top:0; bottom:0; width: 0%;
+            background: linear-gradient(90deg,#22e8ff 0%, #07c5d8 60%, #05a9c0 100%);
+            box-shadow: inset 0 -1px 0 rgba(255,255,255,0.25), 0 0 16px rgba(24,232,255,0.35);
+          }
+          .ai-meter__tail{
+            position:absolute; right:0; top:0; bottom:0; left: var(--fill, 40%);
+            background: radial-gradient(circle at 2px 2px, rgba(255,255,255,0.16) 1px, transparent 1.2px) 0 0 / 8px 8px,
+                        linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
+            opacity:.7;
+          }
+          .ai-meter__knob{
+            position:absolute; top:50%; left: calc(var(--fill, 40%) - 10px);
+            width: 20px; height: 20px; border-radius: 50%;
+            transform: translateY(-50%);
+            background: radial-gradient(40% 40% at 50% 50%, #a7f7ff 0%, #22e8ff 60%, #00c7d8 100%);
+            box-shadow: 0 0 0 6px rgba(34,232,255,0.16), 0 0 22px rgba(34,232,255,0.45);
+            border: 1px solid rgba(255,255,255,0.25);
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 def render_confidence_breakdown_inline(ticker: str, conf_pct: float):
-    # Источник данных
+    # берём из сессии, иначе считаем на лету
     try:
         data = _get_conf_from_session() if _get_conf_from_session else None
     except Exception:
         data = None
 
-    if not 
+    if data is None or not isinstance(data, dict):
         overall = float(conf_pct or 0.0)
         rules = float(st.session_state.get("last_rules_pct", 44.0))
         ai_delta = overall - rules
-        data = {
-            "overall_confidence_pct": overall,
-            "breakdown": {
-                "ai_override_delta_pct": ai_delta
-            },
-            "shap_top": []
-        }
+        data = {"overall_confidence_pct": overall, "breakdown": {"ai_override_delta_pct": ai_delta}, "shap_top": []}
 
     try:
         st.session_state["last_overall_conf_pct"] = float(data["overall_confidence_pct"])
@@ -278,22 +265,22 @@ def render_confidence_breakdown_inline(ticker: str, conf_pct: float):
     sign = "−" if ai_pct < 0 else ""
     ai_text = f"{sign}{ai_abs:.0f}%"
 
-    # Вписываем блок в первую колонку сетки, чтобы ширина совпала с Entry
+    # HTML без f-скобок в стиле — только значения
     col_meter, _ = st.columns([1, 2])
     with col_meter:
-        st.markdown(f"""
-        <div class="ai-card">
-          <div class="ai-title">Общая уверенность: <span class="ai-strong">{overall_clamped:.0f}%</span></div>
-          <div class="ai-sub">⟂ AI override: {ai_text}</div>
-          <div class="ai-meter" style="--fill:{fill_css}">
-            <div class="ai-meter__fill" style="width:{fill_css}"></div>
-            <div class="ai-meter__tail"></div>
-            <div class="ai-meter__knob"></div>
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
+        html = (
+            "<div class=\"ai-card\">"
+            f"<div class=\"ai-title\">Общая уверенность: <span class=\"ai-strong\">{overall_clamped:.0f}%</span></div>"
+            f"<div class=\"ai-sub\">⟂ AI override: {ai_text}</div>"
+            f"<div class=\"ai-meter\" style=\"--fill:{fill_css}\">"
+            f"<div class=\"ai-meter__fill\" style=\"width:{fill_css}\"></div>"
+            "<div class=\"ai-meter__tail\"></div>"
+            "<div class=\"ai-meter__knob\"></div>"
+            "</div></div>"
+        )
+        st.markdown(html, unsafe_allow_html=True)
 
-# -------- Data pipeline (CSV summary only; no charts in UI)
+# -------- Data pipeline (no charts in UI)
 DATA_DIR = Path("performance_data")
 SUMMARY_PATH = Path("performance_summary.csv")
 LOCK = FileLock(str(DATA_DIR / ".summary.lock"))
@@ -308,16 +295,16 @@ def _aggregate_performance_to_csv():
     frames = []
     for p in DATA_DIR.glob("performance_*_*.csv"):
         try:
-            df = pd.read_csv(p, sep=None, engine='python', on_bad_lines='skip')
+            df = pd.read_csv(p, sep=None, engine="python", on_bad_lines="skip")
         except Exception:
             continue
         m = re.match(r"^performance_(.+)_(.+)\.csv$", p.name)
         if m:
             a, t = m.group(1), m.group(2)
-            if 'agent' not in df.columns:
-                df['agent'] = a
-            if 'ticker' not in df.columns:
-                df['ticker'] = t
+            if "agent" not in df.columns:
+                df["agent"] = a
+            if "ticker" not in df.columns:
+                df["ticker"] = t
         frames.append(df)
     if frames:
         out = pd.concat(frames, ignore_index=True)
@@ -340,7 +327,9 @@ def _ensure_summary_up_to_date():
 @st.cache_data(ttl=_seconds_until_eod_utc())
 def load_summary_df() -> pd.DataFrame:
     _ensure_summary_up_to_date()
-    df = pd.read_csv(SUMMARY_PATH, sep=None, engine='python', on_bad_lines='skip')
+    if not SUMMARY_PATH.exists():
+        return pd.DataFrame()
+    df = pd.read_csv(SUMMARY_PATH, sep=None, engine="python", on_bad_lines="skip")
     df.columns = [c.strip().lower() for c in df.columns]
     return df
 
@@ -350,18 +339,9 @@ models = get_available_models()
 if not models:
     models = ["Octopus"]
 
-model = st.radio(
-    "Выберите модель",
-    options=models,
-    index=0,
-    horizontal=False,
-    key="agent_radio"
-)
+model = st.radio("Выберите модель", options=models, index=0, horizontal=False, key="agent_radio")
 
-ticker_input = st.text_input(
-    "Тикер",
-    placeholder="Примеры: AAPL • SPY • BTCUSD • C:EURUSD • O:SPY240920C500"
-)
+ticker_input = st.text_input("Тикер", placeholder="Примеры: AAPL • SPY • BTCUSD • C:EURUSD • O:SPY240920C500")
 ticker = ticker_input.strip().upper()
 symbol_for_engine = normalize_for_polygon(ticker)
 
@@ -386,7 +366,7 @@ if run and ticker:
         last_price = float(out.get("last_price", 0.0) or 0.0)
         st.markdown(
             f"<div style='font-size:3rem; font-weight:800; text-align:center; margin:6px 0 14px 0;'>${last_price:.2f}</div>",
-            unsafe_allow_html=True
+            unsafe_allow_html=True,
         )
 
         lv = {k: float(out.get("levels", {}).get(k, 0.0)) for k in ("entry", "sl", "tp1", "tp2", "tp3")}
@@ -401,21 +381,24 @@ if run and ticker:
         elif action == "SHORT":
             header_text = f"Short • {mode_text}"
 
-        st.markdown(f"""
-        <div style="background:#c57b0a; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:10px;">
-            <div style="font-size:1.15rem; font-weight:700;">{header_text}</div>
-            <div style="opacity:0.75; font-size:0.95rem; margin-top:2px;">{int(round(conf_pct_val))}% confidence</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(
+            f"""
+            <div style="background:#c57b0a; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:10px;">
+                <div style="font-size:1.15rem; font-weight:700;">{header_text}</div>
+                <div style="opacity:0.75; font-size:0.95rem; margin-top:2px;">{int(round(conf_pct_val))}% confidence</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
         now_utc = datetime.now(timezone.utc)
         eod_utc = now_utc.replace(hour=23, minute=59, second=59, microsecond=0)
         st.caption(f"As‑of: {now_utc.strftime('%Y-%m-%dT%H:%M:%SZ')} UTC • Valid until: {eod_utc.strftime('%Y-%m-%dT%H:%M:%SZ')} • Model: {model}")
 
-        # --- Компактный AI override (ширина = колонка как Entry), без Rules
+        # Compact AI override bar (same column width as Entry)
         render_confidence_breakdown_inline(ticker, conf_pct_val)
 
-        # --- Targets
+        # Targets
         if action in ("BUY", "SHORT"):
             c1, c2, c3 = st.columns(3)
             with c1:
@@ -423,25 +406,25 @@ if run and ticker:
             with c2:
                 st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
             with c3:
-                prob1 = int(round(out.get('probs', {}).get('tp1', 0) * 100))
+                prob1 = int(round(out.get("probs", {}).get("tp1", 0) * 100))
                 st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}", sub=f"Probability {prob1}%"), unsafe_allow_html=True)
             c4, c5 = st.columns(2)
             with c4:
-                prob2 = int(round(out.get('probs', {}).get('tp2', 0) * 100))
+                prob2 = int(round(out.get("probs", {}).get("tp2", 0) * 100))
                 st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}", sub=f"Probability {prob2}%"), unsafe_allow_html=True)
             with c5:
-                prob3 = int(round(out.get('probs', {}).get('tp3', 0) * 100))
+                prob3 = int(round(out.get("probs", {}).get("tp3", 0) * 100))
                 st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}", sub=f"Probability {prob3}%"), unsafe_allow_html=True)
 
             rr = rr_line(lv)
             if rr:
                 st.markdown(f"<div style='margin-top:6px; color:#FFA94D; font-weight:600;'>{rr}</div>", unsafe_allow_html=True)
 
-        # --- Context / Disclaimer
+        # Context / Disclaimer
         CUSTOM_PHRASES = {
             "CONTEXT": {
-                "support": ["Цена у уровня покупательской активности. Оптимально — вход по ордеру из AI‑анализа; важен контроль риска и пересмотр плана ниже зоны."],
-                "resistance": ["Риск коррекции повышен. Оптимально — короткий сценарий по ордеру из AI‑анализа; при закреплении выше зоны — план пересмотреть."],
+                "support": ["Цена у уровня покупательской активности. Оптимально — вход по подтверждённому сигналу с контролем риска."],
+                "resistance": ["Риск коррекции повышен. Предпочтение — короткий сценарий при подтверждении; при пробое план пересмотреть."],
                 "neutral": ["Баланс. Действовать только по подтверждённому сигналу."]
             },
             "STOPLINE": ["Стоп‑лосс: {sl}. Потенциальный риск ~{risk_pct}% от входа."],
@@ -450,13 +433,13 @@ if run and ticker:
         ctx_key = "support" if action == "BUY" else ("resistance" if action == "SHORT" else "neutral")
         st.markdown(f"<div style='opacity:0.9'>{CUSTOM_PHRASES['CONTEXT'][ctx_key][0]}</div>", unsafe_allow_html=True)
         if action in ("BUY", "SHORT"):
-            risk_pct = abs(lv['entry'] - lv['sl']) / max(1e-9, abs(lv['entry'])) * 100.0
+            risk_pct = abs(lv["entry"] - lv["sl"]) / max(1e-9, abs(lv["entry"])) * 100.0
             stopline = CUSTOM_PHRASES["STOPLINE"][0].format(sl=_fmt(lv["sl"]), risk_pct=f"{risk_pct:.1f}")
             st.markdown(f"<div style='opacity:0.9; margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
         st.caption(CUSTOM_PHRASES["DISCLAIMER"])
 
-        # --- Lightweight performance log (no charts)
         try:
+            # lightweight log
             log_agent_performance(model, ticker, datetime.today(), 0.0)
         except Exception:
             pass
@@ -465,10 +448,11 @@ if run and ticker:
         st.error(f"Ошибка анализа: {e}")
         st.exception(e)
 
-elif not ticker:
-    st.info("Введите тикер и нажмите «Проанализировать». Примеры формата показаны в поле ввода.")
+else:
+    if not ticker:
+        st.info("Введите тикер и нажмите «Проанализировать». Примеры формата показаны в поле ввода.")
 
-# -------- Footer / About
+# -------- Footer
 st.markdown("---")
 st.markdown("<style>.stButton > button { font-weight: 600; }</style>", unsafe_allow_html=True)
 st.markdown(
@@ -480,6 +464,5 @@ st.markdown(
         </p>
     </div>
     """,
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
-
