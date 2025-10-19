@@ -102,7 +102,7 @@ def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
         return "Market price", "Entry (Market)"
     if action == "BUY":
         return ("Buy Stop", "Entry (Buy Stop)") if entry > last_price else ("Buy Limit", "Entry (Buy Limit)")
-    return ("Sell Stop", "Entry (Sell Stop)") if entry < last_price else ("Sell Limit", "Entry (Sell Limit)"
+    return ("Sell Stop", "Entry (Sell Stop)") if entry < last_price else ("Sell Limit", "Entry (Sell Limit)")
 
 def normalize_for_polygon(symbol: str) -> str:
     s = (symbol or "").strip().upper().replace(" ", "")
