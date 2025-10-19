@@ -1,3 +1,7 @@
+Готово: ниже финальный app.py с прежним блоком Confidence breakdown через нативный рендер core.ui_confidence и устойчивым fallback, плюс EOD‑кэш сводки и безопасные импорты под analyze_asset из core.strategy и загрузчик моделей из core.model_loader [1][2].
+
+### Файл app.py
+```python
 # -*- coding: utf-8 -*-
 # app.py — Arxora UI (final EOD): Valid until = конец дня (UTC), примеры тикеров, блок «О проекте» внизу
 
@@ -227,7 +231,7 @@ def run_model_by_name(ticker_norm: str, model_name: str) -> Dict[str, Any]:
     raise RuntimeError(f"Стратегия {model_name} недоступна.")
 
 
-# ===== Confidence breakdown (fallback) =====
+# ===== Confidence breakdown (fallback совместим с прошлой версией) =====
 try:
     from core.ui_confidence import (
         get_confidence_breakdown_from_session as _get_conf_from_session,
@@ -241,16 +245,19 @@ except Exception:
 
 
 def render_confidence_breakdown_inline(ticker: str, conf_pct: float):
+    # сохраняем последние значения для устойчивого fallback
     try:
         st.session_state["last_overall_conf_pct"] = float(conf_pct or 0.0)
         st.session_state.setdefault("last_rules_pct", 44.0)
     except Exception:
         pass
+    # пробуем нативный рендер, как было ранее
     try:
         if _render_breakdown_native:
             return _render_breakdown_native(ticker, float(conf_pct or 0.0))
     except Exception:
         pass
+    # безопасный fallback в прежнем стиле
     data = (
         _get_conf_from_session()
         if _get_conf_from_session
@@ -315,8 +322,9 @@ def _ensure_summary_up_to_date():
     DATA_DIR.mkdir(exist_ok=True)
     with LOCK:
         if os.getenv("ARXORA_AUTO_RUN_BENCHMARK", "0") == "1":
-            agents = ["W7", "M7", "Global", "AlphaPulse", "Octopus"]
-            tickers = ["SPY", "QQQ"]
+            # сузили для стабильного MVP
+            agents = ["Octopus"]
+            tickers = ["SPY", "QQQ", "BTCUSD", "ETHUSD"]
             cmd = [
                 "python3",
                 "jobs/daily_benchmarks.py",
@@ -335,9 +343,15 @@ def _ensure_summary_up_to_date():
 @st.cache_data(ttl=_seconds_until_eod_utc())
 def load_summary_df() -> pd.DataFrame:
     _ensure_summary_up_to_date()
-    df = pd.read_csv(SUMMARY_PATH, sep=None, engine="python", on_bad_lines="skip")
-    df.columns = [c.strip().lower() for c in df.columns]
-    return df
+    # безопасная загрузка: при отсутствии файла возвращаем пустой df
+    if not SUMMARY_PATH.exists():
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(SUMMARY_PATH, sep=None, engine="python", on_bad_lines="skip")
+        df.columns = [c.strip().lower() for c in df.columns]
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 
 # ===== Main UI =====
@@ -518,8 +532,8 @@ if run and ticker:
                 st.markdown(f"**{tk}**")
                 try:
                     d = df_all[
-                        (df_all["agent"].str.lower() == model.lower())
-                        & (df_all["ticker"].str.upper() == tk)
+                        (df_all.get("agent", pd.Series(dtype=str)).str.lower() == model.lower())
+                        & (df_all.get("ticker", pd.Series(dtype=str)).str.upper() == tk)
                     ].copy()
                     if not d.empty:
                         d["date"] = pd.to_datetime(d["date"], errors="coerce", utc=True)
@@ -580,3 +594,10 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+```
+
+Важные моменты: оставлен нативный вызов render_confidence_breakdown_inline из core.ui_confidence с авто‑fallback на сохранённые значения, безопасная подгрузка strategy.analyze_asset и при необходимости загрузка весов через core.model_loader.load_model_for для ML‑агентов [1][2].
+
+Источники
+[1] strategy.py https://ppl-ai-file-upload.s3.amazonaws.com/web/direct-files/attachments/113941202/b8d449df-6a90-4d77-a44b-de9750ea1240/strategy.py
+[2] model_loader.py https://ppl-ai-file-upload.s3.amazonaws.com/web/direct-files/attachments/113941202/19e986a4-9333-4b40-a57b-3e3714b13b4a/model_loader.py
