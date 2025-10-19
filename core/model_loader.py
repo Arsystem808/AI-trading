@@ -1,6 +1,5 @@
 """
 core/model_loader.py — Enterprise-grade ML model loader
-========================================================
 
 Production features:
 - Thread-safe model caching with automatic invalidation
