@@ -156,7 +156,7 @@ def run_model_by_name(ticker_norm: str, model_name: str) -> Dict[str, Any]:
         return getattr(mod, fname)(ticker_norm, "Краткосрочный")
     raise RuntimeError(f"Стратегия {model_name} недоступна.")
 
-# ===== Confidence breakdown (fallback + совместимость с нативной функцией) =====
+# ===== Confidence breakdown (кастомный красивый UI) =====
 try:
     from core.ui_confidence import render_confidence_breakdown_inline as _render_breakdown_native
     from core.ui_confidence import get_confidence_breakdown_from_session as _get_conf_from_session
@@ -164,45 +164,113 @@ except Exception:
     _render_breakdown_native = None
     _get_conf_from_session = None
 
+def _inject_ai_css_once():
+    if st.session_state.get("_ai_css_injected"): 
+        return
+    st.session_state["_ai_css_injected"] = True
+    st.markdown("""
+    <style>
+      .ai-card{
+        background: radial-gradient(120% 160% at 10% 0%, rgba(0,255,255,0.06) 0%, rgba(0,0,0,0) 48%) #0b0f14;
+        border: 1px solid rgba(0,255,245,0.18);
+        border-radius: 22px;
+        padding: 18px 18px 16px 18px;
+        box-shadow: 0 0 0 1px rgba(0,255,245,0.05), 0 12px 40px rgba(0,0,0,0.35), inset 0 0 24px rgba(0,255,255,0.03);
+      }
+      .ai-title{ color:#cfeaf0; font-size:15px; letter-spacing:.2px; }
+      .ai-strong{ color:#19e6f7; font-weight:800; font-size:22px; }
+      .ai-sub{ color:#a7bac2; font-size:14px; margin:6px 0 10px 0; }
+      .ai-meter{
+        position: relative;
+        width: 100%;
+        height: 18px;
+        border-radius: 999px;
+        background: linear-gradient(180deg,#1a222a,#12171d);
+        box-shadow: inset 0 2px 6px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.04);
+        overflow: hidden;
+      }
+      .ai-meter__fill{
+        position:absolute; left:0; top:0; bottom:0;
+        width: 0%;
+        background: linear-gradient(90deg,#22e8ff 0%, #07c5d8 60%, #05a9c0 100%);
+        box-shadow: inset 0 -1px 0 rgba(255,255,255,0.25), 0 0 16px rgba(24,232,255,0.35);
+      }
+      .ai-meter__tail{
+        position:absolute; right:0; top:0; bottom:0;
+        left: var(--fill, 40%);
+        background:
+          radial-gradient(circle at 2px 2px, rgba(255,255,255,0.16) 1px, transparent 1.2px) 0 0 / 8px 8px,
+          linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
+        opacity:.7;
+      }
+      .ai-meter__knob{
+        position:absolute; top:50%;
+        left: calc(var(--fill, 40%) - 10px);
+        width: 20px; height: 20px;
+        border-radius: 50%;
+        transform: translateY(-50%);
+        background: radial-gradient(40% 40% at 50% 50%, #a7f7ff 0%, #22e8ff 60%, #00c7d8 100%);
+        box-shadow: 0 0 0 6px rgba(34,232,255,0.16), 0 0 22px rgba(34,232,255,0.45);
+        border: 1px solid rgba(255,255,255,0.25);
+      }
+      .ai-legend{ display:flex; gap:10px; align-items:center; margin-top:8px; color:#9fb3bc; font-size:13px; }
+      .ai-dot{ width:10px; height:10px; border-radius:50%; background:#22e8ff; box-shadow:0 0 6px rgba(34,232,255,0.8); }
+      .rules-chip{ background:#1b2530; border:1px solid rgba(255,255,255,0.08); color:#dce6ea; padding:2px 8px; border-radius:999px; font-size:12px; }
+    </style>
+    """, unsafe_allow_html=True)
+
 def render_confidence_breakdown_inline(ticker: str, conf_pct: float):
-    # Сохраняем минимальный контекст в session_state
+    # Источник данных (если есть нативная сессия — используем её)
     try:
-        st.session_state["last_overall_conf_pct"] = float(conf_pct or 0.0)
-        st.session_state.setdefault("last_rules_pct", 44.0)
+        data = _get_conf_from_session() if _get_conf_from_session else None
+    except Exception:
+        data = None
+    if not data:
+        overall = float(conf_pct or 0.0)
+        rules = float(st.session_state.get("last_rules_pct", 44.0))
+        ai_delta = overall - rules
+        data = {
+            "overall_confidence_pct": overall,
+            "breakdown": {
+                "rules_pct": rules,
+                "ai_override_delta_pct": ai_delta
+            },
+            "shap_top": []
+        }
+    # Кладём в сессию базовые значения
+    try:
+        st.session_state["last_overall_conf_pct"] = float(data["overall_confidence_pct"])
+        st.session_state.setdefault("last_rules_pct", float(data["breakdown"]["rules_pct"]))
     except Exception:
         pass
 
-    # Нативная функция: может либо сама рисовать, либо вернуть строку/объект для отрисовки здесь
-    try:
-        if _render_breakdown_native:
-            res = _render_breakdown_native(ticker, float(conf_pct or 0.0))
-            if res is not None:
-                if isinstance(res, str):
-                    st.markdown(res, unsafe_allow_html=True)
-                else:
-                    try:
-                        st.write(res)
-                    except Exception:
-                        pass
-            return  # либо нативка всё отрисовала сама, либо мы отрисовали res
-    except Exception:
-        pass
+    # Красивый UI
+    _inject_ai_css_once()
+    overall = float(data.get("overall_confidence_pct", 0.0))
+    rules_pct = float(data.get("breakdown", {}).get("rules_pct", 0.0))
+    ai_pct = float(data.get("breakdown", {}).get("ai_override_delta_pct", 0.0))
+    # Ограничения и отображение
+    overall_clamped = max(0.0, min(100.0, overall))
+    ai_abs = max(0.0, min(100.0, abs(ai_pct)))
+    fill = ai_abs  # ширина заливки «override»
+    fill_css = f"{fill:.2f}%"
+    sign = "−" if ai_pct < 0 else ""
+    ai_text = f"{sign}{ai_abs:.0f}%"
 
-    # Fallback: простой текстовый разбор
-    data = _get_conf_from_session() if _get_conf_from_session else {
-        "overall_confidence_pct": float(st.session_state.get("last_overall_conf_pct", conf_pct or 0.0)),
-        "breakdown": {
-            "rules_pct": float(st.session_state.get("last_rules_pct", 44.0)),
-            "ai_override_delta_pct": float(st.session_state.get("last_overall_conf_pct", conf_pct or 0.0))
-                                     - float(st.session_state.get("last_rules_pct", 44.0))
-        },
-        "shap_top": []
-    }
-    st.markdown("#### Confidence breakdown")
-    st.write(f"Общая уверенность: {data.get('overall_confidence_pct',0):.1f}%")
-    b = data.get("breakdown", {})
-    st.write(f"— Базовые правила: {b.get('rules_pct',0):.1f}%")
-    st.write(f"— AI override: {b.get('ai_override_delta_pct',0):.1f}%")
+    st.markdown(f"""
+    <div class="ai-card">
+      <div class="ai-title">Общая уверенность: <span class="ai-strong">{overall_clamped:.0f}%</span></div>
+      <div class="ai-sub">⟂ AI override: {ai_text}</div>
+      <div class="ai-meter" style="--fill:{fill_css}">
+        <div class="ai-meter__fill" style="width:{fill_css}"></div>
+        <div class="ai-meter__tail"></div>
+        <div class="ai-meter__knob"></div>
+      </div>
+      <div class="ai-legend">
+        <span class="ai-dot"></span><span class="rules-chip">Rules: {rules_pct:.0f}%</span>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 
 # ====== DATA PIPELINE: Автосборка сводки + кэш до конца дня (UTC) ======
 DATA_DIR = Path("performance_data")
@@ -310,7 +378,7 @@ if run and ticker:
         eod_utc = now_utc.replace(hour=23, minute=59, second=59, microsecond=0)
         st.caption(f"As‑of: {now_utc.strftime('%Y-%m-%dT%H:%M:%SZ')} UTC • Valid until: {eod_utc.strftime('%Y-%m-%dT%H:%M:%SZ')} • Model: {model}")
 
-        # Breakdown
+        # Breakdown — КРАСИВЫЙ БЛОК
         render_confidence_breakdown_inline(ticker, conf_pct_val)
 
         # Targets
