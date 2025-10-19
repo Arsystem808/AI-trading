@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# app.py — Arxora UI (final EOD): Valid until = конец дня (UTC), примеры тикеров, блок «О проекте» внизу
+# app.py — Arxora UI (final EOD)
 
 import os, re, traceback, importlib, sys, glob, subprocess
 from typing import Any, Dict, Optional, List
@@ -8,9 +8,9 @@ from pathlib import Path
 import streamlit as st
 import pandas as pd
 
-# Защита от отсутствующей зависимости filelock (без падения UI)
+# ---- Optional deps guards
 try:
-    from filelock import FileLock  # pip install filelock
+    from filelock import FileLock
 except Exception:
     class FileLock:
         def __init__(self, *a, **k): pass
@@ -23,7 +23,7 @@ try:
 except Exception:
     pass
 
-# ===== Page / Branding =====
+# ---- Page / Branding
 st.set_page_config(page_title="Arxora — трейд‑ИИ (MVP)", page_icon="assets/arxora_favicon_512.png", layout="centered")
 
 def render_arxora_header():
@@ -53,14 +53,14 @@ def render_arxora_header():
 
 render_arxora_header()
 
-# ===== Optional performance (оригинальный интерфейс) =====
+# ---- Optional performance API stubs (сохраняем совместимость)
 try:
     from core.performance_tracker import log_agent_performance, get_agent_performance
 except Exception:
     def log_agent_performance(*args, **kwargs): pass
     def get_agent_performance(*args, **kwargs): return None
 
-# ===== Helpers =====
+# ---- Helpers
 ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))
 MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT",  "0.0010"))
 
@@ -113,7 +113,7 @@ def card_html(title: str, value: str, sub: Optional[str]=None, color: Optional[s
         </div>
     """
 
-# ===== AlphaPulse alias (services.data -> core.data) =====
+# ---- AlphaPulse alias
 try:
     import services.data  # noqa
 except Exception:
@@ -123,7 +123,7 @@ except Exception:
     except Exception:
         pass
 
-# ===== Dynamic import of strategy =====
+# ---- Strategy import
 def _load_strategy_module():
     try:
         mod = importlib.import_module("core.strategy")
@@ -132,7 +132,7 @@ def _load_strategy_module():
         except Exception:
             pass
         return mod, None
-    except Exception as e:
+    except Exception:
         return None, traceback.format_exc()
 
 def get_available_models() -> List[str]:
@@ -156,7 +156,7 @@ def run_model_by_name(ticker_norm: str, model_name: str) -> Dict[str, Any]:
         return getattr(mod, fname)(ticker_norm, "Краткосрочный")
     raise RuntimeError(f"Стратегия {model_name} недоступна.")
 
-# ===== Confidence breakdown (кастомный красивый UI) =====
+# ---- Confidence UI (обновлённый компактный без Rules)
 try:
     from core.ui_confidence import render_confidence_breakdown_inline as _render_breakdown_native
     from core.ui_confidence import get_confidence_breakdown_from_session as _get_conf_from_session
@@ -173,13 +173,13 @@ def _inject_ai_css_once():
       .ai-card{
         background: radial-gradient(120% 160% at 10% 0%, rgba(0,255,255,0.06) 0%, rgba(0,0,0,0) 48%) #0b0f14;
         border: 1px solid rgba(0,255,245,0.18);
-        border-radius: 22px;
-        padding: 18px 18px 16px 18px;
+        border-radius: 18px;
+        padding: 14px 16px 14px 16px;
         box-shadow: 0 0 0 1px rgba(0,255,245,0.05), 0 12px 40px rgba(0,0,0,0.35), inset 0 0 24px rgba(0,255,255,0.03);
       }
-      .ai-title{ color:#cfeaf0; font-size:15px; letter-spacing:.2px; }
+      .ai-title{ color:#cfeaf0; font-size:15px; letter-spacing:.2px; margin-bottom:6px; }
       .ai-strong{ color:#19e6f7; font-weight:800; font-size:22px; }
-      .ai-sub{ color:#a7bac2; font-size:14px; margin:6px 0 10px 0; }
+      .ai-sub{ color:#a7bac2; font-size:13px; margin:0 0 8px 0; }
       .ai-meter{
         position: relative;
         width: 100%;
@@ -213,66 +213,56 @@ def _inject_ai_css_once():
         box-shadow: 0 0 0 6px rgba(34,232,255,0.16), 0 0 22px rgba(34,232,255,0.45);
         border: 1px solid rgba(255,255,255,0.25);
       }
-      .ai-legend{ display:flex; gap:10px; align-items:center; margin-top:8px; color:#9fb3bc; font-size:13px; }
-      .ai-dot{ width:10px; height:10px; border-radius:50%; background:#22e8ff; box-shadow:0 0 6px rgba(34,232,255,0.8); }
-      .rules-chip{ background:#1b2530; border:1px solid rgba(255,255,255,0.08); color:#dce6ea; padding:2px 8px; border-radius:999px; font-size:12px; }
     </style>
     """, unsafe_allow_html=True)
 
 def render_confidence_breakdown_inline(ticker: str, conf_pct: float):
-    # Источник данных (если есть нативная сессия — используем её)
+    # Источник данных
     try:
         data = _get_conf_from_session() if _get_conf_from_session else None
     except Exception:
         data = None
-    if not data:
+    if not 
         overall = float(conf_pct or 0.0)
         rules = float(st.session_state.get("last_rules_pct", 44.0))
         ai_delta = overall - rules
         data = {
             "overall_confidence_pct": overall,
             "breakdown": {
-                "rules_pct": rules,
                 "ai_override_delta_pct": ai_delta
             },
             "shap_top": []
         }
-    # Кладём в сессию базовые значения
     try:
         st.session_state["last_overall_conf_pct"] = float(data["overall_confidence_pct"])
-        st.session_state.setdefault("last_rules_pct", float(data["breakdown"]["rules_pct"]))
     except Exception:
         pass
 
-    # Красивый UI
     _inject_ai_css_once()
     overall = float(data.get("overall_confidence_pct", 0.0))
-    rules_pct = float(data.get("breakdown", {}).get("rules_pct", 0.0))
     ai_pct = float(data.get("breakdown", {}).get("ai_override_delta_pct", 0.0))
-    # Ограничения и отображение
     overall_clamped = max(0.0, min(100.0, overall))
     ai_abs = max(0.0, min(100.0, abs(ai_pct)))
-    fill = ai_abs  # ширина заливки «override»
-    fill_css = f"{fill:.2f}%"
+    fill_css = f"{ai_abs:.2f}%"
     sign = "−" if ai_pct < 0 else ""
     ai_text = f"{sign}{ai_abs:.0f}%"
 
-    st.markdown(f"""
-    <div class="ai-card">
-      <div class="ai-title">Общая уверенность: <span class="ai-strong">{overall_clamped:.0f}%</span></div>
-      <div class="ai-sub">⟂ AI override: {ai_text}</div>
-      <div class="ai-meter" style="--fill:{fill_css}">
-        <div class="ai-meter__fill" style="width:{fill_css}"></div>
-        <div class="ai-meter__tail"></div>
-        <div class="ai-meter__knob"></div>
-      </div>
-      <div class="ai-legend">
-        <span class="ai-dot"></span><span class="rules-chip">Rules: {rules_pct:.0f}%</span>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
+    # Вписываем блок в первую колонку сетки, чтобы ширина совпала с Entry
+    col_meter, _ = st.columns([1, 2])
+    with col_meter:
+        st.markdown(f"""
+        <div class="ai-card">
+          <div class="ai-title">Общая уверенность: <span class="ai-strong">{overall_clamped:.0f}%</span></div>
+          <div class="ai-sub">⟂ AI override: {ai_text}</div>
+          <div class="ai-meter" style="--fill:{fill_css}">
+            <div class="ai-meter__fill" style="width:{fill_css}"></div>
+            <div class="ai-meter__tail"></div>
+            <div class="ai-meter__knob"></div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-# ====== DATA PIPELINE: Автосборка сводки + кэш до конца дня (UTC) ======
+# ---- Data pipeline (оставляем, но без публичного графа)
 DATA_DIR = Path("performance_data")
 SUMMARY_PATH = Path("performance_summary.csv")
 LOCK = FileLock(str(DATA_DIR / ".summary.lock"))
@@ -287,7 +277,7 @@ def _aggregate_performance_to_csv():
     frames = []
     for p in DATA_DIR.glob("performance_*_*.csv"):
         try:
-            df = pd.read_csv(p, sep=None, engine='python', on_bad_lines='skip')  # авто‑разделитель, пропуск битых строк
+            df = pd.read_csv(p, sep=None, engine='python', on_bad_lines='skip')
         except Exception:
             continue
         m = re.match(r"^performance_(.+)_(.+)\.csv$", p.name)
@@ -321,7 +311,7 @@ def load_summary_df() -> pd.DataFrame:
     df.columns = [c.strip().lower() for c in df.columns]
     return df
 
-# ===== Main UI =====
+# ---- Main UI
 st.subheader("AI agents")
 models = get_available_models()
 if not models: models = ["Octopus"]
@@ -373,15 +363,14 @@ if run and ticker:
         </div>
         """, unsafe_allow_html=True)
 
-        # As‑of / Valid until = конец дня UTC
         now_utc = datetime.now(timezone.utc)
         eod_utc = now_utc.replace(hour=23, minute=59, second=59, microsecond=0)
         st.caption(f"As‑of: {now_utc.strftime('%Y-%m-%dT%H:%M:%SZ')} UTC • Valid until: {eod_utc.strftime('%Y-%m-%dT%H:%M:%SZ')} • Model: {model}")
 
-        # Breakdown — КРАСИВЫЙ БЛОК
+        # --- Компактный AI override (ширина = колонка как Entry)
         render_confidence_breakdown_inline(ticker, conf_pct_val)
 
-        # Targets
+        # --- Targets
         if action in ("BUY", "SHORT"):
             c1, c2, c3 = st.columns(3)
             with c1: st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
@@ -394,7 +383,7 @@ if run and ticker:
             if rr:
                 st.markdown(f"<div style='margin-top:6px; color:#FFA94D; font-weight:600;'>{rr}</div>", unsafe_allow_html=True)
 
-        # Custom phrases (ваши тексты)
+        # --- Context / Disclaimer
         CUSTOM_PHRASES = {
             "CONTEXT": {
                 "support":["Цена у уровня покупательской активности. Оптимально — вход по ордеру из AI‑анализа с акцентом на рост; важен контроль риска и пересмотр плана при закреплении ниже зоны."],
@@ -411,43 +400,7 @@ if run and ticker:
             st.markdown(f"<div style='opacity:0.9; margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
         st.caption(CUSTOM_PHRASES["DISCLAIMER"])
 
-        # ====== Performance chart (3 месяца) из единой сводки с кэшем до EOD ======
-        st.subheader(f"Эффективность модели {model} по ключевым инструментам (3 месяца)")
-        try:
-            df_all = load_summary_df()
-        except Exception:
-            df_all = pd.DataFrame()
-
-        cols = st.columns(2)
-        for i, tk in enumerate(["SPY","QQQ","BTCUSD","ETHUSD"]):
-            with cols[i % 2]:
-                st.markdown(f"**{tk}**")
-                try:
-                    d = df_all[
-                        (df_all['agent'].str.lower() == model.lower()) &
-                        (df_all['ticker'].str.upper() == tk)
-                    ].copy()
-                    if not d.empty:
-                        d['date'] = pd.to_datetime(d['date'], errors='coerce', utc=True)
-                        d = d.sort_values('date')
-                        cutoff = datetime.now(timezone.utc) - timedelta(days=90)
-                        d = d[d['date'] >= cutoff]
-                        d['cumulative_return'] = (1.0 + d['daily_return'].astype(float)).cumprod() - 1.0
-                        st.line_chart(d.set_index('date')['cumulative_return'])
-                    else:
-                        # Fallback на старый источник, если сводки нет по тикеру
-                        perf_data = None
-                        try: perf_data = get_agent_performance(model, tk)
-                        except Exception: perf_data = None
-                        if perf_data is not None and not perf_data.empty:
-                            perf_data = perf_data.set_index('date')
-                            st.line_chart(perf_data["cumulative_return"])
-                        else:
-                            st.info("Данных пока нет")
-                except Exception:
-                    st.info("Данных пока нет")
-
-        # Лог перфоманса (нулевой, как триггер отслеживания сессий)
+        # --- Лёгкий лог (без графиков эффективности)
         try:
             log_agent_performance(model, ticker, datetime.today(), 0.0)
         except Exception:
@@ -460,10 +413,9 @@ if run and ticker:
 elif not ticker:
     st.info("Введите тикер и нажмите «Проанализировать». Примеры формата показаны в поле ввода.")
 
-# ===== Footer / About =====
+# ---- Footer / About
 st.markdown("---")
 st.markdown("<style>.stButton > button { font-weight: 600; }</style>", unsafe_allow_html=True)
-
 st.markdown(
     """
     <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 6px;">
