@@ -161,25 +161,43 @@ def run_model_by_name(ticker_norm: str, model_name: str) -> Dict[str, Any]:
         return getattr(mod, fname)(ticker_norm, "Краткосрочный")
     raise RuntimeError(f"Стратегия {model_name} недоступна.")
 
-# ===== Простой AI‑override (две строки + скобочная шкала) =====
+# ===== Простой AI‑override (две строки + скобочная шкала, НОРМАЛИЗАЦИЯ ПО OVERALL) =====
 def render_confidence_breakdown_inline(ticker: str, conf_pct: float):
+    """
+    Визуализация:
+      - Заполняется только доля общей уверенности (overall).
+      - Доля AI рисуется внутри заполненной части; Rules = Overall - AI (не меньше 0).
+      - При отрицательном delta (overall < rules) сегмент AI = 0, но знак «−» в подписи сохраняется.
+    """
+    # Чтение/сохранение overall в Session State
     try:
-        st.session_state["last_overall_conf_pct"] = float(conf_pct or 0.0)
+        overall = float(conf_pct or 0.0)
     except Exception:
-        pass
+        overall = 0.0
+    st.session_state["last_overall_conf_pct"] = overall
+
+    # Базовая «правиловая» доля; может приходить из бэка и переопределяться извне
     rules_pct = float(st.session_state.get("last_rules_pct", 44.0))
-    ai_delta = float(conf_pct or 0.0) - rules_pct
-    ai_abs = max(0.0, min(100.0, abs(ai_delta)))
+
+    # Разложение на Rules + AI
+    ai_delta = overall - rules_pct
+    ai_pct = max(0.0, min(overall, ai_delta))  # AI не превосходит overall и не уходит ниже 0
     sign = "−" if ai_delta < 0 else ""
-    width = 20
-    filled = int(round(ai_abs / 100.0 * width))
-    bar = "█" * filled + "░" * (width - filled)
+
+    # Геометрия текстовой шкалы
+    WIDTH = 28  # больше детализация, можно 20 если нужно компактнее
+    filled = int(round(WIDTH * (overall / 100.0))) if overall > 0 else 0
+    ai_chars = int(round(filled * (ai_pct / overall))) if overall > 0 else 0
+    rules_chars = max(0, filled - ai_chars)
+    empty_chars = max(0, WIDTH - filled)
+
+    bar = "[" + ("░" * rules_chars) + ("█" * ai_chars) + ("·" * empty_chars) + "]"
 
     html = f"""
     <div style="background:#2b2b2b;color:#fff;border-radius:12px;padding:10px 12px;
                 font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;">
-      <div>Общая уверенность: {float(conf_pct or 0.0):.0f}%</div>
-      <div>└ AI override: {sign}{ai_abs:.0f}% [ {bar} ]</div>
+      <div>Общая уверенность: {overall:.0f}%</div>
+      <div>└ AI override: {sign}{ai_pct:.0f}% {bar}</div>
     </div>
     """
     st.markdown(html, unsafe_allow_html=True)
@@ -241,7 +259,7 @@ if run and ticker:
         eod_utc = now_utc.replace(hour=23, minute=59, second=59, microsecond=0)
         st.caption(f"As‑of: {now_utc.strftime('%Y-%m-%dT%H:%M:%SZ')} UTC • Valid until: {eod_utc.strftime('%Y-%m-%dT%H:%M:%SZ')} • Model: {model}")
 
-        # Простой AI‑override
+        # Простой AI‑override (нормированный)
         render_confidence_breakdown_inline(ticker, conf_pct_val)
 
         # Targets
