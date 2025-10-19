@@ -1,10 +1,21 @@
 # -*- coding: utf-8 -*-
 # app.py — Arxora UI (final EOD): Valid until = конец дня (UTC), примеры тикеров, блок «О проекте» внизу
 
-import os, re, traceback, importlib, sys
+import os, re, traceback, importlib, sys, glob, subprocess
 from typing import Any, Dict, Optional, List
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 import streamlit as st
+import pandas as pd
+
+# Защита от отсутствующей зависимости filelock (без падения UI)
+try:
+    from filelock import FileLock  # pip install filelock
+except Exception:
+    class FileLock:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
 
 try:
     from dotenv import load_dotenv
@@ -42,7 +53,7 @@ def render_arxora_header():
 
 render_arxora_header()
 
-# ===== Optional performance =====
+# ===== Optional performance (оригинальный интерфейс) =====
 try:
     from core.performance_tracker import log_agent_performance, get_agent_performance
 except Exception:
@@ -145,7 +156,7 @@ def run_model_by_name(ticker_norm: str, model_name: str) -> Dict[str, Any]:
         return getattr(mod, fname)(ticker_norm, "Краткосрочный")
     raise RuntimeError(f"Стратегия {model_name} недоступна.")
 
-# ===== Confidence breakdown (fallback) =====
+# ===== Confidence breakdown (fallback + совместимость с нативной функцией) =====
 try:
     from core.ui_confidence import render_confidence_breakdown_inline as _render_breakdown_native
     from core.ui_confidence import get_confidence_breakdown_from_session as _get_conf_from_session
@@ -154,21 +165,36 @@ except Exception:
     _get_conf_from_session = None
 
 def render_confidence_breakdown_inline(ticker: str, conf_pct: float):
+    # Сохраняем минимальный контекст в session_state
     try:
         st.session_state["last_overall_conf_pct"] = float(conf_pct or 0.0)
         st.session_state.setdefault("last_rules_pct", 44.0)
     except Exception:
         pass
+
+    # Нативная функция: может либо сама рисовать, либо вернуть строку/объект для отрисовки здесь
     try:
         if _render_breakdown_native:
-            return _render_breakdown_native(ticker, float(conf_pct or 0.0))
+            res = _render_breakdown_native(ticker, float(conf_pct or 0.0))
+            if res is not None:
+                if isinstance(res, str):
+                    st.markdown(res, unsafe_allow_html=True)
+                else:
+                    try:
+                        st.write(res)
+                    except Exception:
+                        pass
+            return  # либо нативка всё отрисовала сама, либо мы отрисовали res
     except Exception:
         pass
+
+    # Fallback: простой текстовый разбор
     data = _get_conf_from_session() if _get_conf_from_session else {
         "overall_confidence_pct": float(st.session_state.get("last_overall_conf_pct", conf_pct or 0.0)),
         "breakdown": {
             "rules_pct": float(st.session_state.get("last_rules_pct", 44.0)),
-            "ai_override_delta_pct": float(st.session_state.get("last_overall_conf_pct", conf_pct or 0.0)) - float(st.session_state.get("last_rules_pct", 44.0))
+            "ai_override_delta_pct": float(st.session_state.get("last_overall_conf_pct", conf_pct or 0.0))
+                                     - float(st.session_state.get("last_rules_pct", 44.0))
         },
         "shap_top": []
     }
@@ -177,6 +203,55 @@ def render_confidence_breakdown_inline(ticker: str, conf_pct: float):
     b = data.get("breakdown", {})
     st.write(f"— Базовые правила: {b.get('rules_pct',0):.1f}%")
     st.write(f"— AI override: {b.get('ai_override_delta_pct',0):.1f}%")
+
+# ====== DATA PIPELINE: Автосборка сводки + кэш до конца дня (UTC) ======
+DATA_DIR = Path("performance_data")
+SUMMARY_PATH = Path("performance_summary.csv")
+LOCK = FileLock(str(DATA_DIR / ".summary.lock"))
+
+def _seconds_until_eod_utc() -> int:
+    now = datetime.now(timezone.utc)
+    eod = now.replace(hour=23, minute=59, second=59, microsecond=0)
+    return max(5, int((eod - now).total_seconds()))
+
+def _aggregate_performance_to_csv():
+    DATA_DIR.mkdir(exist_ok=True)
+    frames = []
+    for p in DATA_DIR.glob("performance_*_*.csv"):
+        try:
+            df = pd.read_csv(p, sep=None, engine='python', on_bad_lines='skip')  # авто‑разделитель, пропуск битых строк
+        except Exception:
+            continue
+        m = re.match(r"^performance_(.+)_(.+)\.csv$", p.name)
+        if m:
+            a, t = m.group(1), m.group(2)
+            if 'agent' not in df.columns:  df['agent'] = a
+            if 'ticker' not in df.columns: df['ticker'] = t
+        frames.append(df)
+    if frames:
+        out = pd.concat(frames, ignore_index=True)
+        out.columns = [c.strip().lower() for c in out.columns]
+        out.to_csv(SUMMARY_PATH, index=False)
+
+def _ensure_summary_up_to_date():
+    DATA_DIR.mkdir(exist_ok=True)
+    with LOCK:
+        if os.getenv("ARXORA_AUTO_RUN_BENCHMARK", "0") == "1":
+            agents = ["W7","M7","Global","AlphaPulse","Octopus"]
+            tickers = ["SPY","QQQ"]
+            cmd = ["python3","jobs/daily_benchmarks.py","--agents",*agents,"--tickers",*tickers]
+            try:
+                subprocess.run(cmd, check=False, capture_output=True)
+            except Exception:
+                pass
+        _aggregate_performance_to_csv()
+
+@st.cache_data(ttl=_seconds_until_eod_utc())
+def load_summary_df() -> pd.DataFrame:
+    _ensure_summary_up_to_date()
+    df = pd.read_csv(SUMMARY_PATH, sep=None, engine='python', on_bad_lines='skip')
+    df.columns = [c.strip().lower() for c in df.columns]
+    return df
 
 # ===== Main UI =====
 st.subheader("AI agents")
@@ -268,21 +343,43 @@ if run and ticker:
             st.markdown(f"<div style='opacity:0.9; margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
         st.caption(CUSTOM_PHRASES["DISCLAIMER"])
 
-        # Performance chart (3 месяца)
+        # ====== Performance chart (3 месяца) из единой сводки с кэшем до EOD ======
         st.subheader(f"Эффективность модели {model} по ключевым инструментам (3 месяца)")
+        try:
+            df_all = load_summary_df()
+        except Exception:
+            df_all = pd.DataFrame()
+
         cols = st.columns(2)
         for i, tk in enumerate(["SPY","QQQ","BTCUSD","ETHUSD"]):
-            perf_data = None
-            try: perf_data = get_agent_performance(model, tk)
-            except Exception: perf_data = None
             with cols[i % 2]:
                 st.markdown(f"**{tk}**")
-                if perf_data is not None:
-                    perf_data = perf_data.set_index('date')
-                    st.line_chart(perf_data["cumulative_return"])
-                else:
+                try:
+                    d = df_all[
+                        (df_all['agent'].str.lower() == model.lower()) &
+                        (df_all['ticker'].str.upper() == tk)
+                    ].copy()
+                    if not d.empty:
+                        d['date'] = pd.to_datetime(d['date'], errors='coerce', utc=True)
+                        d = d.sort_values('date')
+                        cutoff = datetime.now(timezone.utc) - timedelta(days=90)
+                        d = d[d['date'] >= cutoff]
+                        d['cumulative_return'] = (1.0 + d['daily_return'].astype(float)).cumprod() - 1.0
+                        st.line_chart(d.set_index('date')['cumulative_return'])
+                    else:
+                        # Fallback на старый источник, если сводки нет по тикеру
+                        perf_data = None
+                        try: perf_data = get_agent_performance(model, tk)
+                        except Exception: perf_data = None
+                        if perf_data is not None and not perf_data.empty:
+                            perf_data = perf_data.set_index('date')
+                            st.line_chart(perf_data["cumulative_return"])
+                        else:
+                            st.info("Данных пока нет")
+                except Exception:
                     st.info("Данных пока нет")
 
+        # Лог перфоманса (нулевой, как триггер отслеживания сессий)
         try:
             log_agent_performance(model, ticker, datetime.today(), 0.0)
         except Exception:
