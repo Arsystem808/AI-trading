@@ -210,7 +210,7 @@ model = st.radio("Выберите модель", options=models, index=0, horiz
 
 ticker_input = st.text_input(
     "Тикер",
-    placeholder="Примеры ввода: AAPL • SPY • BTCUSD • C:EURUSD • O:SPY240920C500"
+    placeholder="Примеры ввода: AAPL • SPY • BTCUSD • C:EURUSD"
 )
 ticker = ticker_input.strip().upper()
 symbol_for_engine = normalize_for_polygon(ticker)
@@ -314,7 +314,7 @@ st.markdown(
     <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 6px;">
         <h4 style="font-weight: 600; margin-top: 0;">О проекте</h4>
         <p style="font-weight: 300; margin-bottom: 0;">
-        Arxora AI — современное решение, которое помогает трейдерам принимать точные и обоснованные решения
+        Arxora — современное решение, которое помогает трейдерам принимать точные и обоснованные решения
         с помощью ансамбля моделей и калибровки уверенности. Система автоматизирует анализ, повышает качество входов
         и помогает управлять рисками. Несколько ИИ-агентов с разными подходами: трендовые и контртрендовые стратегии. 
         Octopus-оркестратор взвешивает мнения всех агентов и выдает единый план сделки. Прошлые результаты не гарантируют будущие. 
