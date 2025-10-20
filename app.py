@@ -161,93 +161,46 @@ def run_model_by_name(ticker_norm: str, model_name: str) -> Dict[str, Any]:
         return getattr(mod, fname)(ticker_norm, "Краткосрочный")
     raise RuntimeError(f"Стратегия {model_name} недоступна.")
 
-# ===== Простой AI‑override (квантуемая шкала + легенда, part‑to‑whole) =====
+# ===== Простой AI‑override (две строки + скобочная шкала, НОРМАЛИЗАЦИЯ ПО OVERALL) =====
 def render_confidence_breakdown_inline(ticker: str, conf_pct: float):
     """
     Визуализация:
-      - Ширина фиксирована (20 символов), квантизация на 10 сегментов для читабельности.
-      - Rules слева, AI справа, оба вписываются внутрь общей уверенности (overall) как части целого.
-      - Легенда повторяет порядок сегментов; числовые подписи сохраняются рядом со шкалой.
+      - Заполняется только доля общей уверенности (overall).
+      - Доля AI рисуется внутри заполненной части; Rules = Overall - AI (не меньше 0).
+      - При отрицательном delta (overall < rules) сегмент AI = 0, но знак «−» в подписи сохраняется.
     """
-    # Консистентные настройки в сессии
-    st.session_state.setdefault("ai_bar_width", 20)     # общая ширина в символах
-    st.session_state.setdefault("ai_bar_segments", 10)  # число «крупных» сегментов
-    st.session_state.setdefault("ai_bar_order", ["RULES", "AI"])  # слева→справа
-
-    # Значения процентов
+    # Чтение/сохранение overall в Session State
     try:
         overall = float(conf_pct or 0.0)
     except Exception:
         overall = 0.0
-    overall = max(0.0, min(100.0, overall))
     st.session_state["last_overall_conf_pct"] = overall
 
-    rules_pct_in = float(st.session_state.get("last_rules_pct", 44.0))
-    ai_delta = overall - rules_pct_in
-    ai_pct = max(0.0, min(overall, ai_delta))         # AI не выходит за пределы overall
-    rules_pct = max(0.0, overall - ai_pct)            # остаток уходит в Rules
+    # Базовая «правиловая» доля; может приходить из бэка и переопределяться извне
+    rules_pct = float(st.session_state.get("last_rules_pct", 44.0))
+
+    # Разложение на Rules + AI
+    ai_delta = overall - rules_pct
+    ai_pct = max(0.0, min(overall, ai_delta))  # AI не превосходит overall и не уходит ниже 0
     sign = "−" if ai_delta < 0 else ""
 
-    # Геометрия и квантизация
-    WIDTH = int(st.session_state["ai_bar_width"])
-    SEGMENTS = max(1, int(st.session_state["ai_bar_segments"]))
-    chars_per_segment = max(1, WIDTH // SEGMENTS)
-
-    # Сколько символов занимает overall
+    # Геометрия текстовой шкалы
+    WIDTH = 28  # больше детализация, можно 20 если нужно компактнее
     filled = int(round(WIDTH * (overall / 100.0))) if overall > 0 else 0
-    if filled > 0:
-        filled = max(chars_per_segment, int(round(filled / chars_per_segment) * chars_per_segment))
-        filled = min(WIDTH, filled)
-
-    # Раскладка внутри filled
-    if overall > 0 and filled > 0:
-        rules_chars_f = filled * (rules_pct / overall)
-        ai_chars_f = filled * (ai_pct / overall)
-    else:
-        rules_chars_f = ai_chars_f = 0
-
-    # Квантуем к шагу сегмента и нормируем сумму
-    def quantize(x): return int(round(x / chars_per_segment) * chars_per_segment)
-
-    rules_chars = quantize(rules_chars_f)
-    ai_chars = quantize(ai_chars_f)
-    overflow = (rules_chars + ai_chars) - filled
-    if overflow > 0:
-        cut_ai = min(ai_chars, overflow)
-        ai_chars -= cut_ai
-        overflow -= cut_ai
-        if overflow > 0:
-            rules_chars = max(0, rules_chars - overflow)
-
+    ai_chars = int(round(filled * (ai_pct / overall))) if overall > 0 else 0
+    rules_chars = max(0, filled - ai_chars)
     empty_chars = max(0, WIDTH - filled)
 
-    # Конструируем бар и легенду
     bar = "[" + ("░" * rules_chars) + ("█" * ai_chars) + ("·" * empty_chars) + "]"
 
-    legend_html = f"""
-      <div style="display:flex; gap:10px; align-items:center; font-size:12px; opacity:.85; margin-top:6px;">
-        <div style="display:flex; align-items:center; gap:6px;">
-          <span style="display:inline-block; width:12px; text-align:center;">░</span> Rules
-        </div>
-        <div style="display:flex; align-items:center; gap:6px;">
-          <span style="display:inline-block; width:12px; text-align:center;">█</span> AI
-        </div>
-        <div style="margin-left:auto; font-variant-numeric: tabular-nums;">
-          Total: {overall:.0f}% • AI: {sign}{ai_pct:.0f}% • Rules: {rules_pct:.0f}%
-        </div>
-      </div>
-    """
-
-    container = f"""
-    <div role="group" aria-label="Confidence breakdown"
-         style="background:#2b2b2b;color:#fff;border-radius:12px;padding:10px 12px;
+    html = f"""
+    <div style="background:#2b2b2b;color:#fff;border-radius:12px;padding:10px 12px;
                 font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;">
       <div>Общая уверенность: {overall:.0f}%</div>
       <div>└ AI override: {sign}{ai_pct:.0f}% {bar}</div>
-      {legend_html}
     </div>
     """
-    st.markdown(container, unsafe_allow_html=True)
+    st.markdown(html, unsafe_allow_html=True)
 
 # ===== Main UI =====
 st.subheader("AI agents")
@@ -306,7 +259,7 @@ if run and ticker:
         eod_utc = now_utc.replace(hour=23, minute=59, second=59, microsecond=0)
         st.caption(f"As‑of: {now_utc.strftime('%Y-%m-%dT%H:%M:%SZ')} UTC • Valid until: {eod_utc.strftime('%Y-%m-%dT%H:%M:%SZ')} • Model: {model}")
 
-        # Простой AI‑override (квантуемая шкала + легенда)
+        # Простой AI‑override (нормированный)
         render_confidence_breakdown_inline(ticker, conf_pct_val)
 
         # Targets
@@ -364,10 +317,11 @@ st.markdown(
         Arxora AI — современное решение, которое помогает трейдерам принимать точные и обоснованные решения
         с помощью ансамбля моделей и калибровки уверенности. Система автоматизирует анализ, повышает качество входов
         и помогает управлять рисками. Несколько ИИ-агентов с разными подходами: трендовые и контртрендовые стратегии. 
-        Octopus-оркестратор взвешивает мнения всех агентов и выдает единый план сделки. Прошлые результаты не гарантируют будущие.
+        Octopus-оркестратор взвешивает мнения всех агентов и выдает единый план сделки. Прошлые результаты не гарантируют будущие. 
+        AI Override — это встроенный механизм, который позволяет искусственному интеллекту вмешиваться в работу базовых алгоритмов и принимать более точные решения в моменты, когда рынок ведёт себя нестандартно.
+
         </p>
     </div>
     """,
     unsafe_allow_html=True
 )
-
