@@ -363,26 +363,28 @@ class _M7Predictor:
         self.agent = agent
         self.model = None
         self.scaler = None
-        self.is_pipeline = False
+
     def load(self) -> bool:
         md = load_model_for(self.ticker, agent=self.agent)
         if not md or "model" not in md:
+            logger.warning("M7 ML: model not found for %s (%s)", self.ticker, self.agent)
             return False
         self.model = md["model"]
-        self.is_pipeline = hasattr(self.model, "named_steps")
+        # опциональный внешний скейлер
         try:
-            import joblib
+            import joblib  # noqa: F401
             meta = md.get("metadata", {}) or {}
             sp = meta.get("scaler_artifact")
             if sp:
-                from pathlib import Path
                 p = Path(sp)
                 if not p.is_absolute(): p = Path(".")/p
                 if p.exists():
+                    import joblib
                     self.scaler = joblib.load(p)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("M7 ML: scaler load failed: %s", e)
         return True
+
     @staticmethod
     def _features(df: pd.DataFrame, price: float, atr: float) -> np.ndarray:
         r = float(df['close'].pct_change().iloc[-1])
@@ -394,68 +396,118 @@ class _M7Predictor:
             pos = (price - lo) / max(1e-9, hi - lo)
         x = np.array([[r, vol, pos, atr/max(1e-9, price)]], dtype=float)
         return np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
-    def predict(self, df: pd.DataFrame, price: float, atr: float) -> tuple[str, float]:
+
+    def _predict_proba_safe(self, X: np.ndarray, df_last_row: Optional[pd.DataFrame]=None) -> Optional[np.ndarray]:
+        # Сначала пробуем на одном признаковом векторе, затем fallback на df.tail(1) для ColumnTransformer/пайплайнов
         try:
-            if self.is_pipeline:
-                proba = self.model.predict_proba(df)[-1]
-            else:
-                X = self._features(df, price, atr)
-                if self.scaler is not None:
+            return self.model.predict_proba(X)
+        except Exception as e1:
+            if df_last_row is not None:
+                try:
+                    return self.model.predict_proba(df_last_row)
+                except Exception as e2:
+                    logger.warning("M7 ML: predict_proba failed on X(%s) and df_last_row(%s)", e1, e2)
+                    return None
+            logger.warning("M7 ML: predict_proba failed on X(%s)", e1)
+            return None
+
+    def predict(self, df: pd.DataFrame, price: float, atr: float) -> Tuple[str, float]:
+        try:
+            X = self._features(df, price, atr)
+            if self.scaler is not None:
+                try:
                     X = self.scaler.transform(X)
-                if hasattr(self.model, "predict_proba"):
-                    proba = self.model.predict_proba(X)[0]
-                elif hasattr(self.model, "predict"):
-                    y = float(self.model.predict(X)[0])
-                    proba = np.array([1.0 - y, y])
+                except Exception as e:
+                    logger.warning("M7 ML: scaler.transform failed: %s", e)
+            df1 = df.tail(1).copy()
+            proba = None
+            if hasattr(self.model, "predict_proba"):
+                proba = self._predict_proba_safe(X, df_last_row=df1)
+            if proba is None and hasattr(self.model, "predict"):
+                y = float(self.model.predict(X)[0])
+                proba = np.array([[1.0 - y, y]], dtype=float)
+            if proba is None:
+                return ("WAIT", 0.5)
+
+            # бинарный случай -> класс 1 трактуем как LONG
+            if proba.shape[1] == 2:
+                p_long = float(proba[0, 1])
+                cal = _m7_cal()["M7"]
+                p_long_cal = float(cal(p_long))
+                # явные пороги
+                if p_long_cal >= 0.55:
+                    return ("BUY", p_long_cal)
+                elif p_long_cal <= 0.45:
+                    return ("SHORT", p_long_cal)
                 else:
-                    return ("WAIT", 0.5)
-            if len(proba) == 2:
-                return ("SIGNAL", float(proba[1]))
+                    return ("WAIT", p_long_cal)
+
+            # многокласс
             acts = ["BUY","SHORT","WAIT"]
-            idx = int(np.argmax(proba))
-            return (acts[idx], float(proba[idx]))
-        except Exception:
+            idx = int(np.argmax(proba[0]))
+            conf = float(proba[0, idx])
+            cal = _m7_cal()["M7"]
+            return (acts[idx], float(cal(conf)))
+        except Exception as e:
+            logger.warning("M7 ML: predict failed: %s", e)
             return ("WAIT", 0.5)
 
 class M7TradingStrategy:
     def __init__(self, atr_period=14, atr_multiplier=1.5, pivot_period='D', fib_levels=None):
-        self.atr_period = atr_period; self.atr_multiplier = atr_multiplier
-        self.pivot_period = pivot_period; self.fib_levels = fib_levels or [0.236,0.382,0.5,0.618,0.786]
+        self.atr_period = atr_period
+        self.atr_multiplier = atr_multiplier
+        self.pivot_period = pivot_period
+        self.fib_levels = fib_levels or [0.236,0.382,0.5,0.618,0.786]
+
     def calculate_pivot_points(self, h,l,c):
         pivot = (h + l + c) / 3
         r1 = (2 * pivot) - l; r2 = pivot + (h - l); r3 = h + 2 * (pivot - l)
         s1 = (2 * pivot) - h; s2 = pivot - (h - l); s3 = l - 2 * (h - pivot)
         return {'pivot': pivot, 'r1': r1, 'r2': r2, 'r3': r3, 's1': s1, 's2': s2, 's3': s3}
+
     def calculate_fib_levels(self, h,l):
-        diff = h - l; fib = {}
-        for level in self.fib_levels: fib[f'fib_{int(level*1000)}'] = h - level * diff
+        diff = h - l
+        fib = {}
+        for level in self.fib_levels:
+            fib[f'fib_{int(level*1000)}'] = h - level * diff
         return fib
+
     def identify_key_levels(self, data: pd.DataFrame):
         grouped = data.resample('D') if self.pivot_period == 'D' else data.resample('W')
         key = {}
         for _, g in grouped:
             if len(g) > 0:
                 h = g['high'].max(); l = g['low'].min(); c = g['close'].iloc[-1]
-                key.update(self.calculate_pivot_points(h,l,c)); key.update(self.calculate_fib_levels(h,l))
+                key.update(self.calculate_pivot_points(h,l,c))
+                key.update(self.calculate_fib_levels(h,l))
         return key
+
     def generate_signals(self, data: pd.DataFrame):
-        sigs = []; req = ['high','low','close']
+        sigs = []
+        req = ['high','low','close']
         if not all(c in data.columns for c in req): return sigs
         data = data.copy()
-        data['atr'] = _atr_like(data, self.atr_period); cur_atr = float(data['atr'].iloc[-1])
+        data['atr'] = _atr_like(data, self.atr_period)
+        cur_atr = float(data['atr'].iloc[-1])
         if cur_atr <= 0: return sigs
-        key = self.identify_key_levels(data); price = float(data['close'].iloc[-1]); ts = data.index[-1]
+        key = self.identify_key_levels(data)
+        price = float(data['close'].iloc[-1])
+        ts = data.index[-1]
         for name, val in key.items():
             dist = abs(price - val) / max(1e-9, cur_atr)
             if dist < self.atr_multiplier:
                 is_res = val > price
-                if is_res: typ='SELL_LIMIT'; entry=float(val*0.998); sl=float(val*1.02)
-                else:      typ='BUY_LIMIT';  entry=float(val*1.002); sl=float(val*0.98)
+                if is_res:
+                    typ='SELL_LIMIT'; entry=float(val*0.998); sl=float(val*1.02)
+                else:
+                    typ='BUY_LIMIT';  entry=float(val*1.002); sl=float(val*0.98)
                 risk = abs(entry - sl)
                 tp = entry + (2.0*risk if not is_res else -2.0*risk)
                 conf = 1.0 - (dist / self.atr_multiplier)
-                sigs.append({'type':typ,'price':round(entry,4),'stop_loss':round(sl,4),'take_profit':round(tp,4),
-                             'confidence':round(conf,2),'level':name,'level_value':round(val,4),'timestamp':ts})
+                sigs.append({
+                    'type':typ,'price':round(entry,4),'stop_loss':round(sl,4),'take_profit':round(tp,4),
+                    'confidence':round(conf,2),'level':name,'level_value':round(val,4),'timestamp':ts
+                })
         return sigs
 
 def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False):
@@ -468,41 +520,53 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
                 "note_html":"<div>M7: ожидание</div>", "alt":"Ожидание", "entry_kind":"wait","entry_label":"WAIT",
                 "meta":{"source":"M7","grey_zone":True}}
 
-    df = df.sort_values("timestamp"); df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True); df = df.set_index("timestamp")
-    price = float(df['close'].iloc[-1]); atr14 = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
+    df = df.sort_values("timestamp")
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    df = df.set_index("timestamp")
+    price = float(df['close'].iloc[-1])
+    atr14 = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
 
     if use_ml:
         pred = _M7Predictor(ticker)
         if pred.load():
-            ml_action, ml_raw = pred.predict(df, price, atr14)
-            cal = _m7_cal()["M7"]; ml_conf = float(cal(ml_raw))
-            strategy = M7TradingStrategy(); signals = strategy.generate_signals(df)
+            ml_action, ml_conf = pred.predict(df, price, atr14)
+            strategy = M7TradingStrategy()
+            signals = strategy.generate_signals(df)
             if ml_action == "WAIT" or not signals:
                 return {"last_price": price, "recommendation": {"action":"WAIT","confidence":ml_conf},
                         "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
-                        "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0}, "context":[f"ML: нет сильного сигнала ({ml_conf:.2f})"],
-                        "note_html":"<div>M7 ML: ожидание</div>", "alt":"ML wait","entry_kind":"wait","entry_label":"WAIT",
-                        "meta":{"source":"M7","ml_used":True,"ml_action":ml_action,"ml_conf_raw": ml_raw}}
+                        "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
+                        "context":[f"ML: нет сильного сигнала ({ml_conf:.2f})"],
+                        "note_html":"<div>M7 ML: ожидание</div>", "alt":"ML wait",
+                        "entry_kind":"wait","entry_label":"WAIT",
+                        "meta":{"source":"M7","ml_used":True,"ml_action":ml_action,"ml_conf_raw": ml_conf}}
             side = ml_action if ml_action in ("BUY","SHORT") else None
             if side:
                 filt = [s for s in signals if (side=="BUY" and s["type"].startswith("BUY")) or (side=="SHORT" and s["type"].startswith("SELL"))]
                 best = max(filt, key=lambda x:x["confidence"]) if filt else max(signals, key=lambda x:x["confidence"])
             else:
-                best = max(signals, key=lambda x:x["confidence"]); side = "BUY" if best["type"].startswith("BUY") else "SHORT"
-            entry = float(best['price']); sl = float(best['stop_loss']); risk = abs(entry - sl)
-            if side == "BUY": tp1,tp2,tp3 = entry + 1.5*risk, entry + 2.5*risk, entry + 4.0*risk
-            else:             tp1,tp2,tp3 = entry - 1.5*risk, entry - 2.5*risk, entry - 4.0*risk
+                best = max(signals, key=lambda x:x["confidence"])
+                side = "BUY" if best["type"].startswith("BUY") else "SHORT"
+            entry = float(best['price'])
+            sl = float(best['stop_loss'])
+            risk = abs(entry - sl)
+            if side == "BUY":
+                tp1,tp2,tp3 = entry + 1.5*risk, entry + 2.5*risk, entry + 4.0*risk
+            else:
+                tp1,tp2,tp3 = entry - 1.5*risk, entry - 2.5*risk, entry - 4.0*risk
             u1,u2,u3 = abs(tp1-entry)/atr14, abs(tp2-entry)/atr14, abs(tp3-entry)/atr14
-            k=0.18; b1,b2,b3 = ml_conf, max(0.50, ml_conf-0.08), max(0.45, ml_conf-0.16)
+            k=0.18
+            b1,b2,b3 = ml_conf, max(0.50, ml_conf-0.08), max(0.45, ml_conf-0.16)
             p1=_clip01(b1*np.exp(-k*(u1-1.0))); p2=_clip01(b2*np.exp(-k*(u2-1.5))); p3=_clip01(b3*np.exp(-k*(u3-2.2)))
             probs=_monotone_tp_probs({"tp1":p1,"tp2":p2,"tp3":p3})
             return {"last_price": price, "recommendation": {"action": side, "confidence": ml_conf},
                     "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3}, "probs": probs,
                     "context": [f"ML {side} + уровни M7: {best['level']}"], "note_html": f"<div>M7 ML: {side} у {best['level_value']}</div>",
                     "alt": "ML‑enhanced M7", "entry_kind":"limit", "entry_label": best["type"],
-                    "meta":{"source":"M7","ml_used":True,"ml_action":ml_action,"ml_conf_raw": ml_raw}}
+                    "meta":{"source":"M7","ml_used":True,"ml_action":ml_action,"ml_conf_raw": ml_conf}}
 
-    strategy = M7TradingStrategy(); signals = strategy.generate_signals(df)
+    strategy = M7TradingStrategy()
+    signals = strategy.generate_signals(df)
     if not signals:
         res = {"last_price": price, "recommendation": {"action":"WAIT","confidence":0.5},
                "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
@@ -513,26 +577,31 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
             log_agent_performance(agent="M7", ticker=ticker, horizon=horizon, action="WAIT", confidence=0.50,
                                   levels=res["levels"], probs=res["probs"], meta={"probs_debug":{"u":[],"p":[]}},
                                   ts=pd.Timestamp.utcnow().isoformat())
-        except Exception: pass
+        except Exception:
+            pass
         return res
 
     best = max(signals, key=lambda x: x['confidence'])
     raw_conf = float(_clip01(best['confidence']))
-    entry = float(best['price']); sl = float(best['stop_loss']); risk = abs(entry - sl)
+    entry = float(best['price'])
+    sl = float(best['stop_loss'])
+    risk = abs(entry - sl)
     vol = float(df['close'].pct_change().std() * np.sqrt(252))
     conf_base = 0.50 + 0.34*math.tanh((raw_conf - 0.65)/0.20)
     penalty = (0.05 if vol > 0.35 else 0.0) + (0.04 if risk/atr14 < 0.8 else 0.0) + (0.03 if risk/atr14 > 3.5 else 0.0)
     conf = float(max(0.52, min(0.82, conf_base*(1.0 - penalty))))
     conf = float(_m7_cal()["M7"](conf))
     if best['type'].startswith('BUY'):
-        tp1,tp2,tp3 = entry + 1.5*risk, entry + 2.5*risk, entry + 4.0*risk; act="BUY"
+        tp1,tp2,tp3 = entry + 1.5*risk, entry + 2.5*risk, entry + 4.0*risk
+        act="BUY"
     else:
-        tp1,tp2,tp3 = entry - 1.5*risk, entry - 2.5*risk, entry - 4.0*risk; act="SHORT"
+        tp1,tp2,tp3 = entry - 1.5*risk, entry - 2.5*risk, entry - 4.0*risk
+        act="SHORT"
     u1,u2,u3 = abs(tp1-entry)/atr14, abs(tp2-entry)/atr14, abs(tp3-entry)/atr14
-    k=0.18; b1,b2,b3 = conf, max(0.50, conf-0.08), max(0.45, conf-0.16)
+    k=0.18
+    b1,b2,b3 = conf, max(0.50, conf-0.08), max(0.45, conf-0.16)
     p1=_clip01(b1*np.exp(-k*(u1-1.0))); p2=_clip01(b2*np.exp(-k*(u2-1.5))); p3=_clip01(b3*np.exp(-k*(u3-2.2)))
     probs=_monotone_tp_probs({"tp1":p1,"tp2":p2,"tp3":p3})
-
     try:
         log_agent_performance(agent="M7", ticker=ticker, horizon=horizon, action=act, confidence=float(conf),
                               levels={"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
@@ -540,8 +609,8 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
                               meta={"probs_debug":{"u":[float(u1),float(u2),float(u3)],
                                                    "p":[float(probs["tp1"]),float(probs["tp2"]),float(probs["tp3"])]}},
                               ts=pd.Timestamp.utcnow().isoformat())
-    except Exception: pass
-
+    except Exception:
+        pass
     return {"last_price": price, "recommendation": {"action": act, "confidence": float(conf)},
             "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
             "probs": probs, "context": [f"Сигнал от уровня {best['level']}"],
