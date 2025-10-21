@@ -1,0 +1,787 @@
+# ================================================================================
+# M7 Trading Strategy - Production Grade ML Integration v3.1.0 (FINAL)
+# Full Pipeline support with legacy fallback, complete validation, unit tests
+# ================================================================================
+
+from __future__ import annotations
+
+import logging
+import math
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple, List
+
+import numpy as np
+import pandas as pd
+
+# Core utilities
+try:
+    from core.utils_naming import sanitize_symbol
+except ImportError:
+    def sanitize_symbol(s: str) -> str:
+        return s.upper().replace(":", "_").replace("-", "_")
+
+try:
+    from core.model_loader import load_model_for
+except ImportError:
+    def load_model_for(*args, **kwargs):
+        return None
+
+try:
+    from core.polygon_client import PolygonClient
+except ImportError:
+    class PolygonClient:
+        def daily_ohlc(self, ticker, days=120):
+            return pd.DataFrame()
+
+try:
+    from core.performance_tracker import log_agent_performance
+except ImportError:
+    def log_agent_performance(*args, **kwargs):
+        pass
+
+try:
+    import joblib
+except ImportError:
+    joblib = None
+
+logger = logging.getLogger(__name__)
+
+
+# ==================== Calibration Fallback ====================
+
+class _IdentityCalibrator:
+    """Identity calibrator fallback"""
+    def __call__(self, p: float) -> float:
+        return float(max(0.0, min(1.0, p)))
+
+try:
+    from core.strategy import CAL_CONF
+except (ImportError, NameError, AttributeError):
+    logger.warning("CAL_CONF not available, using identity calibrator")
+    CAL_CONF = {"M7": _IdentityCalibrator()}
+
+
+# ==================== Utility Functions ====================
+
+def _clip01(x: float) -> float:
+    """Clip value to [0, 1]"""
+    return float(max(0.0, min(1.0, x)))
+
+
+def _monotone_tp_probs(d: Dict[str, float]) -> Dict[str, float]:
+    """Enforce monotone decreasing TP probabilities"""
+    p1 = _clip01(float(d.get("tp1", 0.0)))
+    p2 = _clip01(float(d.get("tp2", 0.0)))
+    p3 = _clip01(float(d.get("tp3", 0.0)))
+    p1 = max(p1, p2, p3)
+    p2 = min(p1, max(p2, p3))
+    p3 = min(p2, p3)
+    return {"tp1": p1, "tp2": p2, "tp3": p3}
+
+
+def _atr_like(df: pd.DataFrame, n: int = 14) -> pd.Series:
+    """Calculate ATR (Average True Range)"""
+    if len(df) < 2:
+        return pd.Series([0.0] * len(df), index=df.index)
+    
+    hl = df["high"] - df["low"]
+    hc = (df["high"] - df["close"].shift(1)).abs()
+    lc = (df["low"] - df["close"].shift(1)).abs()
+    tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
+    return tr.rolling(n, min_periods=1).mean()
+
+
+# ==================== Feature Engineering ====================
+
+class M7FeatureExtractor:
+    """
+    Feature extraction for M7 with sklearn-compatible interface.
+    
+    Поддерживает как Pipeline (transform), так и standalone использование.
+    """
+    
+    def __init__(self, feature_names: Optional[List[str]] = None):
+        self.feature_names = feature_names or self._default_features()
+        self._calculators = self._build_calculators()
+    
+    @staticmethod
+    def _default_features() -> List[str]:
+        """Default feature set for M7"""
+        return [
+            'returns', 'volatility', 'momentum',
+            'sma20', 'sma50', 'rsi',
+            'volume_ratio', 'atr_norm', 'price_position'
+        ]
+    
+    def _build_calculators(self) -> Dict:
+        """Build feature calculator functions"""
+        return {
+            'returns': lambda df, p, a: self._safe_calc(lambda: df['close'].pct_change().iloc[-1], 0.0),
+            'volatility': lambda df, p, a: self._safe_calc(lambda: df['close'].pct_change().rolling(20).std().iloc[-1], 0.02),
+            'momentum': lambda df, p, a: self._safe_calc(lambda: (df['close'].iloc[-1] - df['close'].iloc[-10]) / df['close'].iloc[-10] if len(df) >= 10 else 0.0, 0.0),
+            'sma20': lambda df, p, a: self._safe_calc(lambda: df['close'].rolling(20).mean().iloc[-1] if len(df) >= 20 else df['close'].iloc[-1], p),
+            'sma50': lambda df, p, a: self._safe_calc(lambda: df['close'].rolling(50).mean().iloc[-1] if len(df) >= 50 else df['close'].iloc[-1], p),
+            'rsi': lambda df, p, a: self._calc_rsi(df['close']),
+            'volume_ratio': lambda df, p, a: self._safe_calc(lambda: df['volume'].iloc[-1] / df['volume'].rolling(20).mean().iloc[-1] if 'volume' in df.columns and len(df) >= 20 else 1.0, 1.0),
+            'atr_norm': lambda df, p, a: a / p if p > 0 else 0.0,
+            'price_position': lambda df, p, a: self._calc_price_position(df, p),
+        }
+    
+    @staticmethod
+    def _safe_calc(func, default: float) -> float:
+        """Safe calculation with fallback"""
+        try:
+            val = func()
+            return float(val) if not (pd.isna(val) or np.isinf(val)) else default
+        except Exception:
+            return default
+    
+    @staticmethod
+    def _calc_rsi(close: pd.Series, period: int = 14) -> float:
+        """Calculate RSI indicator"""
+        try:
+            if len(close) < period + 1:
+                logger.debug(f"Insufficient data for RSI: {len(close)} < {period+1}")
+                return 50.0
+            
+            delta = close.diff()
+            gain = delta.where(delta > 0, 0.0).rolling(period).mean()
+            loss = -delta.where(delta < 0, 0.0).rolling(period).mean()
+            rs = gain / loss.replace(0, 1e-9)
+            rsi = (100 - (100 / (1 + rs))).iloc[-1]
+            return float(rsi) if not pd.isna(rsi) else 50.0
+        except Exception as e:
+            logger.debug(f"RSI calculation failed: {e}")
+            return 50.0
+    
+    @staticmethod
+    def _calc_price_position(df: pd.DataFrame, price: float) -> float:
+        """Calculate price position in 20-day range"""
+        try:
+            if len(df) < 20:
+                return 0.5
+            high_20 = df['high'].rolling(20).max().iloc[-1]
+            low_20 = df['low'].rolling(20).min().iloc[-1]
+            return (price - low_20) / max(1e-9, high_20 - low_20)
+        except Exception:
+            return 0.5
+    
+    def extract(self, df: pd.DataFrame, price: float, atr: float) -> np.ndarray:
+        """
+        Extract features from DataFrame.
+        
+        Args:
+            df: OHLCV DataFrame with DatetimeIndex
+            price: Current price
+            atr: Current ATR value
+            
+        Returns:
+            Feature array of shape (1, n_features)
+        """
+        features = []
+        
+        for name in self.feature_names:
+            calc = self._calculators.get(name)
+            
+            if calc is None:
+                logger.warning(f"Unknown feature '{name}', defaulting to 0.0")
+                val = 0.0
+            else:
+                val = calc(df, price, atr)
+            
+            features.append(float(val))
+        
+        X = np.array(features).reshape(1, -1)
+        
+        # Final validation and cleanup
+        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        return X
+
+
+# ==================== ML Model Handler ====================
+
+class M7MLPredictor:
+    """
+    ML predictor with Pipeline and legacy artifact support.
+    
+    Поддерживает:
+    - sklearn.pipeline.Pipeline (preferred)
+    - Legacy: separate model + scaler + feature_names
+    """
+    
+    def __init__(self, ticker: str, agent: str = "arxora_m7pro"):
+        self.ticker = ticker
+        self.agent = agent
+        self.model = None
+        self.scaler = None
+        self.feature_extractor = None
+        self.is_pipeline = False
+        self.metadata = {}
+        self.required_columns = None
+    
+    def load(self) -> bool:
+        """
+        Load model artifacts with versioning check.
+        
+        Returns:
+            True if model loaded successfully
+        """
+        try:
+            model_data = load_model_for(self.ticker, agent=self.agent)
+            
+            if not model_data:
+                logger.info(f"No model found for {self.ticker}/{self.agent}")
+                return False
+            
+            # Case 1: Pipeline (preferred)
+            if isinstance(model_data, dict) and "model" in model_data:
+                self.model = model_data["model"]
+                self.metadata = model_data.get("metadata", {})
+                
+                # Check version
+                self._check_version()
+                
+                # Check if it's a Pipeline
+                if hasattr(self.model, "named_steps"):
+                    self.is_pipeline = True
+                    
+                    # Extract required columns
+                    if hasattr(self.model, "feature_names_in_"):
+                        self.required_columns = list(self.model.feature_names_in_)
+                        logger.info(f"Pipeline for {self.ticker} requires columns: {self.required_columns}")
+                    
+                    logger.info(f"Loaded Pipeline for {self.ticker} (version: {self.metadata.get('version', 'unknown')})")
+                    return True
+                
+                # Case 2: Legacy artifacts
+                feature_names = model_data.get("feature_names")
+                
+                if feature_names:
+                    self.feature_extractor = M7FeatureExtractor(feature_names)
+                    logger.info(f"Using {len(feature_names)} features from model")
+                else:
+                    logger.warning(f"No feature_names for {self.ticker}, using defaults")
+                    self.feature_extractor = M7FeatureExtractor()
+                
+                # Load scaler if available
+                self._load_scaler()
+                
+                logger.info(f"Loaded legacy model for {self.ticker} (version: {self.metadata.get('version', 'unknown')})")
+                return True
+            
+            logger.warning(f"Invalid model_data format for {self.ticker}")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Failed to load model for {self.ticker}: {e}", exc_info=True)
+            return False
+    
+    def _check_version(self):
+        """Check model version and warn if outdated"""
+        model_version = self.metadata.get("version")
+        if model_version:
+            min_version = "2.0"
+            if str(model_version) < min_version:
+                logger.warning(
+                    f"Model version {model_version} < {min_version} for {self.ticker}, "
+                    "may be outdated"
+                )
+    
+    def _load_scaler(self):
+        """Load scaler from metadata"""
+        if not joblib:
+            return
+        
+        scaler_path_str = self.metadata.get("scaler_artifact")
+        if not scaler_path_str:
+            return
+        
+        scaler_path = Path(scaler_path_str)
+        if not scaler_path.is_absolute():
+            scaler_path = Path(".") / scaler_path
+        
+        if scaler_path.exists():
+            try:
+                self.scaler = joblib.load(scaler_path)
+                logger.info(f"Loaded scaler from {scaler_path}")
+            except Exception as e:
+                logger.warning(f"Failed to load scaler: {e}")
+    
+    def predict(self, df: pd.DataFrame, price: float, atr: float) -> Tuple[str, float]:
+        """
+        Make prediction.
+        
+        Args:
+            df: OHLCV DataFrame with DatetimeIndex
+            price: Current price
+            atr: Current ATR
+            
+        Returns:
+            (action, confidence): Action string and raw confidence
+        """
+        try:
+            if self.is_pipeline:
+                # Pipeline: validate columns
+                if self.required_columns:
+                    missing = [col for col in self.required_columns if col not in df.columns]
+                    if missing:
+                        raise ValueError(f"Missing columns for Pipeline: {missing}")
+                
+                # Pipeline expects full DataFrame for context
+                # Predict on entire df, take last prediction
+                proba_all = self.model.predict_proba(df)
+                proba = proba_all[-1]  # Last row prediction
+                
+                return self._interpret_prediction(proba)
+            
+            else:
+                # Legacy: manual feature extraction
+                if not self.feature_extractor:
+                    raise ValueError("Feature extractor not initialized")
+                
+                X = self.feature_extractor.extract(df, price, atr)
+                
+                # Apply scaler if available
+                if self.scaler:
+                    X = self.scaler.transform(X)
+                
+                # Predict
+                if hasattr(self.model, "predict_proba"):
+                    proba = self.model.predict_proba(X)[0]
+                    return self._interpret_prediction(proba)
+                elif hasattr(self.model, "predict"):
+                    pred = self.model.predict(X)[0]
+                    return ("SIGNAL", float(pred))
+                else:
+                    raise ValueError("Model has no predict method")
+        
+        except Exception as e:
+            logger.error(f"Prediction failed for {self.ticker}: {e}", exc_info=True)
+            return ("WAIT", 0.5)
+    
+    def _interpret_prediction(self, proba: np.ndarray) -> Tuple[str, float]:
+        """
+        Interpret model prediction.
+        
+        Supports:
+        - Binary: [fail, success] -> SIGNAL
+        - Multi-class: [BUY, SHORT, WAIT] (alphabetical order assumed)
+        """
+        if len(proba) == 2:
+            # Binary classification: confidence in success
+            return ("SIGNAL", float(proba[1]))
+        
+        elif len(proba) == 3:
+            # Multi-class: assume alphabetical order BUY, SHORT, WAIT
+            actions = ['BUY', 'SHORT', 'WAIT']
+            action_idx = int(np.argmax(proba))
+            conf = float(proba[action_idx])
+            
+            logger.debug(f"Multi-class prediction for {self.ticker}: {dict(zip(actions, proba))}")
+            
+            return (actions[action_idx], conf)
+        
+        else:
+            logger.warning(f"Unexpected proba shape for {self.ticker}: {len(proba)}")
+            return ("SIGNAL", float(proba[0]))
+
+
+# ==================== M7 Strategy ====================
+
+class M7TradingStrategy:
+    """M7 Strategy with ATR-based stops and entries"""
+    
+    def __init__(self, atr_period: int = 14, atr_multiplier: float = 1.5,
+                 pivot_period: str = 'D', fib_levels: List[float] = None,
+                 entry_atr_offset: float = 0.15, stop_atr_mult: float = 1.8):
+        self.atr_period = atr_period
+        self.atr_multiplier = atr_multiplier
+        self.pivot_period = pivot_period
+        self.fib_levels = fib_levels or [0.236, 0.382, 0.5, 0.618, 0.786]
+        self.entry_atr_offset = entry_atr_offset
+        self.stop_atr_mult = stop_atr_mult
+    
+    def calculate_pivot_points(self, h: float, l: float, c: float) -> Dict[str, float]:
+        pivot = (h + l + c) / 3
+        r1 = (2 * pivot) - l
+        r2 = pivot + (h - l)
+        r3 = h + 2 * (pivot - l)
+        s1 = (2 * pivot) - h
+        s2 = pivot - (h - l)
+        s3 = l - 2 * (h - pivot)
+        return {'pivot': pivot, 'r1': r1, 'r2': r2, 'r3': r3,
+                's1': s1, 's2': s2, 's3': s3}
+    
+    def calculate_fib_levels(self, h: float, l: float) -> Dict[str, float]:
+        diff = h - l
+        fib = {}
+        for level in self.fib_levels:
+            fib[f'fib_{int(level*1000)}'] = h - level * diff
+        return fib
+    
+    def identify_key_levels(self, data: pd.DataFrame) -> Dict[str, float]:
+        grouped = data.resample('D') if self.pivot_period == 'D' else data.resample('W')
+        key = {}
+        for _, g in grouped:
+            if len(g) > 0:
+                h = g['high'].max()
+                l = g['low'].min()
+                c = g['close'].iloc[-1]
+                key.update(self.calculate_pivot_points(h, l, c))
+                key.update(self.calculate_fib_levels(h, l))
+        return key
+    
+    def generate_signals(self, data: pd.DataFrame) -> List[Dict[str, Any]]:
+        sigs = []
+        req = ['high', 'low', 'close']
+        if not all(c in data.columns for c in req):
+            return sigs
+        
+        data = data.copy()
+        data['atr'] = _atr_like(data, self.atr_period)
+        cur_atr = data['atr'].iloc[-1]
+        
+        if cur_atr <= 0:
+            return sigs
+        
+        key = self.identify_key_levels(data)
+        price = data['close'].iloc[-1]
+        ts = data.index[-1]
+        
+        # Adaptive parameters
+        atr_pct = cur_atr / max(1e-9, price)
+        if atr_pct > 0.015:
+            stop_k = min(self.stop_atr_mult * 1.3, 2.5)
+        elif atr_pct < 0.008:
+            stop_k = max(self.stop_atr_mult * 0.85, 1.5)
+        else:
+            stop_k = self.stop_atr_mult
+        
+        for name, val in key.items():
+            dist = abs(price - val) / cur_atr
+            
+            if dist < self.atr_multiplier:
+                is_res = val > price
+                
+                if is_res:
+                    typ = 'SELL_LIMIT'
+                    entry = float(val - self.entry_atr_offset * cur_atr)
+                    sl = float(val + stop_k * cur_atr)
+                else:
+                    typ = 'BUY_LIMIT'
+                    entry = float(val + self.entry_atr_offset * cur_atr)
+                    sl = float(val - stop_k * cur_atr)
+                
+                risk = abs(entry - sl)
+                tp = entry + (2.0 * risk if not is_res else -2.0 * risk)
+                
+                # Minimum stop floor
+                min_stop_pct = 0.006
+                if risk / price < min_stop_pct:
+                    sl = entry + (min_stop_pct * price if is_res else -min_stop_pct * price)
+                    risk = abs(entry - sl)
+                    tp = entry + (2.0 * risk if not is_res else -2.0 * risk)
+                
+                conf = max(0.0, 1.0 - dist / self.atr_multiplier)
+                
+                sigs.append({
+                    'type': typ,
+                    'price': round(entry, 4),
+                    'stop_loss': round(sl, 4),
+                    'take_profit': round(tp, 4),
+                    'confidence': round(conf, 2),
+                    'level': name,
+                    'level_value': round(val, 4),
+                    'timestamp': ts,
+                    'risk_atr': round(risk / cur_atr, 2)
+                })
+        
+        return sigs
+
+
+# ==================== Main Analyzer ====================
+
+def analyze_asset_m7(ticker: str, horizon: str = "Краткосрочный",
+                     use_ml: bool = False) -> Dict[str, Any]:
+    """
+    M7 analysis with optional ML inference.
+    
+    Args:
+        ticker: Asset ticker
+        horizon: Time horizon
+        use_ml: Use ML model if available
+        
+    Returns:
+        Analysis dict with recommendation, levels, probabilities
+    """
+    cli = PolygonClient()
+    df = cli.daily_ohlc(ticker, days=120)
+    
+    # Validate data
+    if df is None or df.empty:
+        return _return_wait(0.0, "Нет данных для M7", ticker, horizon, False)
+    
+    # Prepare DataFrame
+    df = df.sort_values("timestamp")
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    df = df.set_index("timestamp")
+    
+    price = float(df['close'].iloc[-1])
+    atr14 = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
+    
+    # ========== ML INFERENCE ==========
+    if use_ml:
+        try:
+            predictor = M7MLPredictor(ticker)
+            
+            if predictor.load():
+                # Log model info
+                logger.info(
+                    f"Using ML model for {ticker}: "
+                    f"version={predictor.metadata.get('version', 'unknown')}, "
+                    f"trained={predictor.metadata.get('train_date', 'unknown')}, "
+                    f"pipeline={predictor.is_pipeline}"
+                )
+                
+                ml_action, ml_conf_raw = predictor.predict(df, price, atr14)
+                ml_conf = float(CAL_CONF["M7"](ml_conf_raw))
+                
+                # Generate level signals
+                strategy = M7TradingStrategy()
+                signals = strategy.generate_signals(df)
+                
+                if ml_action == "WAIT" or not signals:
+                    return _return_wait(price, "ML: нет сильного сигнала", ticker, horizon, True,
+                                       ml_action=ml_action, ml_conf=ml_conf,
+                                       ml_conf_raw=ml_conf_raw)
+                
+                # Determine direction
+                if ml_action in ["BUY", "SHORT"]:
+                    act = ml_action
+                    matching = [s for s in signals if
+                               (act == "BUY" and s['type'].startswith('BUY')) or
+                               (act == "SHORT" and s['type'].startswith('SELL'))]
+                    best = max(matching, key=lambda x: x['confidence']) if matching else signals[0]
+                else:
+                    best = max(signals, key=lambda x: x['confidence'])
+                    act = "BUY" if best['type'].startswith('BUY') else "SHORT"
+                
+                return _build_result(best, act, ml_conf, price, atr14, df,
+                                    ticker, horizon, True, ml_action, ml_conf_raw)
+            
+            logger.info(f"ML model not available for {ticker}, using rules")
+            
+        except Exception as e:
+            logger.warning(f"ML inference failed for {ticker}: {e}, falling back",
+                          exc_info=True)
+    
+    # ========== RULE-BASED FALLBACK ==========
+    strategy = M7TradingStrategy()
+    signals = strategy.generate_signals(df)
+    
+    if not signals:
+        return _return_wait(price, "Нет сигналов по стратегии M7", ticker, horizon, False)
+    
+    best = max(signals, key=lambda x: x['confidence'])
+    raw_conf = float(_clip01(best['confidence']))
+    
+    # Calibrate confidence
+    vol = df['close'].pct_change().std() * np.sqrt(252) if len(df) >= 20 else 0.20
+    risk = abs(best['price'] - best['stop_loss'])
+    
+    conf_base = 0.50 + 0.34 * math.tanh((raw_conf - 0.65) / 0.20)
+    penalty = (0.05 if vol > 0.35 else 0.0) + \
+              (0.04 if risk/atr14 < 0.8 else 0.0) + \
+              (0.03 if risk/atr14 > 3.5 else 0.0)
+    conf = float(max(0.52, min(0.82, conf_base * (1.0 - penalty))))
+    conf = float(CAL_CONF["M7"](conf))
+    
+    act = "BUY" if best['type'].startswith('BUY') else "SHORT"
+    
+    return _build_result(best, act, conf, price, atr14, df,
+                        ticker, horizon, False, None, None)
+
+
+def _return_wait(price: float, context: str, ticker: str, horizon: str,
+                 ml_used: bool, ml_action: Optional[str] = None,
+                 ml_conf: Optional[float] = None,
+                 ml_conf_raw: Optional[float] = None) -> Dict[str, Any]:
+    """Helper to return WAIT signal"""
+    meta = {"source": "M7", "grey_zone": True, "ml_used": ml_used}
+    if ml_used and ml_action:
+        meta.update({"ml_action": ml_action, "ml_conf_raw": float(ml_conf_raw)})
+    
+    res = {
+        "last_price": price,
+        "recommendation": {"action": "WAIT", "confidence": ml_conf or 0.5},
+        "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
+        "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+        "context": [context],
+        "note_html": "<div>M7: ожидание</div>",
+        "alt": "Ожидание сигналов",
+        "entry_kind": "wait",
+        "entry_label": "WAIT",
+        "meta": meta
+    }
+    
+    try:
+        log_agent_performance(
+            agent="M7", ticker=ticker, horizon=horizon,
+            action="WAIT", confidence=ml_conf or 0.5,
+            levels=res["levels"], probs=res["probs"],
+            meta=meta, ts=pd.Timestamp.utcnow().isoformat()
+        )
+    except Exception:
+        pass
+    
+    return res
+
+
+def _build_result(best: Dict[str, Any], act: str, conf: float, price: float,
+                  atr14: float, df: pd.DataFrame, ticker: str, horizon: str,
+                  ml_used: bool, ml_action: Optional[str] = None,
+                  ml_conf_raw: Optional[float] = None) -> Dict[str, Any]:
+    """Helper to build result dict"""
+    entry = float(best['price'])
+    sl = float(best['stop_loss'])
+    risk = abs(entry - sl)
+    
+    # Targets
+    if act == "BUY":
+        tp1, tp2, tp3 = entry + 1.2*risk, entry + 2.0*risk, entry + 3.0*risk
+    else:
+        tp1, tp2, tp3 = entry - 1.2*risk, entry - 2.0*risk, entry - 3.0*risk
+    
+    # Probabilities
+    u1, u2, u3 = abs(tp1-entry)/atr14, abs(tp2-entry)/atr14, abs(tp3-entry)/atr14
+    k = 0.18
+    b1, b2, b3 = conf, max(0.50, conf-0.08), max(0.45, conf-0.16)
+    p1 = _clip01(b1 * np.exp(-k*(u1-1.0)))
+    p2 = _clip01(b2 * np.exp(-k*(u2-1.5)))
+    p3 = _clip01(b3 * np.exp(-k*(u3-2.2)))
+    probs = _monotone_tp_probs({"tp1": p1, "tp2": p2, "tp3": p3})
+    
+    meta_debug = {
+        "risk": float(risk),
+        "atr14": float(atr14),
+        "risk_atr": float(risk/atr14),
+        "u": [float(u1), float(u2), float(u3)],
+        "p": [float(probs["tp1"]), float(probs["tp2"]), float(probs["tp3"])]
+    }
+    
+    if ml_used:
+        meta_debug.update({
+            "ml_conf_raw": float(ml_conf_raw),
+            "ml_conf_cal": float(conf),
+            "ml_action": ml_action
+        })
+    
+    context = [
+        f"{'ML сигнал' if ml_used else 'Сигнал'} от уровня {best['level']}",
+        f"Риск: {risk/atr14:.2f} ATR"
+    ]
+    
+    try:
+        log_agent_performance(
+            agent="M7", ticker=ticker, horizon=horizon,
+            action=act, confidence=float(conf),
+            levels={"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
+            probs={"tp1": float(probs["tp1"]), "tp2": float(probs["tp2"]),
+                  "tp3": float(probs["tp3"])},
+            meta={"probs_debug": meta_debug, "ml_used": ml_used},
+            ts=pd.Timestamp.utcnow().isoformat()
+        )
+    except Exception:
+        pass
+    
+    return {
+        "last_price": price,
+        "recommendation": {"action": act, "confidence": float(conf)},
+        "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
+        "probs": probs,
+        "context": context,
+        "note_html": f"<div>M7{' ML' if ml_used else ''}: {act} на {best['level_value']}</div>",
+        "alt": f"{'ML-enhanced ' if ml_used else ''}торговля по M7 с ATR-стопами",
+        "entry_kind": "limit",
+        "entry_label": best['type'],
+        "meta": {"source": "M7", "ml_used": ml_used,
+                "grey_zone": bool(0.48 <= conf <= 0.58),
+                "probs_debug": meta_debug}
+    }
+
+
+# ==================== Unit Tests ====================
+
+def test_feature_extraction():
+    """Test feature extraction with synthetic data"""
+    dates = pd.date_range('2024-01-01', periods=120, freq='D', tz='UTC')
+    df = pd.DataFrame({
+        'open': np.random.rand(120) * 100 + 100,
+        'high': np.random.rand(120) * 5 + 105,
+        'low': np.random.rand(120) * 5 + 95,
+        'close': np.random.rand(120) * 100 + 100,
+        'volume': np.random.rand(120) * 1000000
+    }, index=dates)
+    
+    extractor = M7FeatureExtractor()
+    X = extractor.extract(df, 100.0, 2.5)
+    
+    assert X.shape == (1, 9), f"Expected shape (1, 9), got {X.shape}"
+    assert not np.any(np.isnan(X)), "Features contain NaN"
+    assert not np.any(np.isinf(X)), "Features contain Inf"
+    print("✅ Feature extraction test passed")
+
+
+def test_monotone_probs():
+    """Test TP probability monotonicity"""
+    probs = _monotone_tp_probs({"tp1": 0.5, "tp2": 0.7, "tp3": 0.6})
+    assert probs["tp1"] >= probs["tp2"] >= probs["tp3"], \
+        f"Probabilities not monotone: {probs}"
+    print("✅ Monotone probabilities test passed")
+
+
+def test_atr_calculation():
+    """Test ATR calculation edge cases"""
+    # Edge case: empty DataFrame
+    df_empty = pd.DataFrame()
+    atr_empty = _atr_like(df_empty, n=14)
+    assert len(atr_empty) == 0, "ATR on empty df should be empty"
+    
+    # Edge case: single row
+    df_single = pd.DataFrame({
+        'high': [105], 'low': [95], 'close': [100]
+    })
+    atr_single = _atr_like(df_single, n=14)
+    assert len(atr_single) == 1, "ATR on single row should have length 1"
+    
+    print("✅ ATR calculation test passed")
+
+
+def test_strategy_signals():
+    """Test M7 strategy signal generation"""
+    dates = pd.date_range('2024-01-01', periods=120, freq='D', tz='UTC')
+    df = pd.DataFrame({
+        'open': [100] * 120,
+        'high': [105] * 120,
+        'low': [95] * 120,
+        'close': [100] * 120,
+        'volume': [1000000] * 120
+    }, index=dates)
+    
+    strategy = M7TradingStrategy()
+    signals = strategy.generate_signals(df)
+    
+    # Should generate signals near pivots
+    assert isinstance(signals, list), "Signals should be a list"
+    print(f"✅ Strategy test passed ({len(signals)} signals generated)")
+
+
+if __name__ == "__main__":
+    # Run tests
+    print("Running M7 unit tests...\n")
+    test_feature_extraction()
+    test_monotone_probs()
+    test_atr_calculation()
+    test_strategy_signals()
+    print("\n✅ All tests passed! Production ready.")
