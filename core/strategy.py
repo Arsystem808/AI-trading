@@ -1,17 +1,27 @@
 # core/strategy.py
 from __future__ import annotations
 
+import inspect
 import json
 import math
 import logging
+import threading
 from pathlib import Path
 from typing import Dict, Any, Optional, Callable
 
 import numpy as np
 import pandas as pd
 
-# -------------------- инфраструктура --------------------
-# Мягкие импорты, чтобы UI не падал при отсутствии зависимостей
+# -------------------- Logging Setup --------------------
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False  # Prevent duplicate logs
+
+# -------------------- Infrastructure --------------------
 try:
     from core.polygon_client import PolygonClient
 except Exception:
@@ -27,14 +37,87 @@ except Exception:
     def log_agent_performance(*args, **kwargs): pass
     def get_agent_performance(*args, **kwargs): return None
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# -------------------- PRODUCTION M7 --------------------
+_m7_fallback_lock = threading.Lock()
+_m7_fallback_logged = False
 
-# -------------------- small utils --------------------
+def _m7_fallback(ticker: str, horizon: str = "Краткосрочный", use_ml: bool = False) -> Dict[str, Any]:
+    """Thread-safe fallback when production M7 is unavailable"""
+    global _m7_fallback_logged
+    
+    # Lock only for first log
+    if not _m7_fallback_logged:
+        with _m7_fallback_lock:
+            if not _m7_fallback_logged:  # Double-check inside lock
+                logger.error("[M7] Module unavailable - using fallback WAIT")
+                logger.info("[M7] Create core/strategies/m7.py with analyze_asset_m7 to enable")
+                _m7_fallback_logged = True
+    
+    return {
+        "last_price": 0.0,
+        "recommendation": {"action": "WAIT", "confidence": 0.5},
+        "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
+        "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+        "context": ["[!] M7 module unavailable"],
+        "note_html": "<div>M7: module error</div>",
+        "alt": "M7 unavailable",
+        "entry_kind": "wait",
+        "entry_label": "WAIT",
+        "meta": {
+            "source": "M7",
+            "error": "module_not_loaded",
+            "grey_zone": True,
+            "ml_used": False,
+            "ml_requested": use_ml
+        }
+    }
+
+# Load production M7
+analyze_asset_m7 = _m7_fallback  # Default
+
+try:
+    from core.strategies import m7 as m7_module
+    
+    if not hasattr(m7_module, 'analyze_asset_m7'):
+        raise AttributeError("Module missing 'analyze_asset_m7' function")
+    
+    analyze_asset_m7 = m7_module.analyze_asset_m7
+    
+    if not callable(analyze_asset_m7):
+        raise TypeError(f"analyze_asset_m7 not callable: {type(analyze_asset_m7)}")
+    
+    # Validate signature (allow defaults)
+    sig = inspect.signature(analyze_asset_m7)
+    params = list(sig.parameters.keys())
+    
+    if 'ticker' not in params:
+        raise TypeError("analyze_asset_m7 missing required parameter: ticker")
+    
+    logger.info("[M7] Production module loaded from core.strategies.m7")
+    
+except ImportError as e:
+    logger.error(f"[M7] Import failed: {e}")
+    analyze_asset_m7 = _m7_fallback
+    
+except AttributeError as e:
+    logger.error(f"[M7] Attribute error: {e}")
+    analyze_asset_m7 = _m7_fallback
+    
+except TypeError as e:
+    logger.error(f"[M7] Signature invalid: {e}")
+    analyze_asset_m7 = _m7_fallback
+    
+except Exception as e:
+    logger.error(f"[M7] Unexpected: {type(e).__name__}: {e}", exc_info=True)
+    analyze_asset_m7 = _m7_fallback
+
+# -------------------- Small Utils --------------------
 def _clip01(x: float) -> float:
+    """Clip value to [0, 1]"""
     return float(max(0.0, min(1.0, x)))
 
 def _linreg_slope(y: np.ndarray) -> float:
+    """Calculate linear regression slope"""
     n = len(y)
     if n < 2:
         return 0.0
@@ -46,10 +129,10 @@ def _linreg_slope(y: np.ndarray) -> float:
     return float(((x - xm) * (y - ym)).sum() / denom)
 
 def _monotone_tp_probs(d: Dict[str, float]) -> Dict[str, float]:
+    """Enforce monotone decreasing TP probabilities"""
     p1 = _clip01(float(d.get("tp1", 0.0)))
     p2 = _clip01(float(d.get("tp2", 0.0)))
     p3 = _clip01(float(d.get("tp3", 0.0)))
-    # enforce TP1 >= TP2 >= TP3
     p1 = max(p1, p2, p3)
     p2 = min(p1, max(p2, p3))
     p3 = min(p2, p3)
@@ -332,148 +415,6 @@ def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный
         "probs": probs, "context": [], "note_html": f"<div>Global: {action} с {confidence:.0%}</div>",
         "alt": alt, "entry_kind": "market", "entry_label": f"{action} NOW",
         "meta": {"source":"Global","probs_debug": meta_debug}
-    }
-
-# -------------------- M7 --------------------
-class M7TradingStrategy:
-    def __init__(self, atr_period=14, atr_multiplier=1.5, pivot_period='D', fib_levels=[0.236,0.382,0.5,0.618,0.786]):
-        self.atr_period = atr_period; self.atr_multiplier = atr_multiplier
-        self.pivot_period = pivot_period; self.fib_levels = fib_levels
-
-    def calculate_pivot_points(self, h,l,c):
-        pivot = (h + l + c) / 3
-        r1 = (2 * pivot) - l; r2 = pivot + (h - l); r3 = h + 2 * (pivot - l)
-        s1 = (2 * pivot) - h; s2 = pivot - (h - l); s3 = l - 2 * (h - pivot)
-        return {'pivot': pivot, 'r1': r1, 'r2': r2, 'r3': r3, 's1': s1, 's2': s2, 's3': s3}
-
-    def calculate_fib_levels(self, h,l):
-        diff = h - l; fib = {}
-        for level in self.fib_levels: fib[f'fib_{int(level*1000)}'] = h - level * diff
-        return fib
-
-    def identify_key_levels(self, data):
-        # Важно: data уже с DatetimeIndex (см. analyze_asset_m7) для корректной работы resample [web:3221][web:3236]
-        grouped = data.resample('D') if self.pivot_period == 'D' else data.resample('W')
-        key = {}
-        for _, g in grouped:
-            if len(g) > 0:
-                h = g['high'].max(); l = g['low'].min(); c = g['close'].iloc[-1]
-                key.update(self.calculate_pivot_points(h,l,c)); key.update(self.calculate_fib_levels(h,l))
-        return key
-
-    def generate_signals(self, data):
-        sigs = []; req = ['high','low','close']
-        if not all(c in data.columns for c in req): return sigs
-        data = data.copy()
-        data['atr'] = _atr_like(data, self.atr_period); cur_atr = data['atr'].iloc[-1]
-        key = self.identify_key_levels(data); price = data['close'].iloc[-1]; ts = data.index[-1]
-        for name, val in key.items():
-            dist = abs(price - val) / max(1e-9, cur_atr)
-            if dist < self.atr_multiplier:
-                is_res = val > price
-                if is_res: typ='SELL_LIMIT'; entry=val*0.998; sl=val*1.02; tp=val*0.96
-                else:      typ='BUY_LIMIT';  entry=val*1.002; sl=val*0.98; tp=val*1.04
-                conf = 1 - (dist / self.atr_multiplier)
-                sigs.append({'type':typ,'price':round(entry,4),'stop_loss':round(sl,4),'take_profit':round(tp,4),
-                             'confidence':round(conf,2),'level':name,'level_value':round(val,4),'timestamp':ts})
-        return sigs
-
-
-def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False):
-    cli = PolygonClient()
-    df = cli.daily_ohlc(ticker, days=120)
-
-    # Критично: привести к DatetimeIndex для resample/rolling [web:3221][web:3236]
-    if df is None or df.empty:
-        # Офлайн/нет данных — безопасный возврат WAIT
-        return {
-            "last_price": 0.0,
-            "recommendation": {"action":"WAIT","confidence":0.5},
-            "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
-            "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
-            "context":["Нет данных для M7"], "note_html":"<div>M7: ожидание</div>",
-            "alt":"Ожидание сигналов", "entry_kind":"wait","entry_label":"WAIT",
-            "meta":{"source":"M7","grey_zone":True}
-        }
-    df = df.sort_values("timestamp")
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-    df = df.set_index("timestamp")
-
-    strategy = M7TradingStrategy()
-    signals = strategy.generate_signals(df)
-    price = float(df['close'].iloc[-1])
-
-    if not signals:
-        res = {
-            "last_price": price,
-            "recommendation": {"action":"WAIT","confidence":0.5},
-            "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
-            "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
-            "context":["Нет сигналов по стратегии M7"], "note_html":"<div>M7: ожидание</div>",
-            "alt":"Ожидание сигналов от уровней", "entry_kind":"wait","entry_label":"WAIT",
-            "meta":{"source":"M7","grey_zone":True}
-        }
-        try:
-            log_agent_performance(agent="M7", ticker=ticker, horizon=horizon,
-                                  action="WAIT", confidence=0.50,
-                                  levels=res["levels"], probs=res["probs"],
-                                  meta={"probs_debug":{"u":[],"p":[]}},
-                                  ts=pd.Timestamp.utcnow().isoformat())
-        except Exception as e:
-            logger.warning("perf log M7 failed: %s", e)
-        return res
-
-    best = max(signals, key=lambda x: x['confidence'])
-    raw_conf = float(_clip01(best['confidence']))
-
-    entry = float(best['price']); sl = float(best['stop_loss']); risk = abs(entry - sl)
-    atr14 = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
-    vol = df['close'].pct_change().std() * np.sqrt(252)
-
-    conf_base = 0.50 + 0.34*math.tanh((raw_conf - 0.65)/0.20)
-    penalty = (0.05 if vol and vol > 0.35 else 0.0) + (0.04 if risk/atr14 < 0.8 else 0.0) + (0.03 if risk/atr14 > 3.5 else 0.0)
-    conf = float(max(0.52, min(0.82, conf_base*(1.0 - penalty))))
-    conf = float(CAL_CONF["M7"](conf))
-
-    if best['type'].startswith('BUY'):
-        tp1 = min(entry + 1.5*risk, entry + 2*price*vol/np.sqrt(252))
-        tp2 = min(entry + 2.5*risk, entry + 3*price*vol/np.sqrt(252))
-        tp3 = min(entry + 4.0*risk, entry + 5*price*vol/np.sqrt(252))
-        act = "BUY"
-    else:
-        tp1 = max(entry - 1.5*risk, entry - 2*price*vol/np.sqrt(252))
-        tp2 = max(entry - 2.5*risk, entry - 3*price*vol/np.sqrt(252))
-        tp3 = max(entry - 4.0*risk, entry - 5*price*vol/np.sqrt(252))
-        act = "SHORT"
-
-    u1,u2,u3 = abs(tp1-entry)/atr14, abs(tp2-entry)/atr14, abs(tp3-entry)/atr14
-    k = 0.18
-    b1,b2,b3 = conf, max(0.50, conf-0.08), max(0.45, conf-0.16)
-    p1 = _clip01(b1*np.exp(-k*(u1-1.0))); p2 = _clip01(b2*np.exp(-k*(u2-1.5))); p3 = _clip01(b3*np.exp(-k*(u3-2.2)))
-    probs = _monotone_tp_probs({"tp1":p1,"tp2":p2,"tp3":p3})
-
-    meta_debug = {"risk": float(risk), "atr14": float(atr14),
-                  "u":[float(u1),float(u2),float(u3)],
-                  "p":[float(probs["tp1"]),float(probs["tp2"]),float(probs["tp3"])]}
-    try:
-        log_agent_performance(
-            agent="M7", ticker=ticker, horizon=horizon,
-            action=act, confidence=float(conf),
-            levels={"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3)},
-            probs={"tp1": float(probs["tp1"]), "tp2": float(probs["tp2"]), "tp3": float(probs["tp3"])},
-            meta={"probs_debug": meta_debug}, ts=pd.Timestamp.utcnow().isoformat()
-        )
-    except Exception as e:
-        logger.warning("perf log M7 failed: %s", e)
-
-    return {
-        "last_price": price,
-        "recommendation": {"action": act, "confidence": float(conf)},
-        "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
-        "probs": probs, "context": [f"Сигнал от уровня {best['level']}"],
-        "note_html": f"<div>M7: {best['type']} на уровне {best['level_value']}</div>",
-        "alt": "Торговля по M7", "entry_kind": "limit", "entry_label": best['type'],
-        "meta":{"source":"M7","grey_zone": bool(0.48 <= conf <= 0.58), "probs_debug": meta_debug}
     }
 
 # -------------------- W7 --------------------
