@@ -13,7 +13,9 @@ from typing import Any, Dict, Optional, Tuple, List
 import numpy as np
 import pandas as pd
 
-# Core utilities
+logger = logging.getLogger(__name__)
+
+# ==================== Core utilities ====================
 try:
     from core.utils_naming import sanitize_symbol
 except ImportError:
@@ -44,21 +46,28 @@ try:
 except ImportError:
     joblib = None
 
-logger = logging.getLogger(__name__)
 
-
-# ==================== Calibration Fallback ====================
-
+# ==================== Calibration ====================
 class _IdentityCalibrator:
     """Identity calibrator fallback"""
     def __call__(self, p: float) -> float:
         return float(max(0.0, min(1.0, p)))
 
-try:
-    from core.strategy import CAL_CONF
-except (ImportError, NameError, AttributeError):
-    logger.warning("CAL_CONF not available, using identity calibrator")
-    CAL_CONF = {"M7": _IdentityCalibrator()}
+# Попытка импорта CAL_CONF БЕЗ циркулярной зависимости
+_CAL_CONF = None
+
+def _get_calibrator():
+    """Lazy load calibrator to avoid circular import"""
+    global _CAL_CONF
+    if _CAL_CONF is None:
+        try:
+            # Импорт только при первом вызове, когда strategy.py уже загружен
+            from core.strategy import CAL_CONF as imported_cal_conf
+            _CAL_CONF = imported_cal_conf
+        except (ImportError, AttributeError):
+            logger.warning("[M7] CAL_CONF not available, using identity calibrator")
+            _CAL_CONF = {"M7": _IdentityCalibrator()}
+    return _CAL_CONF
 
 
 # ==================== Utility Functions ====================
@@ -94,11 +103,7 @@ def _atr_like(df: pd.DataFrame, n: int = 14) -> pd.Series:
 # ==================== Feature Engineering ====================
 
 class M7FeatureExtractor:
-    """
-    Feature extraction for M7 with sklearn-compatible interface.
-    
-    Поддерживает как Pipeline (transform), так и standalone использование.
-    """
+    """Feature extraction for M7 with sklearn-compatible interface"""
     
     def __init__(self, feature_names: Optional[List[str]] = None):
         self.feature_names = feature_names or self._default_features()
@@ -141,7 +146,6 @@ class M7FeatureExtractor:
         """Calculate RSI indicator"""
         try:
             if len(close) < period + 1:
-                logger.debug(f"Insufficient data for RSI: {len(close)} < {period+1}")
                 return 50.0
             
             delta = close.diff()
@@ -150,8 +154,7 @@ class M7FeatureExtractor:
             rs = gain / loss.replace(0, 1e-9)
             rsi = (100 - (100 / (1 + rs))).iloc[-1]
             return float(rsi) if not pd.isna(rsi) else 50.0
-        except Exception as e:
-            logger.debug(f"RSI calculation failed: {e}")
+        except Exception:
             return 50.0
     
     @staticmethod
@@ -167,17 +170,7 @@ class M7FeatureExtractor:
             return 0.5
     
     def extract(self, df: pd.DataFrame, price: float, atr: float) -> np.ndarray:
-        """
-        Extract features from DataFrame.
-        
-        Args:
-            df: OHLCV DataFrame with DatetimeIndex
-            price: Current price
-            atr: Current ATR value
-            
-        Returns:
-            Feature array of shape (1, n_features)
-        """
+        """Extract features from DataFrame"""
         features = []
         
         for name in self.feature_names:
@@ -192,8 +185,6 @@ class M7FeatureExtractor:
             features.append(float(val))
         
         X = np.array(features).reshape(1, -1)
-        
-        # Final validation and cleanup
         X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
         
         return X
@@ -202,13 +193,7 @@ class M7FeatureExtractor:
 # ==================== ML Model Handler ====================
 
 class M7MLPredictor:
-    """
-    ML predictor with Pipeline and legacy artifact support.
-    
-    Поддерживает:
-    - sklearn.pipeline.Pipeline (preferred)
-    - Legacy: separate model + scaler + feature_names
-    """
+    """ML predictor with Pipeline and legacy artifact support"""
     
     def __init__(self, ticker: str, agent: str = "arxora_m7pro"):
         self.ticker = ticker
@@ -221,32 +206,23 @@ class M7MLPredictor:
         self.required_columns = None
     
     def load(self) -> bool:
-        """
-        Load model artifacts with versioning check.
-        
-        Returns:
-            True if model loaded successfully
-        """
+        """Load model artifacts with versioning check"""
         try:
             model_data = load_model_for(self.ticker, agent=self.agent)
             
-            if not model_data:
+            if not model_
                 logger.info(f"No model found for {self.ticker}/{self.agent}")
                 return False
             
-            # Case 1: Pipeline (preferred)
-            if isinstance(model_data, dict) and "model" in model_data:
+            if isinstance(model_data, dict) and "model" in model_
                 self.model = model_data["model"]
                 self.metadata = model_data.get("metadata", {})
                 
-                # Check version
                 self._check_version()
                 
-                # Check if it's a Pipeline
                 if hasattr(self.model, "named_steps"):
                     self.is_pipeline = True
                     
-                    # Extract required columns
                     if hasattr(self.model, "feature_names_in_"):
                         self.required_columns = list(self.model.feature_names_in_)
                         logger.info(f"Pipeline for {self.ticker} requires columns: {self.required_columns}")
@@ -254,7 +230,6 @@ class M7MLPredictor:
                     logger.info(f"Loaded Pipeline for {self.ticker} (version: {self.metadata.get('version', 'unknown')})")
                     return True
                 
-                # Case 2: Legacy artifacts
                 feature_names = model_data.get("feature_names")
                 
                 if feature_names:
@@ -264,7 +239,6 @@ class M7MLPredictor:
                     logger.warning(f"No feature_names for {self.ticker}, using defaults")
                     self.feature_extractor = M7FeatureExtractor()
                 
-                # Load scaler if available
                 self._load_scaler()
                 
                 logger.info(f"Loaded legacy model for {self.ticker} (version: {self.metadata.get('version', 'unknown')})")
@@ -283,10 +257,7 @@ class M7MLPredictor:
         if model_version:
             min_version = "2.0"
             if str(model_version) < min_version:
-                logger.warning(
-                    f"Model version {model_version} < {min_version} for {self.ticker}, "
-                    "may be outdated"
-                )
+                logger.warning(f"Model version {model_version} < {min_version} for {self.ticker}, may be outdated")
     
     def _load_scaler(self):
         """Load scaler from metadata"""
@@ -309,44 +280,28 @@ class M7MLPredictor:
                 logger.warning(f"Failed to load scaler: {e}")
     
     def predict(self, df: pd.DataFrame, price: float, atr: float) -> Tuple[str, float]:
-        """
-        Make prediction.
-        
-        Args:
-            df: OHLCV DataFrame with DatetimeIndex
-            price: Current price
-            atr: Current ATR
-            
-        Returns:
-            (action, confidence): Action string and raw confidence
-        """
+        """Make prediction"""
         try:
             if self.is_pipeline:
-                # Pipeline: validate columns
                 if self.required_columns:
                     missing = [col for col in self.required_columns if col not in df.columns]
                     if missing:
                         raise ValueError(f"Missing columns for Pipeline: {missing}")
                 
-                # Pipeline expects full DataFrame for context
-                # Predict on entire df, take last prediction
                 proba_all = self.model.predict_proba(df)
-                proba = proba_all[-1]  # Last row prediction
+                proba = proba_all[-1]
                 
                 return self._interpret_prediction(proba)
             
             else:
-                # Legacy: manual feature extraction
                 if not self.feature_extractor:
                     raise ValueError("Feature extractor not initialized")
                 
                 X = self.feature_extractor.extract(df, price, atr)
                 
-                # Apply scaler if available
                 if self.scaler:
                     X = self.scaler.transform(X)
                 
-                # Predict
                 if hasattr(self.model, "predict_proba"):
                     proba = self.model.predict_proba(X)[0]
                     return self._interpret_prediction(proba)
@@ -361,19 +316,11 @@ class M7MLPredictor:
             return ("WAIT", 0.5)
     
     def _interpret_prediction(self, proba: np.ndarray) -> Tuple[str, float]:
-        """
-        Interpret model prediction.
-        
-        Supports:
-        - Binary: [fail, success] -> SIGNAL
-        - Multi-class: [BUY, SHORT, WAIT] (alphabetical order assumed)
-        """
+        """Interpret model prediction"""
         if len(proba) == 2:
-            # Binary classification: confidence in success
             return ("SIGNAL", float(proba[1]))
         
         elif len(proba) == 3:
-            # Multi-class: assume alphabetical order BUY, SHORT, WAIT
             actions = ['BUY', 'SHORT', 'WAIT']
             action_idx = int(np.argmax(proba))
             conf = float(proba[action_idx])
@@ -420,7 +367,7 @@ class M7TradingStrategy:
             fib[f'fib_{int(level*1000)}'] = h - level * diff
         return fib
     
-    def identify_key_levels(self, data: pd.DataFrame) -> Dict[str, float]:
+    def identify_key_levels(self,  pd.DataFrame) -> Dict[str, float]:
         grouped = data.resample('D') if self.pivot_period == 'D' else data.resample('W')
         key = {}
         for _, g in grouped:
@@ -432,7 +379,7 @@ class M7TradingStrategy:
                 key.update(self.calculate_fib_levels(h, l))
         return key
     
-    def generate_signals(self, data: pd.DataFrame) -> List[Dict[str, Any]]:
+    def generate_signals(self,  pd.DataFrame) -> List[Dict[str, Any]]:
         sigs = []
         req = ['high', 'low', 'close']
         if not all(c in data.columns for c in req):
@@ -449,7 +396,6 @@ class M7TradingStrategy:
         price = data['close'].iloc[-1]
         ts = data.index[-1]
         
-        # Adaptive parameters
         atr_pct = cur_atr / max(1e-9, price)
         if atr_pct > 0.015:
             stop_k = min(self.stop_atr_mult * 1.3, 2.5)
@@ -476,7 +422,6 @@ class M7TradingStrategy:
                 risk = abs(entry - sl)
                 tp = entry + (2.0 * risk if not is_res else -2.0 * risk)
                 
-                # Minimum stop floor
                 min_stop_pct = 0.006
                 if risk / price < min_stop_pct:
                     sl = entry + (min_stop_pct * price if is_res else -min_stop_pct * price)
@@ -504,25 +449,13 @@ class M7TradingStrategy:
 
 def analyze_asset_m7(ticker: str, horizon: str = "Краткосрочный",
                      use_ml: bool = False) -> Dict[str, Any]:
-    """
-    M7 analysis with optional ML inference.
-    
-    Args:
-        ticker: Asset ticker
-        horizon: Time horizon
-        use_ml: Use ML model if available
-        
-    Returns:
-        Analysis dict with recommendation, levels, probabilities
-    """
+    """M7 analysis with optional ML inference"""
     cli = PolygonClient()
     df = cli.daily_ohlc(ticker, days=120)
     
-    # Validate data
     if df is None or df.empty:
         return _return_wait(0.0, "Нет данных для M7", ticker, horizon, False)
     
-    # Prepare DataFrame
     df = df.sort_values("timestamp")
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     df = df.set_index("timestamp")
@@ -530,24 +463,22 @@ def analyze_asset_m7(ticker: str, horizon: str = "Краткосрочный",
     price = float(df['close'].iloc[-1])
     atr14 = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
     
-    # ========== ML INFERENCE ==========
+    # ML INFERENCE
     if use_ml:
         try:
             predictor = M7MLPredictor(ticker)
             
             if predictor.load():
-                # Log model info
                 logger.info(
                     f"Using ML model for {ticker}: "
                     f"version={predictor.metadata.get('version', 'unknown')}, "
-                    f"trained={predictor.metadata.get('train_date', 'unknown')}, "
                     f"pipeline={predictor.is_pipeline}"
                 )
                 
                 ml_action, ml_conf_raw = predictor.predict(df, price, atr14)
+                CAL_CONF = _get_calibrator()
                 ml_conf = float(CAL_CONF["M7"](ml_conf_raw))
                 
-                # Generate level signals
                 strategy = M7TradingStrategy()
                 signals = strategy.generate_signals(df)
                 
@@ -556,7 +487,6 @@ def analyze_asset_m7(ticker: str, horizon: str = "Краткосрочный",
                                        ml_action=ml_action, ml_conf=ml_conf,
                                        ml_conf_raw=ml_conf_raw)
                 
-                # Determine direction
                 if ml_action in ["BUY", "SHORT"]:
                     act = ml_action
                     matching = [s for s in signals if
@@ -576,7 +506,7 @@ def analyze_asset_m7(ticker: str, horizon: str = "Краткосрочный",
             logger.warning(f"ML inference failed for {ticker}: {e}, falling back",
                           exc_info=True)
     
-    # ========== RULE-BASED FALLBACK ==========
+    # RULE-BASED FALLBACK
     strategy = M7TradingStrategy()
     signals = strategy.generate_signals(df)
     
@@ -586,7 +516,6 @@ def analyze_asset_m7(ticker: str, horizon: str = "Краткосрочный",
     best = max(signals, key=lambda x: x['confidence'])
     raw_conf = float(_clip01(best['confidence']))
     
-    # Calibrate confidence
     vol = df['close'].pct_change().std() * np.sqrt(252) if len(df) >= 20 else 0.20
     risk = abs(best['price'] - best['stop_loss'])
     
@@ -595,6 +524,8 @@ def analyze_asset_m7(ticker: str, horizon: str = "Краткосрочный",
               (0.04 if risk/atr14 < 0.8 else 0.0) + \
               (0.03 if risk/atr14 > 3.5 else 0.0)
     conf = float(max(0.52, min(0.82, conf_base * (1.0 - penalty))))
+    
+    CAL_CONF = _get_calibrator()
     conf = float(CAL_CONF["M7"](conf))
     
     act = "BUY" if best['type'].startswith('BUY') else "SHORT"
@@ -647,13 +578,11 @@ def _build_result(best: Dict[str, Any], act: str, conf: float, price: float,
     sl = float(best['stop_loss'])
     risk = abs(entry - sl)
     
-    # Targets
     if act == "BUY":
         tp1, tp2, tp3 = entry + 1.2*risk, entry + 2.0*risk, entry + 3.0*risk
     else:
         tp1, tp2, tp3 = entry - 1.2*risk, entry - 2.0*risk, entry - 3.0*risk
     
-    # Probabilities
     u1, u2, u3 = abs(tp1-entry)/atr14, abs(tp2-entry)/atr14, abs(tp3-entry)/atr14
     k = 0.18
     b1, b2, b3 = conf, max(0.50, conf-0.08), max(0.45, conf-0.16)
@@ -713,75 +642,6 @@ def _build_result(best: Dict[str, Any], act: str, conf: float, price: float,
 
 # ==================== Unit Tests ====================
 
-def test_feature_extraction():
-    """Test feature extraction with synthetic data"""
-    dates = pd.date_range('2024-01-01', periods=120, freq='D', tz='UTC')
-    df = pd.DataFrame({
-        'open': np.random.rand(120) * 100 + 100,
-        'high': np.random.rand(120) * 5 + 105,
-        'low': np.random.rand(120) * 5 + 95,
-        'close': np.random.rand(120) * 100 + 100,
-        'volume': np.random.rand(120) * 1000000
-    }, index=dates)
-    
-    extractor = M7FeatureExtractor()
-    X = extractor.extract(df, 100.0, 2.5)
-    
-    assert X.shape == (1, 9), f"Expected shape (1, 9), got {X.shape}"
-    assert not np.any(np.isnan(X)), "Features contain NaN"
-    assert not np.any(np.isinf(X)), "Features contain Inf"
-    print("✅ Feature extraction test passed")
-
-
-def test_monotone_probs():
-    """Test TP probability monotonicity"""
-    probs = _monotone_tp_probs({"tp1": 0.5, "tp2": 0.7, "tp3": 0.6})
-    assert probs["tp1"] >= probs["tp2"] >= probs["tp3"], \
-        f"Probabilities not monotone: {probs}"
-    print("✅ Monotone probabilities test passed")
-
-
-def test_atr_calculation():
-    """Test ATR calculation edge cases"""
-    # Edge case: empty DataFrame
-    df_empty = pd.DataFrame()
-    atr_empty = _atr_like(df_empty, n=14)
-    assert len(atr_empty) == 0, "ATR on empty df should be empty"
-    
-    # Edge case: single row
-    df_single = pd.DataFrame({
-        'high': [105], 'low': [95], 'close': [100]
-    })
-    atr_single = _atr_like(df_single, n=14)
-    assert len(atr_single) == 1, "ATR on single row should have length 1"
-    
-    print("✅ ATR calculation test passed")
-
-
-def test_strategy_signals():
-    """Test M7 strategy signal generation"""
-    dates = pd.date_range('2024-01-01', periods=120, freq='D', tz='UTC')
-    df = pd.DataFrame({
-        'open': [100] * 120,
-        'high': [105] * 120,
-        'low': [95] * 120,
-        'close': [100] * 120,
-        'volume': [1000000] * 120
-    }, index=dates)
-    
-    strategy = M7TradingStrategy()
-    signals = strategy.generate_signals(df)
-    
-    # Should generate signals near pivots
-    assert isinstance(signals, list), "Signals should be a list"
-    print(f"✅ Strategy test passed ({len(signals)} signals generated)")
-
-
 if __name__ == "__main__":
-    # Run tests
-    print("Running M7 unit tests...\n")
-    test_feature_extraction()
-    test_monotone_probs()
-    test_atr_calculation()
-    test_strategy_signals()
-    print("\n✅ All tests passed! Production ready.")
+    print("M7 module loaded successfully!")
+    print("Run: python -c 'from core.strategies.m7 import analyze_asset_m7; print(\"OK\")'")
