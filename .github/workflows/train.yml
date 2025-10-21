@@ -6,11 +6,11 @@ on:
       start:
         description: 'Start date (YYYY-MM-DD)'
         required: false
-        default: '2023-01-01'
+        default: '2020-01-01'
       end:
         description: 'End date (YYYY-MM-DD)'
         required: false
-        default: '2024-12-31'
+        default: '2025-09-28'
   schedule:
     - cron: "30 5 * * *"
 
@@ -36,8 +36,8 @@ jobs:
       - id: dates
         run: |
           set -euo pipefail
-          START="${{ github.event.inputs.start || '2023-01-01' }}"
-          END="${{ github.event.inputs.end || '2024-12-31' }}"
+          START="${{ github.event.inputs.start || '2020-01-01' }}"
+          END="${{ github.event.inputs.end || '2025-09-28' }}"
           echo "start_date=$START" >> "$GITHUB_OUTPUT"
           echo "end_date=$END" >> "$GITHUB_OUTPUT"
 
