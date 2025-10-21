@@ -37,22 +37,21 @@ except Exception:
     def log_agent_performance(*args, **kwargs): pass
     def get_agent_performance(*args, **kwargs): return None
 
-# -------------------- PRODUCTION M7 --------------------
+# -------------------- PRODUCTION M7 (file-based import) --------------------
+import importlib.util, os, sys
+
 _m7_fallback_lock = threading.Lock()
 _m7_fallback_logged = False
 
 def _m7_fallback(ticker: str, horizon: str = "Краткосрочный", use_ml: bool = False) -> Dict[str, Any]:
     """Thread-safe fallback when production M7 is unavailable"""
     global _m7_fallback_logged
-    
-    # Lock only for first log
     if not _m7_fallback_logged:
         with _m7_fallback_lock:
-            if not _m7_fallback_logged:  # Double-check inside lock
+            if not _m7_fallback_logged:
                 logger.error("[M7] Module unavailable - using fallback WAIT")
                 logger.info("[M7] Create core/strategies/m7.py with analyze_asset_m7 to enable")
                 _m7_fallback_logged = True
-    
     return {
         "last_price": 0.0,
         "recommendation": {"action": "WAIT", "confidence": 0.5},
@@ -71,6 +70,39 @@ def _m7_fallback(ticker: str, horizon: str = "Краткосрочный", use_m
             "ml_requested": use_ml
         }
     }
+
+# Default implementation until the module is loaded
+analyze_asset_m7 = _m7_fallback
+
+try:
+    # Absolute path to core/strategies/m7.py
+    m7_path = os.path.join(os.getcwd(), "core", "strategies", "m7.py")
+    if not os.path.isfile(m7_path):
+        raise FileNotFoundError(m7_path)
+
+    # Load module from file to bypass broken package import
+    spec = importlib.util.spec_from_file_location("core.strategies.m7", m7_path)
+    if not spec or not spec.loader:
+        raise ImportError("spec/loader is None for m7.py")
+    m7_module = importlib.util.module_from_spec(spec)
+    sys.modules["core.strategies.m7"] = m7_module
+    spec.loader.exec_module(m7_module)
+
+    # Get the function and validate
+    fn = getattr(m7_module, "analyze_asset_m7", None)
+    if not callable(fn):
+        raise TypeError("analyze_asset_m7 is missing or not callable")
+
+    sig = inspect.signature(fn)
+    if "ticker" not in sig.parameters:
+        raise TypeError("analyze_asset_m7 missing required parameter: ticker")
+
+    analyze_asset_m7 = fn
+    logger.info("[M7] Production module loaded via file import core/strategies/m7.py")
+
+except Exception as e:
+    logger.error(f"[M7] File import failed: {type(e).__name__}: {e}")
+    analyze_asset_m7 = _m7_fallback
 
 # Load production M7
 analyze_asset_m7 = _m7_fallback  # Default
