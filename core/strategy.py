@@ -526,26 +526,25 @@ class M7TradingStrategy:
                 key.update(self.calculate_fib_levels(h, l))
         return key
 
-    def generate_signals(self,  pd.DataFrame):
+     def generate_signals(self, data: pd.DataFrame):
         sigs = []
         req = ['high','low','close']
         if not all(c in data.columns for c in req):
             return sigs
-        data = data.copy()
-        data['atr'] = _atr_like(data, self.atr_period)
-        cur_atr = float(data['atr'].iloc[-1]) or 1e-9
+        df = data.copy()
+        df['atr'] = _atr_like(df, self.atr_period)
+        cur_atr = float(df['atr'].iloc[-1]) or 1e-9
         if cur_atr <= 0:
             return sigs
-        key = self.identify_key_levels(data)
-        price = float(data['close'].iloc[-1])
-        ts = data.index[-1]
+        key = self.identify_key_levels(df)
+        price = float(df['close'].iloc[-1])
+        ts = df.index[-1]
         for name, val in key.items():
             dist = abs(price - val) / max(1e-9, cur_atr)
             if dist < self.atr_multiplier:
                 is_res = val > price
                 typ = 'SELL_LIMIT' if is_res else 'BUY_LIMIT'
                 entry = float(val)
-                # ATR-стоп: 2×ATR
                 sl = float(entry + (2.0 * cur_atr if is_res else -2.0 * cur_atr))
                 risk = abs(entry - sl)
                 tp = entry + (2.0*risk if not is_res else -2.0*risk)
@@ -554,7 +553,7 @@ class M7TradingStrategy:
                     'type': typ, 'price': round(entry, 4), 'stop_loss': round(sl, 4), 'take_profit': round(tp, 4),
                     'confidence': round(conf, 2), 'level': name, 'level_value': round(val, 4), 'timestamp': ts
                 })
-        return sigs
+turn sigs
 
 def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False):
     cli = PolygonClient()
