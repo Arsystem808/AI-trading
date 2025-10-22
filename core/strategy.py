@@ -355,7 +355,7 @@ def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный
         "alt": alt, "entry_kind": "market", "entry_label": f"{action} NOW",
         "meta": {"source":"Global","probs_debug": meta_debug}
     }
-
+    
 # -------------------- M7 (rules + optional ML overlay) --------------------
 try:
     from core.model_loader import load_model_for
@@ -417,7 +417,7 @@ class _M7Predictor:
             logger.warning("M7 ML: model not found for %s (%s)", self.ticker, self.agent)
             return False
         self.model = md["model"]
-        # опциональный внешний скейлер
+        # опциональный внешний скейлер (legacy)
         try:
             import joblib  # noqa: F401
             meta = md.get("metadata", {}) or {}
@@ -515,7 +515,7 @@ class M7TradingStrategy:
             fib[f'fib_{int(level*1000)}'] = h - level * diff
         return fib
 
-    # Исправлено: корректная сигнатура и имя параметра
+    # ИСПРАВЛЕНО: корректная сигнатура с именем параметра
     def identify_key_levels(self,  pd.DataFrame):
         grouped = data.resample('D') if self.pivot_period == 'D' else data.resample('W')
         key = {}
@@ -529,12 +529,12 @@ class M7TradingStrategy:
     def generate_signals(self,  pd.DataFrame):
         sigs = []
         req = ['high','low','close']
-        if not all(c in data.columns for c in req): 
+        if not all(c in data.columns for c in req):
             return sigs
         data = data.copy()
         data['atr'] = _atr_like(data, self.atr_period)
         cur_atr = float(data['atr'].iloc[-1]) or 1e-9
-        if cur_atr <= 0: 
+        if cur_atr <= 0:
             return sigs
         key = self.identify_key_levels(data)
         price = float(data['close'].iloc[-1])
@@ -548,7 +548,7 @@ class M7TradingStrategy:
                 # ATR-стоп: 2×ATR
                 sl = float(entry + (2.0 * cur_atr if is_res else -2.0 * cur_atr))
                 risk = abs(entry - sl)
-                tp = entry + (2.0 * risk if not is_res else -2.0 * risk)
+                tp = entry + (2.0*risk if not is_res else -2.0*risk)
                 conf = 1.0 - (dist / self.atr_multiplier)
                 sigs.append({
                     'type': typ, 'price': round(entry, 4), 'stop_loss': round(sl, 4), 'take_profit': round(tp, 4),
