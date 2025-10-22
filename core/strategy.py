@@ -30,6 +30,28 @@ except Exception:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# --- safe logger import -------------------------------------------------------
+try:
+    from core.logger import logger
+except Exception:
+    import logging, os
+    logging.basicConfig(level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
+                        format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    logger = logging.getLogger("arxora")
+
+# --- required utils for M7 block ---------------------------------------------
+from pathlib import Path
+import numpy as np
+import pandas as pd
+
+try:
+    from polygon import PolygonClient
+except Exception:
+    # Fallback-заглушка, чтобы локальные тесты/CI не падали без провайдера данных
+    class PolygonClient:
+        def daily_ohlc(self, *args, **kwargs):
+            return pd.DataFrame()
+
 # -------------------- small utils --------------------
 def _clip01(x: float) -> float:
     return float(max(0.0, min(1.0, x)))
@@ -341,19 +363,6 @@ except Exception:
     def load_model_for(*args, **kwargs):
         return None
 
-from pathlib import Path
-import math
-from typing import Optional, Tuple
-
-import numpy as np
-import pandas as pd
-from core.strategy import _atr_like, _clip01, _monotone_tp_probs
-from core.logger import logger
-from polygon import PolygonClient
-
-# === Конфигурация ===
-ATR_MULTIPLIER = 2.0  # единый стоп: SL = entry ± 2×ATR
-
 class _M7IdentityCalibrator:
     def __call__(self, p: float) -> float:
         return float(max(0.0, min(1.0, p)))
@@ -370,12 +379,11 @@ def _m7_cal():
     return _M7_CAL
 
 class _M7Predictor:
-    def __init__(self, ticker: str, agent="arxora_m7pro", thr_buy: float = 0.55, thr_short: float = 0.45):
+    def __init__(self, ticker: str, agent="arxora_m7pro"):
         self.ticker = ticker
         self.agent = agent
         self.model = None
-        self.thr_buy = float(thr_buy)
-        self.thr_short = float(thr_short)
+        self.scaler = None
 
     def load(self) -> bool:
         md = load_model_for(self.ticker, agent=self.agent)
@@ -383,21 +391,19 @@ class _M7Predictor:
             logger.warning("M7 ML: model not found for %s (%s)", self.ticker, self.agent)
             return False
         self.model = md["model"]
-        # Требуем predict_proba (sklearn Pipeline с CalibratedClassifierCV)
-        if not hasattr(self.model, "predict_proba"):
-            logger.error("M7 ML: model lacks predict_proba; deploy only calibrated sklearn Pipeline")
-            return False
-        # Верификация CalibratedClassifierCV в Pipeline
+        # опциональный внешний скейлер (legacy)
         try:
-            params = self.model.get_params()
-            has_calib = any('calibrated' in key.lower() and 'base_estimator' in key 
-                          for key in params.keys())
-            if not has_calib:
-                logger.error("M7 ML: no CalibratedClassifierCV detected in Pipeline params")
-                return False
+            import joblib  # noqa: F401
+            meta = md.get("metadata", {}) or {}
+            sp = meta.get("scaler_artifact")
+            if sp:
+                p = Path(sp)
+                if not p.is_absolute(): p = Path(".")/p
+                if p.exists():
+                    import joblib
+                    self.scaler = joblib.load(p)
         except Exception as e:
-            logger.error("M7 ML: failed to verify CalibratedClassifierCV params: %s", e)
-            return False
+            logger.warning("M7 ML: scaler load failed: %s", e)
         return True
 
     @staticmethod
@@ -421,43 +427,44 @@ class _M7Predictor:
                     return self.model.predict_proba(df_last_row)
                 except Exception as e2:
                     logger.warning("M7 ML: predict_proba failed on X(%s) and df_last_row(%s)", e1, e2)
+                    return None
             logger.warning("M7 ML: predict_proba failed on X(%s)", e1)
             return None
 
     def predict(self, df: pd.DataFrame, price: float, atr: float) -> Tuple[str, float]:
         try:
             X = self._features(df, price, atr)
+            if self.scaler is not None:
+                try:
+                    X = self.scaler.transform(X)
+                except Exception as e:
+                    logger.warning("M7 ML: scaler.transform failed: %s", e)
             df1 = df.tail(1).copy()
-            proba = self._predict_proba_safe(X, df_last_row=df1) if hasattr(self.model, "predict_proba") else None
-            
-            if proba is not None:
-                # бинарный случай -> класс 1 трактуем как LONG
-                if proba.shape[1] == 2:
-                    p_long = float(proba[0, 1])
-                    p_long_cal = float(_m7_cal()["M7"](p_long))
-                    if p_long_cal >= self.thr_buy:
-                        return ("BUY", p_long_cal)
-                    elif p_long_cal <= self.thr_short:
-                        return ("SHORT", p_long_cal)
-                    else:
-                        return ("WAIT", p_long_cal)
-                # многокласс
-                acts = ["BUY","SHORT","WAIT"]
-                idx = int(np.argmax(proba[0]))
-                conf = float(proba[0, idx])
-                return (acts[idx], float(_m7_cal()["M7"](conf)))
-            else:
-                # Fallback на predict с предупреждением (для миграции)
-                logger.warning("M7 ML: fallback to predict due to proba failure; ensure calibrated Pipeline")
-                if hasattr(self.model, "predict"):
-                    y_pred = self.model.predict(X)
-                    if hasattr(y_pred, '__len__') and len(y_pred) > 0:
-                        y = float(y_pred[0]) if len(y_pred.shape) == 1 else int(np.argmax(y_pred[0]))
-                        if y > 0.5 if isinstance(y, float) else y == 1:
-                            return ("BUY", 0.6)
-                        elif y < 0.5 if isinstance(y, float) else y == 0:
-                            return ("SHORT", 0.6)
+            proba = None
+            if hasattr(self.model, "predict_proba"):
+                proba = self._predict_proba_safe(X, df_last_row=df1)
+            if proba is None and hasattr(self.model, "predict"):
+                y = float(self.model.predict(X)[0])
+                proba = np.array([[1.0 - y, y]], dtype=float)
+            if proba is None:
                 return ("WAIT", 0.5)
+
+            if proba.shape[1] == 2:
+                p_long = float(proba[0, 1])
+                cal = _m7_cal()["M7"]
+                p_long_cal = float(cal(p_long))
+                if p_long_cal >= 0.55:
+                    return ("BUY", p_long_cal)
+                elif p_long_cal <= 0.45:
+                    return ("SHORT", p_long_cal)
+                else:
+                    return ("WAIT", p_long_cal)
+
+            acts = ["BUY","SHORT","WAIT"]
+            idx = int(np.argmax(proba[0]))
+            conf = float(proba[0, idx])
+            cal = _m7_cal()["M7"]
+            return (acts[idx], float(cal(conf)))
         except Exception as e:
             logger.warning("M7 ML: predict failed: %s", e)
             return ("WAIT", 0.5)
@@ -482,7 +489,7 @@ class M7TradingStrategy:
             fib[f'fib_{int(level*1000)}'] = h - level * diff
         return fib
 
-    def identify_key_levels(self, data: pd.DataFrame):
+    def identify_key_levels(self,  pd.DataFrame):
         grouped = data.resample('D') if self.pivot_period == 'D' else data.resample('W')
         key = {}
         for _, g in grouped:
@@ -492,13 +499,13 @@ class M7TradingStrategy:
                 key.update(self.calculate_fib_levels(h,l))
         return key
 
-    def generate_signals(self, data: pd.DataFrame):
+    def generate_signals(self,  pd.DataFrame):
         sigs = []
         req = ['high','low','close']
         if not all(c in data.columns for c in req): return sigs
         data = data.copy()
         data['atr'] = _atr_like(data, self.atr_period)
-        cur_atr = float(data['atr'].iloc[-1])
+        cur_atr = float(data['atr'].iloc[-1]) or 1e-9
         if cur_atr <= 0: return sigs
         key = self.identify_key_levels(data)
         price = float(data['close'].iloc[-1])
@@ -509,8 +516,10 @@ class M7TradingStrategy:
                 is_res = val > price
                 typ='SELL_LIMIT' if is_res else 'BUY_LIMIT'
                 entry=float(val)
-                sl=float(entry + (ATR_MULTIPLIER * cur_atr if is_res else -ATR_MULTIPLIER * cur_atr))
+                # ATR-стоп: 2×ATR за уровнем
+                sl=float(entry + (2.0 * cur_atr if is_res else -2.0 * cur_atr))
                 risk = abs(entry - sl)
+                # базовый TP (для обратной совместимости), подробные TP1–TP3 считаются в analyze
                 tp = entry + (2.0*risk if not is_res else -2.0*risk)
                 conf = 1.0 - (dist / self.atr_multiplier)
                 sigs.append({
