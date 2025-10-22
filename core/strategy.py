@@ -363,6 +363,32 @@ except Exception:
     def load_model_for(*args, **kwargs):
         return None
 
+# безопасный logger
+try:
+    from core.logger import logger
+except Exception:
+    import logging, os
+    logging.basicConfig(level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
+                        format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    logger = logging.getLogger("arxora")
+
+from pathlib import Path
+import math
+from typing import Optional, Tuple
+
+import numpy as np
+import pandas as pd
+
+# безопасный PolygonClient
+try:
+    from polygon import PolygonClient
+except Exception:
+    class PolygonClient:
+        def daily_ohlc(self, *args, **kwargs):
+            return pd.DataFrame()
+
+from core.strategy import _atr_like, _clip01, _monotone_tp_probs
+
 class _M7IdentityCalibrator:
     def __call__(self, p: float) -> float:
         return float(max(0.0, min(1.0, p)))
@@ -391,7 +417,7 @@ class _M7Predictor:
             logger.warning("M7 ML: model not found for %s (%s)", self.ticker, self.agent)
             return False
         self.model = md["model"]
-        # опциональный внешний скейлер (legacy)
+        # опциональный внешний скейлер
         try:
             import joblib  # noqa: F401
             meta = md.get("metadata", {}) or {}
@@ -476,37 +502,40 @@ class M7TradingStrategy:
         self.pivot_period = pivot_period
         self.fib_levels = fib_levels or [0.236,0.382,0.5,0.618,0.786]
 
-    def calculate_pivot_points(self, h,l,c):
+    def calculate_pivot_points(self, h, l, c):
         pivot = (h + l + c) / 3
         r1 = (2 * pivot) - l; r2 = pivot + (h - l); r3 = h + 2 * (pivot - l)
         s1 = (2 * pivot) - h; s2 = pivot - (h - l); s3 = l - 2 * (h - pivot)
         return {'pivot': pivot, 'r1': r1, 'r2': r2, 'r3': r3, 's1': s1, 's2': s2, 's3': s3}
 
-    def calculate_fib_levels(self, h,l):
+    def calculate_fib_levels(self, h, l):
         diff = h - l
         fib = {}
         for level in self.fib_levels:
             fib[f'fib_{int(level*1000)}'] = h - level * diff
         return fib
 
+    # Исправлено: корректная сигнатура и имя параметра
     def identify_key_levels(self,  pd.DataFrame):
         grouped = data.resample('D') if self.pivot_period == 'D' else data.resample('W')
         key = {}
         for _, g in grouped:
             if len(g) > 0:
                 h = g['high'].max(); l = g['low'].min(); c = g['close'].iloc[-1]
-                key.update(self.calculate_pivot_points(h,l,c))
-                key.update(self.calculate_fib_levels(h,l))
+                key.update(self.calculate_pivot_points(h, l, c))
+                key.update(self.calculate_fib_levels(h, l))
         return key
 
     def generate_signals(self,  pd.DataFrame):
         sigs = []
         req = ['high','low','close']
-        if not all(c in data.columns for c in req): return sigs
+        if not all(c in data.columns for c in req): 
+            return sigs
         data = data.copy()
         data['atr'] = _atr_like(data, self.atr_period)
         cur_atr = float(data['atr'].iloc[-1]) or 1e-9
-        if cur_atr <= 0: return sigs
+        if cur_atr <= 0: 
+            return sigs
         key = self.identify_key_levels(data)
         price = float(data['close'].iloc[-1])
         ts = data.index[-1]
@@ -514,17 +543,16 @@ class M7TradingStrategy:
             dist = abs(price - val) / max(1e-9, cur_atr)
             if dist < self.atr_multiplier:
                 is_res = val > price
-                typ='SELL_LIMIT' if is_res else 'BUY_LIMIT'
-                entry=float(val)
-                # ATR-стоп: 2×ATR за уровнем
-                sl=float(entry + (2.0 * cur_atr if is_res else -2.0 * cur_atr))
+                typ = 'SELL_LIMIT' if is_res else 'BUY_LIMIT'
+                entry = float(val)
+                # ATR-стоп: 2×ATR
+                sl = float(entry + (2.0 * cur_atr if is_res else -2.0 * cur_atr))
                 risk = abs(entry - sl)
-                # базовый TP (для обратной совместимости), подробные TP1–TP3 считаются в analyze
-                tp = entry + (2.0*risk if not is_res else -2.0*risk)
+                tp = entry + (2.0 * risk if not is_res else -2.0 * risk)
                 conf = 1.0 - (dist / self.atr_multiplier)
                 sigs.append({
-                    'type':typ,'price':round(entry,4),'stop_loss':round(sl,4),'take_profit':round(tp,4),
-                    'confidence':round(conf,2),'level':name,'level_value':round(val,4),'timestamp':ts
+                    'type': typ, 'price': round(entry, 4), 'stop_loss': round(sl, 4), 'take_profit': round(tp, 4),
+                    'confidence': round(conf, 2), 'level': name, 'level_value': round(val, 4), 'timestamp': ts
                 })
         return sigs
 
