@@ -626,7 +626,7 @@ def analyze_asset_w7(ticker: str, horizon: str):
     # Загружаем дневные данные
     df = cli.daily_ohlc(ticker, days=days)
 
-    # Приводим к DatetimeIndex для дальнейших weekly/daily агрегатов [web:3221][web:3236]
+    # Приводим к DatetimeIndex для дальнейших weekly/daily агрегатов
     if df is None or df.empty:
         df = pd.DataFrame(columns=["open","high","low","close","volume","timestamp"])
     else:
@@ -634,17 +634,30 @@ def analyze_asset_w7(ticker: str, horizon: str):
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
         df = df.set_index("timestamp")
 
-    # Надёжное получение "текущей" цены: prev_close -> последний close из аггрегатов -> last trade (как опция) [web:3225][web:3232]
-    price = cli.prev_close(ticker)
-    if price is None and not df.empty:
-        price = float(df["close"].iloc[-1])
+    # Приоритет источников "текущей" цены:
+    # 1) last trade (live), 2) previous day bar close, 3) последний close из df, 4) 0.0 офлайн
+    price = None
+    try:
+        price = cli.last_trade_price(ticker)  # live-цена по последней сделке
+    except Exception:
+        price = None
     if price is None:
         try:
-            price = cli.last_trade_price(ticker)  # может дать 403 — ловим и игнорируем [web:3225]
+            price = cli.prev_close(ticker)  # дневной бар предыдущего дня (OHLC)
+        except Exception:
+            price = None
+    if price is None and not df.empty:
+        try:
+            price = float(df["close"].iloc[-1])
         except Exception:
             price = None
     if price is None:
-        price = 0.0  # офлайн/нет данных
+        price = 0.0
+    else:
+        try:
+            price = float(price)
+        except Exception:
+            price = 0.0
 
     closes = df["close"] if "close" in df.columns else pd.Series(dtype=float)
     tail = df.tail(cfg["look"]) if not df.empty else df
