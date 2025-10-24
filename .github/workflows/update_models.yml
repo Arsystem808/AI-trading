@@ -42,7 +42,7 @@ jobs:
         id: download
         run: |
           echo "🚀 Downloading models..."
-          python scripts/download_models.py
+          python scripts/download_models.py --force
           echo "download_status=success" >> $GITHUB_OUTPUT
         continue-on-error: true
       
