@@ -12,6 +12,7 @@ Usage:
     --force: Перезаписать существующие модели
 """
 
+import os
 import argparse
 import hashlib
 import requests
@@ -285,13 +286,24 @@ def download_latest_models(tag: Optional[str] = None, force: bool = False) -> No
         existing = list(MODELS_DIR.glob('*.joblib')) + list(MODELS_DIR.glob('*.pkl'))
         
         if existing:
-            print(f"\n⚠️  Найдено {len(existing)} существующих моделей")
-            print("   Используйте --force для перезаписи")
+            # Проверка CI окружения
+            # GitHub Actions устанавливает GITHUB_ACTIONS=true
+            # Большинство CI систем устанавливают CI=true
+            is_ci = os.getenv("GITHUB_ACTIONS") == "true" or os.getenv("CI") == "true"
             
-            response = input("Продолжить? (y/N): ")
-            if response.lower() != 'y':
-                print("❌ Отменено")
-                sys.exit(0)
+            if is_ci:
+                # В CI автоматически продолжаем
+                print(f"\n⚠️  Найдено {len(existing)} существующих моделей")
+                print("   🤖 CI environment detected - продолжаем автоматически")
+            else:
+                # В локальной среде спрашиваем пользователя
+                print(f"\n⚠️  Найдено {len(existing)} существующих моделей")
+                print("   Используйте --force для перезаписи")
+                
+                response = input("Продолжить? (y/N): ")
+                if response.lower() != 'y':
+                    print("❌ Отменено")
+                    sys.exit(0)
     
     # Скачать архив
     if not download_file(download_url, filename):
