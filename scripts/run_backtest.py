@@ -2,14 +2,10 @@
 """Simple backtest runner for Octopus"""
 
 import sys
-import os
 from pathlib import Path
 
 # Добавляем корень проекта в PYTHONPATH
 sys.path.insert(0, str(Path(__file__).parent.parent))
-
-# POLYGON_API_KEY из environment
-os.environ.setdefault('POLYGON_API_KEY', os.getenv('POLYGON_API_KEY', ''))
 
 from core.strategy import analyze_asset_global
 
