@@ -16,16 +16,22 @@ if not POLYGON_API_KEY:
         "Please ensure it's configured in GitHub Actions secrets."
     )
 
-# Для отладки: показываем первые 8 символов ключа
 print(f"Using API key: {POLYGON_API_KEY[:8]}***")
 
 from core.strategy import analyze_asset_global
 
-TICKERS = ["btcusd", "ethusd"]
+# Попробуйте разные форматы тикеров
+TICKERS = [
+    "X:BTCUSD",  # Polygon формат для криптовалют
+    "X:ETHUSD",
+    "AAPL",      # Обычные акции
+    "NVDA"
+]
 
 def run_backtest():
     print("\n🚀 Starting Octopus backtest...\n")
     
+    success_count = 0
     for ticker in TICKERS:
         print(f"📊 Testing {ticker.upper()}")
         try:
@@ -33,10 +39,11 @@ def run_backtest():
             action = result["recommendation"]["action"]
             conf = result["recommendation"]["confidence"]
             print(f"  ✅ Global: {action} (confidence: {conf:.2f})")
+            success_count += 1
         except Exception as e:
             print(f"  ❌ Error: {e}")
     
-    print("\n✅ Backtest complete!\n")
+    print(f"\n✅ Backtest complete! {success_count}/{len(TICKERS)} successful\n")
 
 if __name__ == "__main__":
     run_backtest()
