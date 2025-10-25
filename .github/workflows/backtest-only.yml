@@ -1,18 +1,44 @@
 name: Backtest Only
 on: [workflow_dispatch]
+
 jobs:
   backtest:
     runs-on: ubuntu-latest
+    
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
       
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          cache: 'pip'
       
-      - run: pip install -r requirements.txt
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      
+      - name: Verify environment
+        run: |
+          echo "Checking POLYGON_API_KEY is set..."
+          if [ -z "$POLYGON_API_KEY" ]; then
+            echo "ERROR: POLYGON_API_KEY not set"
+            exit 1
+          fi
+          echo "✅ POLYGON_API_KEY is configured"
+        env:
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
       
       - name: Run backtest script
         env:
           POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
         run: python scripts/run_backtest.py
+      
+      - name: Upload results (if exists)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-results-${{ github.run_number }}
+          path: results/*.json
+          retention-days: 30
+          if-no-files-found: ignore
