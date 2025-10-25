@@ -1,0 +1,68 @@
+name: Backtest Octopus (Parallel)
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # 02:00 UTC daily
+  workflow_dispatch:
+  push:
+    paths:
+      - 'core/strategy.py'
+      - 'core/agents/**'
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        ticker: ['btcusd', 'ethusd', 'aapl', 'nvda', 'tsla', 'googl', 'msft', 'amzn']
+      fail-fast: false  # Продолжить даже если один тикер упал
+      max-parallel: 8   # До 8 параллельных jobs (под лимит 100 req/sec)
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      
+      - name: Run Backtest for ${{ matrix.ticker }}
+        env:
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+        run: |
+          python -m pytest tests/backtest_octopus.py::test_single_ticker \
+            -v --ticker=${{ matrix.ticker }} \
+            --output=results/${{ matrix.ticker }}_result.json
+      
+      - name: Upload Result
+        uses: actions/upload-artifact@v4
+        with:
+          name: result-${{ matrix.ticker }}
+          path: results/${{ matrix.ticker }}_result.json
+          retention-days: 30
+  
+  aggregate:
+    needs: backtest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/download-artifact@v4
+        with:
+          path: results/
+      
+      - name: Aggregate Results
+        run: |
+          python scripts/aggregate_backtest_results.py \
+            --input results/ \
+            --output results/octopus_summary_$(date +%Y%m%d).json
+      
+      - name: Upload Summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-summary-${{ github.run_number }}
+          path: results/octopus_summary_*.json
+          retention-days: 90
