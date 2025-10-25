@@ -1,0 +1,72 @@
+import pytest
+import json
+from pathlib import Path
+from core.strategy import analyze_asset_global, analyze_asset_m7, analyze_asset_w7
+
+def pytest_addoption(parser):
+    parser.addoption("--ticker", action="store", help="Ticker to backtest")
+    parser.addoption("--output", action="store", help="Output JSON path")
+
+@pytest.fixture
+def ticker(request):
+    return request.config.getoption("--ticker")
+
+@pytest.fixture
+def output_path(request):
+    return request.config.getoption("--output")
+
+def test_single_ticker(ticker, output_path):
+    """Backtest одного тикера для Octopus"""
+    print(f"\n🔍 Backtesting {ticker.upper()}...")
+    
+    # Вызов всех моделей
+    models_results = []
+    models = [
+        ("Global", lambda: analyze_asset_global(ticker, "Краткосрочный")),
+        ("M7", lambda: analyze_asset_m7(ticker, "Краткосрочный", use_ml=True)),
+        ("W7", lambda: analyze_asset_w7(ticker, "Краткосрочный")),
+    ]
+    
+    for model_name, model_func in models:
+        try:
+            signal = model_func()
+            models_results.append({
+                "model": model_name,
+                "action": signal["recommendation"]["action"],
+                "confidence": signal["recommendation"]["confidence"],
+                "levels": signal["levels"],
+                "probs": signal["probs"],
+            })
+            print(f"  ✅ {model_name}: {signal['recommendation']['action']} "
+                  f"(conf: {signal['recommendation']['confidence']:.2f})")
+        except Exception as e:
+            print(f"  ❌ {model_name}: {e}")
+            models_results.append({
+                "model": model_name,
+                "error": str(e)
+            })
+    
+    # Octopus агрегация
+    valid_results = [r for r in models_results if "action" in r]
+    if valid_results:
+        actions = [r["action"] for r in valid_results]
+        consensus = max(set(actions), key=actions.count)
+        avg_conf = sum(r["confidence"] for r in valid_results) / len(valid_results)
+    else:
+        consensus = "WAIT"
+        avg_conf = 0.5
+    
+    result = {
+        "ticker": ticker,
+        "consensus_action": consensus,
+        "avg_confidence": round(avg_conf, 4),
+        "models": models_results,
+    }
+    
+    # Сохранение результата
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w") as f:
+        json.dump(result, f, indent=2)
+    
+    print(f"💾 Saved to {output_path}")
+    assert len(valid_results) > 0, f"No valid signals for {ticker}"
