@@ -1,20 +1,13 @@
 #!/usr/bin/env python3
 """
-Octopus Historical Backtest v9.0 - PRODUCTION READY
-M7 monkey patch with safe imports and verification
-
-Changes from v8.1:
-- Safe imports with fallbacks
-- Monkey patch verification
-- Enhanced documentation
-- Robust error handling
+Octopus Historical Backtest v9.1 - IMPORT FIX
+Fixed PolygonClient import issue + all v9.0 improvements
 """
 
 import sys
 import os
 import json
 import requests
-import logging
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List, Tuple
@@ -34,9 +27,55 @@ print(f"Using API key: {POLYGON_API_KEY[:8]}***\n")
 # === SAFE IMPORTS ===
 print("📦 Importing dependencies...")
 
-from core.data_client import PolygonClient
 import pandas as pd
 import numpy as np
+
+# Try to import PolygonClient from multiple locations
+PolygonClient = None
+try:
+    from core.data_client import PolygonClient as PC
+    PolygonClient = PC
+    print("  ✅ PolygonClient imported from core.data_client")
+except ImportError:
+    try:
+        from core.strategy import PolygonClient as PC
+        PolygonClient = PC
+        print("  ✅ PolygonClient imported from core.strategy")
+    except ImportError:
+        print("  ⚠️  PolygonClient not found, creating simple version")
+
+# Create simple PolygonClient if not found
+if PolygonClient is None:
+    class PolygonClient:
+        """Simple Polygon API client"""
+        def __init__(self):
+            self.api_key = POLYGON_API_KEY
+        
+        def daily_ohlc(self, ticker: str, days: int = 120) -> pd.DataFrame:
+            """Fetch OHLC data from Polygon"""
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=days)
+            
+            url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{start_date.strftime('%Y-%m-%d')}/{end_date.strftime('%Y-%m-%d')}"
+            params = {"apiKey": self.api_key, "limit": 5000}
+            
+            try:
+                response = requests.get(url, params=params, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+                
+                if "results" not in data or not data["results"]:
+                    return pd.DataFrame()
+                
+                df = pd.DataFrame(data["results"])
+                df["timestamp"] = pd.to_datetime(df["t"], unit="ms", utc=True)
+                df = df.rename(columns={"o": "open", "h": "high", "l": "low", "c": "close", "v": "volume"})
+                return df[["timestamp", "open", "high", "low", "close", "volume"]]
+            except Exception as e:
+                print(f"Error fetching data for {ticker}: {e}")
+                return pd.DataFrame()
+    
+    print("  ✅ Simple PolygonClient created")
 
 # Import agents with fallbacks
 try:
@@ -89,10 +128,7 @@ print("""
 """)
 
 def analyze_asset_m7_backtest(ticker, horizon="Краткосрочный", use_ml=False):
-    """
-    M7 BACKTEST-COMPATIBLE VERSION (monkey patch)
-    Uses ATR-based levels instead of pivot points for market orders
-    """
+    """M7 BACKTEST-COMPATIBLE VERSION (monkey patch)"""
     cli = PolygonClient()
     df = cli.daily_ohlc(ticker, days=120)
     
@@ -114,11 +150,23 @@ def analyze_asset_m7_backtest(ticker, horizon="Краткосрочный", use_
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     df = df.set_index("timestamp")
     
-    price = float(df['close'].iloc[-1])
+    # Get price from correct column name
+    if 'close' in df.columns:
+        price = float(df['close'].iloc[-1])
+        closes = df['close']
+    elif 'c' in df.columns:
+        price = float(df['c'].iloc[-1])
+        closes = df['c']
+    else:
+        return {"last_price": 0.0, "recommendation": {"action":"WAIT","confidence":0.5},
+                "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
+                "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0}, "context":["No price data"],
+                "note_html":"<div>M7: no data</div>", "alt":"No data", "entry_kind":"wait",
+                "entry_label":"WAIT", "meta":{"source":"M7","backtest_mode":True}}
+    
     atr14 = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
     
     # Simple MA crossover strategy
-    closes = df['close']
     if len(closes) >= 30:
         short_ma = closes.rolling(10).mean().iloc[-1]
         long_ma = closes.rolling(30).mean().iloc[-1]
@@ -411,7 +459,6 @@ class Position:
         self.profit_pct = net_profit_dollars / self.position_value
         self.profit_dollars = net_profit_dollars
         
-        # Cap extreme losses (should not exceed -95% with proper risk management)
         if self.profit_pct < -0.95:
             print(f"  ⚠️  Capping extreme loss: {self.profit_pct*100:.1f}% → -95%")
             self.profit_pct = -0.95
@@ -463,7 +510,7 @@ def calculate_max_drawdown(equity_curve: List[float]) -> float:
 
 
 def run_octopus_backtest():
-    print("🚀 Octopus Backtest v9.0 - PRODUCTION READY\n")
+    print("🚀 Octopus Backtest v9.1 - IMPORT FIX + PRODUCTION READY\n")
     
     ml_available = check_ml_models()
     
@@ -502,7 +549,6 @@ def run_octopus_backtest():
         for idx, row in historical_data.iterrows():
             current_date = row["date"].strftime("%Y-%m-%d")
             
-            # Check exit for open position
             if open_position:
                 if open_position.check_exit(row, current_date):
                     trade = {
@@ -521,7 +567,6 @@ def run_octopus_backtest():
                     account.execute_trade(trade)
                     open_position = None
             
-            # Look for new signals (weekly)
             if not open_position and idx % 7 == 0 and idx > 0:
                 ticker_signal_stats["checks"] += 1
                 signal_stats["total_checks"] += 1
@@ -530,7 +575,6 @@ def run_octopus_backtest():
                     octopus_signal = analyze_asset_octopus(ticker, "Краткосрочный")
                     action = octopus_signal["recommendation"]["action"]
                     
-                    # Track signal distribution
                     if action == "WAIT":
                         ticker_signal_stats["wait"] += 1
                         signal_stats["wait"] += 1
@@ -541,7 +585,6 @@ def run_octopus_backtest():
                         ticker_signal_stats["short"] += 1
                         signal_stats["short"] += 1
                     
-                    # Execute signal
                     if action != "WAIT":
                         if idx + 1 < len(historical_data):
                             next_row = historical_data.iloc[idx + 1]
@@ -562,7 +605,6 @@ def run_octopus_backtest():
         if ticker_agent_errors:
             agent_errors[ticker] = ticker_agent_errors
         
-        # Force close remaining position
         if open_position and not open_position.closed:
             last_row = historical_data.iloc[-1]
             open_position.exit_price = last_row["c"]
@@ -585,7 +627,6 @@ def run_octopus_backtest():
             }
             account.execute_trade(trade)
         
-        # Calculate metrics
         if account.trades_log:
             trades = account.trades_log
             returns_pct = np.array([t["profit_pct"] for t in trades])
@@ -634,13 +675,11 @@ def run_octopus_backtest():
             print(f"     TP: TP1={tp_hits['TP1']}, TP2={tp_hits['TP2']}, TP3={tp_hits['TP3']}, SL={tp_hits['SL']}")
             print(f"     WAIT Rate: {result['wait_rate_pct']}%")
             
-            # Warnings
             if total_return > 5.0:
                 print(f"  ⚠️  WARNING: Suspicious high return {total_return*100:.1f}%")
             if win_rate > 0.80:
                 print(f"  ⚠️  WARNING: Unrealistic win rate {win_rate*100:.1f}%")
             
-            # Sample trades
             print(f"\n  📝 Sample trades:")
             for i, trade in enumerate(trades[:5], 1):
                 print(f"    {i}. {trade['entry_date']} → {trade['exit_date']}")
@@ -651,7 +690,6 @@ def run_octopus_backtest():
             wait_rate = ticker_signal_stats["wait"] / max(1, ticker_signal_stats["checks"])
             print(f"     WAIT Rate: {wait_rate*100:.1f}% ({ticker_signal_stats['wait']}/{ticker_signal_stats['checks']} checks)")
     
-    # Save results
     output_dir = Path("results")
     output_dir.mkdir(exist_ok=True)
     
@@ -661,7 +699,7 @@ def run_octopus_backtest():
     with open(output_file, "w") as f:
         json.dump({
             "backtest_date": datetime.now().isoformat(),
-            "version": "9.0_production_ready",
+            "version": "9.1_import_fix",
             "orchestrator": "analyze_asset_octopus",
             "agents": ["Global", "M7 (patched)", "W7", "AlphaPulse"],
             "m7_patch_applied": True,
