@@ -9,7 +9,7 @@ jobs:
   backtest-m7:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4  # ✅ Updated from v3
       
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -20,21 +20,28 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+      
+      - name: Create results directory  # ✅ Added
+        run: mkdir -p results
       
       - name: Run M7 Backtest
         env:
           POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
         run: python scripts/backtest_m7.py
       
-      - uses: actions/upload-artifact@v3
+      - name: Verify results  # ✅ Added debug step
+        run: ls -la results/
+      
+      - uses: actions/upload-artifact@v4  # ✅ Fixed
         with:
           name: m7-results
           path: results/m7_backtest_*.json
+          retention-days: 7  # ✅ Added retention
 
   backtest-w7:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4  # ✅ Updated
       
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -45,21 +52,28 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+      
+      - name: Create results directory  # ✅ Added
+        run: mkdir -p results
       
       - name: Run W7 Backtest
         env:
           POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
         run: python scripts/backtest_w7.py
       
-      - uses: actions/upload-artifact@v3
+      - name: Verify results  # ✅ Added
+        run: ls -la results/
+      
+      - uses: actions/upload-artifact@v4  # ✅ Fixed
         with:
           name: w7-results
           path: results/w7_backtest_*.json
+          retention-days: 7  # ✅ Added
 
   backtest-alphapulse:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4  # ✅ Updated
       
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -71,12 +85,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       
+      - name: Create results directory  # ✅ Added
+        run: mkdir -p results
+      
       - name: Run AlphaPulse Backtest
         env:
           POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
         run: python scripts/backtest_alphapulse.py
       
-      - uses: actions/upload-artifact@v3
+      - name: Verify results  # ✅ Added
+        run: ls -la results/
+      
+      - uses: actions/upload-artifact@v4  # ✅ Fixed
         with:
           name: alphapulse-results
           path: results/alphapulse_backtest_*.json
+          retention-days: 7  # ✅ Added
