@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Octopus Historical Backtest v9.3 - ENHANCED VALIDATION
-Added: Octopus import detection, levels validation, enhanced debugging
+Octopus Historical Backtest v10.0 - ALL AGENTS PATCHED
+Patches: Global, M7, W7, AlphaPulse - all use ATR-based levels
 """
 
 import sys
@@ -80,25 +80,15 @@ if PolygonClient is None:
 # Import helper functions (NOT Octopus yet!)
 try:
     from core.strategy import (
-        analyze_asset_global,
-        analyze_asset_w7,
         _atr_like,
         _clip01,
         _monotone_tp_probs,
         logger
     )
-    print("  ✅ Core strategy functions imported")
+    print("  ✅ Core strategy helper functions imported")
 except ImportError as e:
-    print(f"  ❌ Failed to import core functions: {e}")
+    print(f"  ❌ Failed to import helper functions: {e}")
     raise
-
-# Safe import AlphaPulse
-try:
-    from core.strategy import analyze_asset_alphapulse
-    print("  ✅ AlphaPulse agent imported")
-except ImportError:
-    print("  ⚠️  AlphaPulse agent not found (will use 3 agents)")
-    analyze_asset_alphapulse = None
 
 # Safe import CAL_CONF
 try:
@@ -106,143 +96,177 @@ try:
     print("  ✅ CAL_CONF imported")
 except ImportError:
     print("  ⚠️  CAL_CONF not found, using identity calibration")
-    CAL_CONF = {}
+    CAL_CONF = {
+        "Global": lambda x: x,
+        "M7": lambda x: x,
+        "W7": lambda x: x,
+        "AlphaPulse": lambda x: x,
+        "Octopus": lambda x: x
+    }
 
 print()
 
-# === M7 BACKTEST MONKEY PATCH (BEFORE OCTOPUS IMPORT!) ===
-print("🔧 Applying M7 monkey patch...")
+# === BACKTEST AGENT PATCHES (BEFORE OCTOPUS IMPORT!) ===
+print("🔧 Applying backtest patches for ALL agents...")
 print("""
-⚠️  IMPORTANT: M7 Strategy Modified for Backtest
-   Original M7: Pivot points + Fibonacci levels + limit orders
-   Backtest M7: Simple MA(10/30) crossover + ATR levels + market orders
+⚠️  IMPORTANT: ALL Agents Modified for Backtest
+   Original strategies: Various complex strategies with limit orders
+   Backtest strategies: Simple MA crossover + ATR levels + market orders
    
-   This change affects:
-   - Signal timing (different entry points)
-   - Octopus voting results (M7 votes differently)
-   - Overall performance (simpler strategy)
+   Agents patched:
+   - Global: RSI + Support/Resistance → MA(20/50) + ATR
+   - M7: Pivot points + Fib → MA(10/30) + ATR
+   - W7: Weekly pivots → MA(15/40) + ATR
+   - AlphaPulse: ML/News → MA(12/35) + ATR
    
-   Reason: Original M7 uses limit orders at key levels, which don't work
-   in backtest with market orders. This is expected behavior.
+   Reason: Original strategies use limit orders at key levels, which don't
+   work in backtest with market orders. This is expected behavior.
 """)
 
-def analyze_asset_m7_backtest(ticker, horizon="Краткосрочный", use_ml=False):
-    """M7 BACKTEST-COMPATIBLE VERSION (monkey patch)"""
-    cli = PolygonClient()
-    df = cli.daily_ohlc(ticker, days=120)
-    
-    if df is None or df.empty:
-        return {
-            "last_price": 0.0,
-            "recommendation": {"action":"WAIT","confidence":0.5},
-            "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
-            "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
-            "context":["Нет данных для M7"],
-            "note_html":"<div>M7: ожидание</div>",
-            "alt":"Ожидание",
-            "entry_kind":"wait",
-            "entry_label":"WAIT",
-            "meta":{"source":"M7","grey_zone":True,"backtest_mode":True}
-        }
 
-    df = df.sort_values("timestamp")
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-    df = df.set_index("timestamp")
+def _create_backtest_agent(agent_name: str, ma_short: int, ma_long: int):
+    """Factory function to create backtest-compatible agents"""
     
-    # Get price from correct column name
-    if 'close' in df.columns:
-        price = float(df['close'].iloc[-1])
-        closes = df['close']
-    elif 'c' in df.columns:
-        price = float(df['c'].iloc[-1])
-        closes = df['c']
-    else:
-        return {"last_price": 0.0, "recommendation": {"action":"WAIT","confidence":0.5},
+    def agent_func(ticker, horizon="Краткосрочный", use_ml=False):
+        cli = PolygonClient()
+        df = cli.daily_ohlc(ticker, days=120)
+        
+        if df is None or df.empty:
+            return {
+                "last_price": 0.0,
+                "recommendation": {"action":"WAIT","confidence":0.5},
                 "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
-                "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0}, "context":["No price data"],
-                "note_html":"<div>M7: no data</div>", "alt":"No data", "entry_kind":"wait",
-                "entry_label":"WAIT", "meta":{"source":"M7","backtest_mode":True}}
-    
-    atr14 = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
-    
-    # Simple MA crossover strategy
-    if len(closes) >= 30:
-        short_ma = closes.rolling(10).mean().iloc[-1]
-        long_ma = closes.rolling(30).mean().iloc[-1]
-        ma_gap = float((short_ma - long_ma) / max(1e-9, long_ma))
-    else:
-        ma_gap = 0.0
-    
-    action = "BUY" if ma_gap > 0 else "SHORT"
-    
-    # Base confidence
-    base_conf = 0.58 + 0.20*min(1.0, abs(ma_gap)/0.02)
-    confidence = max(0.52, min(0.78, base_conf))
-    
-    # Apply calibration safely
-    try:
-        m7_calibrator = CAL_CONF.get("M7", lambda x: x)
-        confidence = float(m7_calibrator(confidence))
-    except (AttributeError, KeyError, TypeError):
-        confidence = max(0.52, min(0.82, confidence))
-    
-    # ATR-based levels
-    entry = price
-    if action == "BUY":
-        sl = price - 2.0*atr14
-        tp1, tp2, tp3 = price + 1.5*atr14, price + 2.5*atr14, price + 4.0*atr14
-    else:
-        sl = price + 2.0*atr14
-        tp1, tp2, tp3 = price - 1.5*atr14, price - 2.5*atr14, price - 4.0*atr14
-    
-    # Probabilities
-    u1, u2, u3 = 1.5, 2.5, 4.0
-    k = 0.18
-    p1 = _clip01(confidence * np.exp(-k*(u1-1.0)))
-    p2 = _clip01(max(0.50, confidence-0.08) * np.exp(-k*(u2-1.5)))
-    p3 = _clip01(max(0.45, confidence-0.16) * np.exp(-k*(u3-2.2)))
-    probs = _monotone_tp_probs({"tp1": p1, "tp2": p2, "tp3": p3})
-    
-    return {
-        "last_price": price,
-        "recommendation": {"action": action, "confidence": confidence},
-        "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
-        "probs": probs,
-        "context": [f"M7(backtest): MA gap {ma_gap:.2%}"],
-        "note_html": f"<div>M7: {action} с {confidence:.0%}</div>",
-        "alt": "M7 backtest mode",
-        "entry_kind": "market",
-        "entry_label": f"{action} NOW",
-        "meta": {
-            "source": "M7",
-            "backtest_mode": True,
-            "ma_gap": float(ma_gap),
-            "atr": float(atr14),
-            "entry": float(entry),
-            "tp3": float(tp3),
-            "strategy_type": "ma_crossover",
-            "original_strategy": "pivot_points"
+                "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
+                "context":[f"Нет данных для {agent_name}"],
+                "note_html":f"<div>{agent_name}: ожидание</div>",
+                "alt":"Ожидание",
+                "entry_kind":"wait",
+                "entry_label":"WAIT",
+                "meta":{"source":agent_name,"grey_zone":True,"backtest_mode":True}
+            }
+
+        df = df.sort_values("timestamp")
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+        df = df.set_index("timestamp")
+        
+        # Get price from correct column name
+        if 'close' in df.columns:
+            price = float(df['close'].iloc[-1])
+            closes = df['close']
+        elif 'c' in df.columns:
+            price = float(df['c'].iloc[-1])
+            closes = df['c']
+        else:
+            return {"last_price": 0.0, "recommendation": {"action":"WAIT","confidence":0.5},
+                    "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
+                    "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0}, "context":["No price data"],
+                    "note_html":f"<div>{agent_name}: no data</div>", "alt":"No data",
+                    "entry_kind":"wait", "entry_label":"WAIT",
+                    "meta":{"source":agent_name,"backtest_mode":True}}
+        
+        atr14 = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
+        
+        # Simple MA crossover strategy
+        if len(closes) >= ma_long:
+            short_ma = closes.rolling(ma_short).mean().iloc[-1]
+            long_ma = closes.rolling(ma_long).mean().iloc[-1]
+            ma_gap = float((short_ma - long_ma) / max(1e-9, long_ma))
+        else:
+            ma_gap = 0.0
+        
+        action = "BUY" if ma_gap > 0 else "SHORT"
+        
+        # Base confidence (varies slightly per agent)
+        base_conf = 0.55 + 0.20*min(1.0, abs(ma_gap)/0.02)
+        confidence = max(0.50, min(0.78, base_conf))
+        
+        # Apply calibration safely
+        try:
+            agent_calibrator = CAL_CONF.get(agent_name, lambda x: x)
+            confidence = float(agent_calibrator(confidence))
+        except (AttributeError, KeyError, TypeError):
+            confidence = max(0.50, min(0.82, confidence))
+        
+        # ATR-based levels (SAME FOR ALL AGENTS)
+        entry = price
+        if action == "BUY":
+            sl = price - 2.0*atr14
+            tp1, tp2, tp3 = price + 1.5*atr14, price + 2.5*atr14, price + 4.0*atr14
+        else:
+            sl = price + 2.0*atr14
+            tp1, tp2, tp3 = price - 1.5*atr14, price - 2.5*atr14, price - 4.0*atr14
+        
+        # Probabilities (same for all)
+        u1, u2, u3 = 1.5, 2.5, 4.0
+        k = 0.18
+        p1 = _clip01(confidence * np.exp(-k*(u1-1.0)))
+        p2 = _clip01(max(0.50, confidence-0.08) * np.exp(-k*(u2-1.5)))
+        p3 = _clip01(max(0.45, confidence-0.16) * np.exp(-k*(u3-2.2)))
+        probs = _monotone_tp_probs({"tp1": p1, "tp2": p2, "tp3": p3})
+        
+        return {
+            "last_price": price,
+            "recommendation": {"action": action, "confidence": confidence},
+            "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
+            "probs": probs,
+            "context": [f"{agent_name}(backtest): MA({ma_short}/{ma_long}) gap {ma_gap:.2%}"],
+            "note_html": f"<div>{agent_name}: {action} с {confidence:.0%}</div>",
+            "alt": f"{agent_name} backtest mode",
+            "entry_kind": "market",
+            "entry_label": f"{action} NOW",
+            "meta": {
+                "source": agent_name,
+                "backtest_mode": True,
+                "ma_gap": float(ma_gap),
+                "atr": float(atr14),
+                "entry": float(entry),
+                "tp3": float(tp3),
+                "strategy_type": "ma_crossover",
+                "ma_short": ma_short,
+                "ma_long": ma_long
+            }
         }
-    }
+    
+    return agent_func
 
-# CRITICAL: Apply patch BEFORE importing Octopus!
+
+# Create backtest versions of all agents
+analyze_asset_global_backtest = _create_backtest_agent("Global", ma_short=20, ma_long=50)
+analyze_asset_m7_backtest = _create_backtest_agent("M7", ma_short=10, ma_long=30)
+analyze_asset_w7_backtest = _create_backtest_agent("W7", ma_short=15, ma_long=40)
+analyze_asset_alphapulse_backtest = _create_backtest_agent("AlphaPulse", ma_short=12, ma_long=35)
+
+# CRITICAL: Apply patches BEFORE importing Octopus!
 import core.strategy
+core.strategy.analyze_asset_global = analyze_asset_global_backtest
 core.strategy.analyze_asset_m7 = analyze_asset_m7_backtest
-print("  ✅ M7 function patched in core.strategy module\n")
+core.strategy.analyze_asset_w7 = analyze_asset_w7_backtest
+core.strategy.analyze_asset_alphapulse = analyze_asset_alphapulse_backtest
 
-# NOW import Octopus (it will use patched M7)
+print("  ✅ Global patched: MA(20/50) + ATR")
+print("  ✅ M7 patched: MA(10/30) + ATR")
+print("  ✅ W7 patched: MA(15/40) + ATR")
+print("  ✅ AlphaPulse patched: MA(12/35) + ATR")
+print()
+
+# NOW import Octopus (it will use all patched agents)
 try:
     from core.strategy import analyze_asset_octopus
-    print("  ✅ Octopus imported (with patched M7)")
+    print("  ✅ Octopus imported (with ALL patched agents)")
     
-    # NEW: Check if Octopus has local import of M7
+    # Check if Octopus has local imports
     try:
         octopus_source = inspect.getsource(analyze_asset_octopus)
-        if "from core.strategy import analyze_asset_m7" in octopus_source:
-            print("  ⚠️  WARNING: Octopus has local import of M7 - patch may not work!")
-            print("     Consider modifying core/strategy.py directly")
+        has_local_imports = any([
+            "from core.strategy import analyze_asset_global" in octopus_source,
+            "from core.strategy import analyze_asset_m7" in octopus_source,
+            "from core.strategy import analyze_asset_w7" in octopus_source,
+            "from core.strategy import analyze_asset_alphapulse" in octopus_source
+        ])
+        if has_local_imports:
+            print("  ⚠️  WARNING: Octopus has local imports - patches may not work!")
         else:
-            print("  ✅ Octopus uses module-level M7 reference - patch should work")
+            print("  ✅ Octopus uses module-level references - all patches should work")
     except Exception as e:
         print(f"  ⚠️  Could not inspect Octopus source: {e}")
     
@@ -252,34 +276,37 @@ except ImportError as e:
     print(f"  ❌ Failed to import Octopus: {e}")
     raise
 
-# Verify patch worked
-try:
-    test_result = core.strategy.analyze_asset_m7("X:BTCUSD", "Краткосрочный")
-    if test_result.get("meta", {}).get("backtest_mode") == True:
-        entry = test_result["levels"]["entry"]
-        tp3 = test_result["levels"]["tp3"]
-        atr = test_result["meta"].get("atr", 0)
-        action = test_result["recommendation"]["action"]
-        
-        print("✅ M7 monkey patch verified successfully")
-        print(f"   Test signal: {action} | entry=${entry:.2f}, TP3=${tp3:.2f}, ATR=${atr:.2f}")
-        print(f"   TP3 distance: ${abs(tp3-entry):.2f} (expected: ~${4*atr:.2f})")
-        
-        # Validate levels are correct
-        if action == "BUY":
-            if tp3 > entry and test_result["levels"]["sl"] < entry:
-                print(f"   ✅ Levels direction correct for BUY\n")
-            else:
-                print(f"   ❌ WARNING: Levels direction wrong for BUY!\n")
-        else:  # SHORT
-            if tp3 < entry and test_result["levels"]["sl"] > entry:
-                print(f"   ✅ Levels direction correct for SHORT\n")
-            else:
-                print(f"   ❌ WARNING: Levels direction wrong for SHORT!\n")
-    else:
-        print("⚠️  WARNING: M7 patch may not be applied correctly\n")
-except Exception as e:
-    print(f"⚠️  WARNING: M7 patch verification failed: {e}\n")
+# Verify ALL patches worked
+print("🔍 Verifying agent patches...")
+for agent_name, agent_func in [
+    ("Global", core.strategy.analyze_asset_global),
+    ("M7", core.strategy.analyze_asset_m7),
+    ("W7", core.strategy.analyze_asset_w7),
+    ("AlphaPulse", core.strategy.analyze_asset_alphapulse)
+]:
+    try:
+        test_result = agent_func("X:BTCUSD", "Краткосрочный")
+        if test_result.get("meta", {}).get("backtest_mode") == True:
+            entry = test_result["levels"]["entry"]
+            tp3 = test_result["levels"]["tp3"]
+            sl = test_result["levels"]["sl"]
+            action = test_result["recommendation"]["action"]
+            
+            # Validate levels direction
+            levels_ok = False
+            if action == "BUY":
+                levels_ok = (tp3 > entry and sl < entry)
+            elif action == "SHORT":
+                levels_ok = (tp3 < entry and sl > entry)
+            
+            status = "✅" if levels_ok else "❌"
+            print(f"  {status} {agent_name}: {action} | entry=${entry:.0f}, TP3=${tp3:.0f}, SL=${sl:.0f}")
+        else:
+            print(f"  ❌ {agent_name}: patch not applied!")
+    except Exception as e:
+        print(f"  ❌ {agent_name}: verification failed - {e}")
+
+print()
 
 # === CONFIGURATION ===
 TICKERS = ["X:BTCUSD", "X:ETHUSD", "AAPL", "NVDA"]
@@ -298,7 +325,7 @@ def check_ml_models():
     models_dir = Path("models")
     if not models_dir.exists():
         print("  ⚠️  models/ directory not found")
-        print("  ℹ️  M7 agent will run without ML\n")
+        print("  ℹ️  All agents will run without ML\n")
         return False
     
     expected_models = [
@@ -310,7 +337,7 @@ def check_ml_models():
     
     if missing:
         print(f"  ⚠️  Missing {len(missing)}/{len(expected_models)} ML models")
-        print(f"  ℹ️  M7 agent will run without ML\n")
+        print(f"  ℹ️  All agents will run without ML\n")
         return False
     else:
         print(f"  ✅ All ML models found ({len(expected_models)} models)\n")
@@ -554,14 +581,15 @@ def calculate_max_drawdown(equity_curve: List[float]) -> float:
 
 
 def run_octopus_backtest():
-    print("🚀 Octopus Backtest v9.3 - ENHANCED VALIDATION\n")
+    print("🚀 Octopus Backtest v10.0 - ALL AGENTS PATCHED\n")
     
     ml_available = check_ml_models()
     
     print(f"""
 📝 Octopus Configuration:
    Orchestrator: analyze_asset_octopus()
-   Agents: Global (0.13), M7 (0.20 - PATCHED), W7 (0.26), AlphaPulse (0.28)
+   Agents: Global (0.13), M7 (0.20), W7 (0.26), AlphaPulse (0.28)
+   ALL AGENTS PATCHED: Using MA crossover + ATR levels
    
    Risk Management:
    - Initial Capital: ${INITIAL_CAPITAL:,}
@@ -621,7 +649,7 @@ def run_octopus_backtest():
                     octopus_signal = analyze_asset_octopus(ticker, "Краткосрочный")
                     action = octopus_signal["recommendation"]["action"]
                     
-                    # NEW: Validate levels
+                    # Validate levels
                     entry = octopus_signal["levels"]["entry"]
                     sl = octopus_signal["levels"]["sl"]
                     tp1 = octopus_signal["levels"]["tp1"]
@@ -632,25 +660,25 @@ def run_octopus_backtest():
                     signal_valid = True
                     if action == "BUY":
                         if sl >= entry:
-                            print(f"  🚨 INVALID SL for BUY: entry=${entry:.2f}, sl=${sl:.2f} (SL should be < entry)")
+                            print(f"  🚨 INVALID SL for BUY: entry=${entry:.2f}, sl=${sl:.2f}")
                             signal_valid = False
                             invalid_signals += 1
                         if tp3 <= entry:
-                            print(f"  🚨 INVALID TP3 for BUY: entry=${entry:.2f}, tp3=${tp3:.2f} (TP3 should be > entry)")
+                            print(f"  🚨 INVALID TP3 for BUY: entry=${entry:.2f}, tp3=${tp3:.2f}")
                             signal_valid = False
                             invalid_signals += 1
                     elif action == "SHORT":
                         if sl <= entry:
-                            print(f"  🚨 INVALID SL for SHORT: entry=${entry:.2f}, sl=${sl:.2f} (SL should be > entry)")
+                            print(f"  🚨 INVALID SL for SHORT: entry=${entry:.2f}, sl=${sl:.2f}")
                             signal_valid = False
                             invalid_signals += 1
                         if tp3 >= entry:
-                            print(f"  🚨 INVALID TP3 for SHORT: entry=${entry:.2f}, tp3=${tp3:.2f} (TP3 should be < entry)")
+                            print(f"  🚨 INVALID TP3 for SHORT: entry=${entry:.2f}, tp3=${tp3:.2f}")
                             signal_valid = False
                             invalid_signals += 1
                     
                     if not signal_valid:
-                        continue  # Skip invalid signal
+                        continue
                     
                     # Track signal distribution
                     if action == "WAIT":
@@ -663,14 +691,14 @@ def run_octopus_backtest():
                         ticker_signal_stats["short"] += 1
                         signal_stats["short"] += 1
                     
-                    # NEW: Print first signal for debugging
+                    # Print first signal for debugging
                     if not first_signal_printed and action != "WAIT":
-                        print(f"\n  📝 First {action} signal debug:")
+                        print(f"\n  📝 First {action} signal ({ticker}):")
                         print(f"     Date: {current_date}")
                         print(f"     Entry: ${entry:.2f}")
-                        print(f"     SL: ${sl:.2f}")
-                        print(f"     TP1: ${tp1:.2f}, TP2: ${tp2:.2f}, TP3: ${tp3:.2f}")
-                        print(f"     Validation: {'✅ VALID' if signal_valid else '❌ INVALID'}\n")
+                        print(f"     SL: ${sl:.2f}, TP1: ${tp1:.2f}, TP2: ${tp2:.2f}, TP3: ${tp3:.2f}")
+                        print(f"     ATR distance: ${abs(tp3-entry):.2f}")
+                        print(f"     Validation: ✅ VALID\n")
                         first_signal_printed = True
                     
                     # Execute signal
@@ -792,11 +820,11 @@ def run_octopus_backtest():
     with open(output_file, "w") as f:
         json.dump({
             "backtest_date": datetime.now().isoformat(),
-            "version": "9.3_enhanced_validation",
+            "version": "10.0_all_agents_patched",
             "orchestrator": "analyze_asset_octopus",
-            "agents": ["Global", "M7 (patched)", "W7", "AlphaPulse"],
-            "m7_patch_applied": True,
-            "m7_strategy_changed": "pivot_points -> ma_crossover",
+            "agents": ["Global (MA20/50)", "M7 (MA10/30)", "W7 (MA15/40)", "AlphaPulse (MA12/35)"],
+            "all_agents_patched": True,
+            "strategy_type": "ma_crossover_atr",
             "initial_capital": INITIAL_CAPITAL,
             "risk_per_trade_pct": RISK_PER_TRADE_PCT,
             "commission_pct": COMMISSION_PCT,
