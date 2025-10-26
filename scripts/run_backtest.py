@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
-Octopus Historical Backtest v10.2 - PRODUCTION READY
-Critical fixes: Reliable ATR calculation, fallbacks, validation
+Octopus Historical Backtest v11.0 - ORIGINAL STRATEGIES
+Uses ORIGINAL production strategies with historical levels recalculation
 """
 
 import sys
 import os
 import json
 import requests
-import inspect
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List
@@ -24,54 +23,22 @@ if not POLYGON_API_KEY:
 
 print(f"Using API key: {POLYGON_API_KEY[:8]}***\n")
 
-# === SAFE IMPORTS ===
+# === IMPORTS ===
 print("📦 Importing dependencies...")
 
 import pandas as pd
 import numpy as np
 
-# Try to import PolygonClient
-PolygonClient = None
+# Import PolygonClient
 try:
-    from core.data_client import PolygonClient as PC
-    PolygonClient = PC
+    from core.data_client import PolygonClient
     print("  ✅ PolygonClient imported from core.data_client")
 except ImportError:
     try:
-        from core.strategy import PolygonClient as PC
-        PolygonClient = PC
+        from core.strategy import PolygonClient
         print("  ✅ PolygonClient imported from core.strategy")
     except ImportError:
-        print("  ⚠️  PolygonClient not found, creating simple version")
-
-if PolygonClient is None:
-    class PolygonClient:
-        def __init__(self):
-            self.api_key = POLYGON_API_KEY
-        
-        def daily_ohlc(self, ticker: str, days: int = 120) -> pd.DataFrame:
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=days)
-            url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{start_date.strftime('%Y-%m-%d')}/{end_date.strftime('%Y-%m-%d')}"
-            params = {"apiKey": self.api_key, "limit": 5000}
-            
-            try:
-                response = requests.get(url, params=params, timeout=30)
-                response.raise_for_status()
-                data = response.json()
-                
-                if "results" not in data or not data["results"]:
-                    return pd.DataFrame()
-                
-                df = pd.DataFrame(data["results"])
-                df["timestamp"] = pd.to_datetime(df["t"], unit="ms", utc=True)
-                df = df.rename(columns={"o": "open", "h": "high", "l": "low", "c": "close", "v": "volume"})
-                return df[["timestamp", "open", "high", "low", "close", "volume"]]
-            except Exception as e:
-                print(f"Error fetching data for {ticker}: {e}")
-                return pd.DataFrame()
-    
-    print("  ✅ Simple PolygonClient created")
+        raise ImportError("PolygonClient not found!")
 
 # Import helper functions
 try:
@@ -102,140 +69,26 @@ except ImportError:
 
 print()
 
-# === BACKTEST AGENT PATCHES ===
-print("🔧 Applying backtest patches for ALL agents...")
+# === NO AGENT PATCHING! Use original strategies ===
+print("🎯 Using ORIGINAL production strategies")
 print("""
-⚠️  IMPORTANT: ALL Agents Modified for Backtest
-   - Global, M7, W7, AlphaPulse: MA crossover + ATR levels
-   - Levels recalculated using HISTORICAL data at signal time
-   - Using production-grade ATR calculation with fallbacks
+⚠️  IMPORTANT: Original Strategy Mode
+   - Global: RSI + Support/Resistance + limit orders
+   - M7: Pivot points + Fibonacci + limit orders  
+   - W7: Weekly pivots + limit orders
+   - AlphaPulse: ML/News signals + limit orders
+   
+   ⚠️  Original strategies use LIMIT ORDERS at key levels
+   ⚠️  Backtest uses MARKET ORDERS (can't simulate limit fills)
+   ⚠️  Results may be UNREALISTIC due to order type mismatch
+   
+   ✅  BUT levels will be recalculated using historical data
 """)
 
-
-def _create_backtest_agent(agent_name: str, ma_short: int, ma_long: int):
-    """Factory function to create backtest-compatible agents"""
-    
-    def agent_func(ticker, horizon="Краткосрочный", use_ml=False):
-        cli = PolygonClient()
-        df = cli.daily_ohlc(ticker, days=120)
-        
-        if df is None or df.empty:
-            return {
-                "last_price": 0.0,
-                "recommendation": {"action":"WAIT","confidence":0.5},
-                "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
-                "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
-                "context":[f"Нет данных для {agent_name}"],
-                "note_html":f"<div>{agent_name}: ожидание</div>",
-                "alt":"Ожидание",
-                "entry_kind":"wait",
-                "entry_label":"WAIT",
-                "meta":{"source":agent_name,"grey_zone":True,"backtest_mode":True}
-            }
-
-        df = df.sort_values("timestamp")
-        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-        df = df.set_index("timestamp")
-        
-        # Get price
-        if 'close' in df.columns:
-            price = float(df['close'].iloc[-1])
-            closes = df['close']
-        elif 'c' in df.columns:
-            price = float(df['c'].iloc[-1])
-            closes = df['c']
-        else:
-            return {"last_price": 0.0, "recommendation": {"action":"WAIT","confidence":0.5},
-                    "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
-                    "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0}, "context":["No price data"],
-                    "note_html":f"<div>{agent_name}: no data</div>", "alt":"No data",
-                    "entry_kind":"wait", "entry_label":"WAIT",
-                    "meta":{"source":agent_name,"backtest_mode":True}}
-        
-        atr14 = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
-        
-        # MA crossover
-        if len(closes) >= ma_long:
-            short_ma = closes.rolling(ma_short).mean().iloc[-1]
-            long_ma = closes.rolling(ma_long).mean().iloc[-1]
-            ma_gap = float((short_ma - long_ma) / max(1e-9, long_ma))
-        else:
-            ma_gap = 0.0
-        
-        action = "BUY" if ma_gap > 0 else "SHORT"
-        
-        # Confidence
-        base_conf = 0.55 + 0.20*min(1.0, abs(ma_gap)/0.02)
-        confidence = max(0.50, min(0.78, base_conf))
-        
-        try:
-            agent_calibrator = CAL_CONF.get(agent_name, lambda x: x)
-            confidence = float(agent_calibrator(confidence))
-        except (AttributeError, KeyError, TypeError):
-            confidence = max(0.50, min(0.82, confidence))
-        
-        # ATR levels
-        entry = price
-        if action == "BUY":
-            sl = price - 2.0*atr14
-            tp1, tp2, tp3 = price + 1.5*atr14, price + 2.5*atr14, price + 4.0*atr14
-        else:
-            sl = price + 2.0*atr14
-            tp1, tp2, tp3 = price - 1.5*atr14, price - 2.5*atr14, price - 4.0*atr14
-        
-        # Probabilities
-        u1, u2, u3 = 1.5, 2.5, 4.0
-        k = 0.18
-        p1 = _clip01(confidence * np.exp(-k*(u1-1.0)))
-        p2 = _clip01(max(0.50, confidence-0.08) * np.exp(-k*(u2-1.5)))
-        p3 = _clip01(max(0.45, confidence-0.16) * np.exp(-k*(u3-2.2)))
-        probs = _monotone_tp_probs({"tp1": p1, "tp2": p2, "tp3": p3})
-        
-        return {
-            "last_price": price,
-            "recommendation": {"action": action, "confidence": confidence},
-            "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
-            "probs": probs,
-            "context": [f"{agent_name}(backtest): MA({ma_short}/{ma_long}) gap {ma_gap:.2%}"],
-            "note_html": f"<div>{agent_name}: {action} с {confidence:.0%}</div>",
-            "alt": f"{agent_name} backtest mode",
-            "entry_kind": "market",
-            "entry_label": f"{action} NOW",
-            "meta": {
-                "source": agent_name,
-                "backtest_mode": True,
-                "ma_gap": float(ma_gap),
-                "atr": float(atr14),
-                "entry": float(entry),
-                "tp3": float(tp3),
-                "strategy_type": "ma_crossover",
-                "ma_short": ma_short,
-                "ma_long": ma_long
-            }
-        }
-    
-    return agent_func
-
-
-# Create agents
-analyze_asset_global_backtest = _create_backtest_agent("Global", ma_short=20, ma_long=50)
-analyze_asset_m7_backtest = _create_backtest_agent("M7", ma_short=10, ma_long=30)
-analyze_asset_w7_backtest = _create_backtest_agent("W7", ma_short=15, ma_long=40)
-analyze_asset_alphapulse_backtest = _create_backtest_agent("AlphaPulse", ma_short=12, ma_long=35)
-
-# Apply patches
-import core.strategy
-core.strategy.analyze_asset_global = analyze_asset_global_backtest
-core.strategy.analyze_asset_m7 = analyze_asset_m7_backtest
-core.strategy.analyze_asset_w7 = analyze_asset_w7_backtest
-core.strategy.analyze_asset_alphapulse = analyze_asset_alphapulse_backtest
-
-print("  ✅ All agents patched\n")
-
-# Import Octopus
+# Import Octopus with ORIGINAL agents
 try:
     from core.strategy import analyze_asset_octopus
-    print("  ✅ Octopus imported (full orchestration with patched agents)\n")
+    print("  ✅ Octopus imported (with ORIGINAL production agents)\n")
 except ImportError as e:
     print(f"  ❌ Failed to import Octopus: {e}")
     raise
@@ -252,46 +105,32 @@ MAX_POSITION_PCT = 0.10
 
 
 def calculate_historical_atr(historical_df: pd.DataFrame, n: int = 14) -> float:
-    """
-    Calculate ATR using existing _atr_like function with robust fallbacks
-    Returns: ATR value or fallback (2% of price)
-    """
+    """Calculate ATR using existing _atr_like function with robust fallbacks"""
     if len(historical_df) < n:
-        # Not enough data for ATR calculation
         fallback_atr = float(historical_df['c'].iloc[-1]) * 0.02
         return fallback_atr
     
     try:
-        # Prepare dataframe for _atr_like
         df_copy = historical_df.copy()
-        
-        # Set date as index if not already
         if 'date' in df_copy.columns:
             df_copy = df_copy.set_index('date')
         
-        # Use the battle-tested _atr_like function from core.strategy
         atr_series = _atr_like(df_copy, n=n)
         atr = float(atr_series.iloc[-1])
         
-        # Validate ATR
         if atr <= 0 or np.isnan(atr) or np.isinf(atr):
-            # Invalid ATR, use fallback
             fallback_atr = float(historical_df['c'].iloc[-1]) * 0.02
             return fallback_atr
         
         return atr
         
     except Exception as e:
-        # Any error in ATR calculation, use fallback
         fallback_atr = float(historical_df['c'].iloc[-1]) * 0.02
         return fallback_atr
 
 
 def recalculate_levels(action: str, entry_price: float, atr: float) -> Dict:
-    """
-    Recalculate levels based on historical entry price and ATR
-    Ensures levels are in correct direction
-    """
+    """Recalculate levels based on historical entry price and ATR"""
     if action == "BUY":
         sl = entry_price - 2.0*atr
         tp1 = entry_price + 1.5*atr
@@ -313,10 +152,7 @@ def recalculate_levels(action: str, entry_price: float, atr: float) -> Dict:
 
 
 def validate_levels(action: str, entry: float, sl: float, tp3: float) -> bool:
-    """
-    Validate that levels are in correct direction
-    Returns True if valid, False otherwise
-    """
+    """Validate that levels are in correct direction"""
     if action == "BUY":
         return sl < entry and tp3 > entry
     elif action == "SHORT":
@@ -559,14 +395,17 @@ def calculate_max_drawdown(equity_curve: List[float]) -> float:
 
 
 def run_octopus_backtest():
-    print("🚀 Octopus Backtest v10.2 - PRODUCTION READY\n")
+    print("🚀 Octopus Backtest v11.0 - ORIGINAL STRATEGIES\n")
     
     print(f"""
 📝 Configuration:
-   - Full Octopus orchestration (4 agents with weighted voting)
+   - Using ORIGINAL production strategies (Global, M7, W7, AlphaPulse)
+   - Full Octopus orchestration with weighted voting
    - Levels RECALCULATED using historical price/ATR
-   - Production-grade ATR calculation with fallbacks
-   - Comprehensive validation
+   
+   ⚠️  WARNING: Original strategies use LIMIT orders
+   ⚠️  Backtest simulates MARKET orders (can't simulate limit fills)
+   ⚠️  Results may be UNREALISTIC due to order type mismatch
    
    Risk Management:
    - Initial Capital: ${INITIAL_CAPITAL:,}
@@ -622,7 +461,7 @@ def run_octopus_backtest():
                 signal_stats["total_checks"] += 1
                 
                 try:
-                    # Get Octopus signal (full orchestration)
+                    # Get Octopus signal (ORIGINAL strategies!)
                     octopus_signal = analyze_asset_octopus(ticker, "Краткосрочный")
                     action = octopus_signal["recommendation"]["action"]
                     confidence = octopus_signal["recommendation"]["confidence"]
@@ -652,7 +491,7 @@ def run_octopus_backtest():
                         atr = calculate_historical_atr(historical_subset, n=14)
                         
                         # Check if fallback was used
-                        expected_atr_min = entry_price * 0.005  # 0.5% of price
+                        expected_atr_min = entry_price * 0.005
                         if atr <= expected_atr_min:
                             ticker_validation["fallback_atr"] += 1
                             validation_stats["fallback_atr"] += 1
@@ -676,10 +515,10 @@ def run_octopus_backtest():
                             print(f"     Date: {current_date}")
                             print(f"     Entry: ${entry_price:.2f}")
                             print(f"     Historical ATR: ${atr:.2f} ({atr/entry_price*100:.2f}% of price)")
-                            print(f"     SL: ${new_levels['sl']:.2f} (distance: ${abs(new_levels['sl']-entry_price):.2f})")
-                            print(f"     TP3: ${new_levels['tp3']:.2f} (distance: ${abs(new_levels['tp3']-entry_price):.2f})")
-                            print(f"     Expected TP3 distance: ~${4*atr:.2f}")
-                            print(f"     ✅ Validated & recalculated\n")
+                            print(f"     Original strategy action: {action}")
+                            print(f"     Recalculated levels (ATR-based):")
+                            print(f"       SL: ${new_levels['sl']:.2f}, TP3: ${new_levels['tp3']:.2f}")
+                            print(f"     ⚠️  Original levels REPLACED with ATR-based levels\n")
                             first_signal_printed = True
                         
                         sl_price = new_levels["sl"]
@@ -779,8 +618,9 @@ def run_octopus_backtest():
     with open(output_file, "w") as f:
         json.dump({
             "backtest_date": datetime.now().isoformat(),
-            "version": "10.2_production_ready",
-            "description": "Full Octopus orchestration with historical levels, validated",
+            "version": "11.0_original_strategies",
+            "description": "Original production strategies with historical levels (ATR-based) recalculation",
+            "warning": "Original strategies use limit orders. Backtest uses market orders. Results may be unrealistic.",
             "initial_capital": INITIAL_CAPITAL,
             "tickers": TICKERS,
             "signal_statistics": signal_stats,
@@ -801,6 +641,7 @@ def run_octopus_backtest():
         print(f"\n   Validation:")
         print(f"   - Invalid signals: {validation_stats['invalid']}/{validation_stats['total']}")
         print(f"   - Fallback ATR used: {validation_stats['fallback_atr']}/{validation_stats['total']}")
+        print(f"\n   ⚠️  NOTE: Results use ATR-based levels, NOT original strategy levels")
 
 
 if __name__ == "__main__":
