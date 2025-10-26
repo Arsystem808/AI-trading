@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+"""
+W7 Strategy Individual Backtest
+Tests W7 strategy alone (no ensemble)
+"""
+
+# [Identical structure to backtest_m7.py, but replace:]
+# - analyze_asset_m7 → analyze_asset_w7
+# - "M7" → "W7" in all strings
+# - "m7_backtest" → "w7_backtest" in filename
+
+# Import section:
+from core.strategy import (
+    analyze_asset_w7,  # Changed from analyze_asset_m7
+    _atr_like,
+    logger
+)
+
+# In run_w7_backtest() function:
+def run_w7_backtest():
+    print("🚀 W7 Strategy Individual Backtest\n")
+    
+    print(f"""
+📝 Configuration:
+   - Strategy: W7 ONLY (weekly pivot-based)
+   - Market orders (entry at next day open)
+   [... same config ...]
+""")
+    
+    # ... identical logic but call analyze_asset_w7:
+    w7_signal = analyze_asset_w7(ticker, "Краткосрочный")
+    
+    # ... rest same ...
+    
+    output_file = output_dir / f"w7_backtest_{timestamp}.json"
+    
+    # ... rest identical ...
+
+if __name__ == "__main__":
+    run_w7_backtest()
