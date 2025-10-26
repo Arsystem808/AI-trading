@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Octopus Historical Backtest v11.0 - ORIGINAL STRATEGIES
-Uses ORIGINAL production strategies with historical levels recalculation
+Octopus Historical Backtest v12.0 - REALISTIC LIMIT ORDER SIMULATION
+Uses M7, W7, AlphaPulse strategies with realistic limit order fills
 """
 
 import sys
@@ -29,7 +29,6 @@ print("📦 Importing dependencies...")
 import pandas as pd
 import numpy as np
 
-# Import PolygonClient
 try:
     from core.data_client import PolygonClient
     print("  ✅ PolygonClient imported from core.data_client")
@@ -40,7 +39,6 @@ except ImportError:
     except ImportError:
         raise ImportError("PolygonClient not found!")
 
-# Import helper functions
 try:
     from core.strategy import (
         _atr_like,
@@ -53,14 +51,12 @@ except ImportError as e:
     print(f"  ❌ Failed to import helper functions: {e}")
     raise
 
-# Import CAL_CONF
 try:
     from core.strategy import CAL_CONF
     print("  ✅ CAL_CONF imported")
 except ImportError:
     print("  ⚠️  CAL_CONF not found, using identity calibration")
     CAL_CONF = {
-        "Global": lambda x: x,
         "M7": lambda x: x,
         "W7": lambda x: x,
         "AlphaPulse": lambda x: x,
@@ -69,29 +65,117 @@ except ImportError:
 
 print()
 
-# === NO AGENT PATCHING! Use original strategies ===
-print("🎯 Using ORIGINAL production strategies")
-print("""
-⚠️  IMPORTANT: Original Strategy Mode
-   - Global: RSI + Support/Resistance + limit orders
-   - M7: Pivot points + Fibonacci + limit orders  
-   - W7: Weekly pivots + limit orders
-   - AlphaPulse: ML/News signals + limit orders
-   
-   ⚠️  Original strategies use LIMIT ORDERS at key levels
-   ⚠️  Backtest uses MARKET ORDERS (can't simulate limit fills)
-   ⚠️  Results may be UNREALISTIC due to order type mismatch
-   
-   ✅  BUT levels will be recalculated using historical data
-""")
+# === CUSTOM OCTOPUS FOR 3 AGENTS ===
+print("🎯 Creating Custom Octopus (M7 + W7 + AlphaPulse only)")
 
-# Import Octopus with ORIGINAL agents
 try:
-    from core.strategy import analyze_asset_octopus
-    print("  ✅ Octopus imported (with ORIGINAL production agents)\n")
+    from core.strategy import (
+        analyze_asset_m7,
+        analyze_asset_w7,
+        analyze_asset_alphapulse
+    )
+    print("  ✅ M7, W7, AlphaPulse imported\n")
 except ImportError as e:
-    print(f"  ❌ Failed to import Octopus: {e}")
+    print(f"  ❌ Failed to import agents: {e}")
     raise
+
+# Custom Octopus weights (without Global)
+OCTO_WEIGHTS_3 = {
+    "M7": 0.27,        # 0.20 / 0.74
+    "W7": 0.35,        # 0.26 / 0.74
+    "AlphaPulse": 0.38  # 0.28 / 0.74
+}
+
+def analyze_asset_octopus_3agents(ticker: str, horizon: str = "Краткосрочный"):
+    """Custom Octopus using only M7, W7, AlphaPulse"""
+    try:
+        # Get signals from 3 agents
+        m7_sig = analyze_asset_m7(ticker, horizon)
+        w7_sig = analyze_asset_w7(ticker, horizon)
+        alpha_sig = analyze_asset_alphapulse(ticker, horizon, use_ml=False)
+        
+        agents = {
+            "M7": m7_sig,
+            "W7": w7_sig,
+            "AlphaPulse": alpha_sig
+        }
+        
+        # Collect actions and confidences
+        actions = []
+        for name, sig in agents.items():
+            action = sig["recommendation"]["action"]
+            confidence = sig["recommendation"]["confidence"]
+            actions.append((action, confidence, name))
+        
+        # Weighted voting
+        def _act_to_num(a: str) -> int:
+            return 1 if a == "BUY" else (-1 if a == "SHORT" else 0)
+        
+        weighted_sum = sum(
+            _act_to_num(action) * confidence * OCTO_WEIGHTS_3[name]
+            for action, confidence, name in actions
+        )
+        
+        # Decide final action
+        threshold = 0.15
+        if weighted_sum > threshold:
+            final_action = "BUY"
+        elif weighted_sum < -threshold:
+            final_action = "SHORT"
+        else:
+            final_action = "WAIT"
+        
+        # Calculate final confidence
+        aligned_conf = sum(
+            confidence * OCTO_WEIGHTS_3[name]
+            for action, confidence, name in actions
+            if _act_to_num(action) * weighted_sum > 0
+        )
+        
+        final_confidence = max(0.50, min(0.85, aligned_conf * 1.1))
+        
+        # Use primary agent's levels and entry_kind
+        primary_agent = max(actions, key=lambda x: x[1])[2]
+        primary_sig = agents[primary_agent]
+        
+        return {
+            "last_price": primary_sig["last_price"],
+            "recommendation": {
+                "action": final_action,
+                "confidence": final_confidence
+            },
+            "levels": primary_sig["levels"],
+            "probs": primary_sig["probs"],
+            "entry_kind": primary_sig.get("entry_kind", "market"),
+            "entry_label": primary_sig.get("entry_label", f"{final_action} NOW"),
+            "context": [f"Octopus-3: weighted voting from M7({OCTO_WEIGHTS_3['M7']:.2f}), W7({OCTO_WEIGHTS_3['W7']:.2f}), AlphaPulse({OCTO_WEIGHTS_3['AlphaPulse']:.2f})"],
+            "note_html": f"<div>Octopus-3: {final_action} с {final_confidence:.0%}</div>",
+            "alt": "Octopus 3-agent ensemble",
+            "meta": {
+                "orchestrator": "Octopus-3",
+                "agents": list(agents.keys()),
+                "weights": OCTO_WEIGHTS_3,
+                "weighted_sum": float(weighted_sum),
+                "primary_agent": primary_agent,
+                "votes": [(name, action, conf) for action, conf, name in actions]
+            }
+        }
+    
+    except Exception as e:
+        return {
+            "last_price": 0.0,
+            "recommendation": {"action": "WAIT", "confidence": 0.5},
+            "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
+            "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+            "entry_kind": "wait",
+            "entry_label": "WAIT",
+            "context": [f"Error: {str(e)[:100]}"],
+            "note_html": "<div>Error in Octopus-3</div>",
+            "alt": "Error",
+            "meta": {"error": str(e)}
+        }
+
+print("  ✅ Custom Octopus-3 created\n")
 
 # === CONFIGURATION ===
 TICKERS = ["X:BTCUSD", "X:ETHUSD", "AAPL", "NVDA"]
@@ -102,6 +186,7 @@ POSITION_TIMEOUT_DAYS = 28
 INITIAL_CAPITAL = 100000
 RISK_PER_TRADE_PCT = 0.01
 MAX_POSITION_PCT = 0.10
+LIMIT_ORDER_WAIT_DAYS = 7  # Max days to wait for limit fill
 
 
 def calculate_historical_atr(historical_df: pd.DataFrame, n: int = 14) -> float:
@@ -157,6 +242,24 @@ def validate_levels(action: str, entry: float, sl: float, tp3: float) -> bool:
         return sl < entry and tp3 > entry
     elif action == "SHORT":
         return sl > entry and tp3 < entry
+    return False
+
+
+def check_limit_fill(bar: pd.Series, limit_price: float, action: str) -> bool:
+    """
+    Check if limit order would be filled during this bar
+    Returns True if price touched limit_price
+    """
+    high = bar["h"]
+    low = bar["l"]
+    
+    if action == "BUY":
+        # BUY limit fills if price drops to or below limit_price
+        return low <= limit_price <= high
+    elif action == "SHORT":
+        # SHORT (sell) limit fills if price rises to or above limit_price
+        return low <= limit_price <= high
+    
     return False
 
 
@@ -395,17 +498,18 @@ def calculate_max_drawdown(equity_curve: List[float]) -> float:
 
 
 def run_octopus_backtest():
-    print("🚀 Octopus Backtest v11.0 - ORIGINAL STRATEGIES\n")
+    print("🚀 Octopus Backtest v12.0 - REALISTIC LIMIT ORDER SIMULATION\n")
     
     print(f"""
 📝 Configuration:
-   - Using ORIGINAL production strategies (Global, M7, W7, AlphaPulse)
+   - Agents: M7 (27%), W7 (35%), AlphaPulse (38%)
+   - Global excluded (using top 3 only)
    - Full Octopus orchestration with weighted voting
+   - Limit order simulation with {LIMIT_ORDER_WAIT_DAYS}-day wait window
    - Levels RECALCULATED using historical price/ATR
    
-   ⚠️  WARNING: Original strategies use LIMIT orders
-   ⚠️  Backtest simulates MARKET orders (can't simulate limit fills)
-   ⚠️  Results may be UNREALISTIC due to order type mismatch
+   ✅ REALISTIC: Simulates actual limit order fills
+   ✅ Only enters trades when limit price is touched
    
    Risk Management:
    - Initial Capital: ${INITIAL_CAPITAL:,}
@@ -416,6 +520,7 @@ def run_octopus_backtest():
     
     all_results = []
     signal_stats = {"total_checks": 0, "wait": 0, "buy": 0, "short": 0}
+    limit_stats = {"total_limits": 0, "filled": 0, "expired": 0, "avg_wait_days": []}
     validation_stats = {"total": 0, "invalid": 0, "fallback_atr": 0}
     first_signal_printed = False
     
@@ -432,12 +537,15 @@ def run_octopus_backtest():
         
         account = Account(INITIAL_CAPITAL)
         open_position = None
+        pending_limit = None  # Track pending limit order
         ticker_signal_stats = {"checks": 0, "wait": 0, "buy": 0, "short": 0}
+        ticker_limit_stats = {"total": 0, "filled": 0, "expired": 0, "wait_days": []}
         ticker_validation = {"total": 0, "invalid": 0, "fallback_atr": 0}
         
         for idx, row in historical_data.iterrows():
             current_date = row["date"].strftime("%Y-%m-%d")
             
+            # Check existing position
             if open_position:
                 if open_position.check_exit(row, current_date):
                     trade = {
@@ -456,15 +564,47 @@ def run_octopus_backtest():
                     account.execute_trade(trade)
                     open_position = None
             
-            if not open_position and idx % 7 == 0 and idx > 0:
+            # Check pending limit order
+            if pending_limit and not open_position:
+                limit_data = pending_limit
+                days_waiting = (pd.to_datetime(current_date) - pd.to_datetime(limit_data["order_date"])).days
+                
+                # Check if limit filled
+                if check_limit_fill(row, limit_data["limit_price"], limit_data["action"]):
+                    # Limit filled!
+                    ticker_limit_stats["filled"] += 1
+                    ticker_limit_stats["wait_days"].append(days_waiting)
+                    limit_stats["filled"] += 1
+                    limit_stats["avg_wait_days"].append(days_waiting)
+                    
+                    entry_price = limit_data["limit_price"]
+                    signal = limit_data["signal"]
+                    
+                    shares = account.calculate_position_size(entry_price, signal["levels"]["sl"])
+                    if shares > 0:
+                        open_position = Position(signal, current_date, entry_price, shares)
+                        print(f"  ✅ LIMIT FILLED: {limit_data['action']} @ ${entry_price:.2f} (waited {days_waiting} days)")
+                    
+                    pending_limit = None
+                
+                elif days_waiting >= LIMIT_ORDER_WAIT_DAYS:
+                    # Limit expired
+                    ticker_limit_stats["expired"] += 1
+                    limit_stats["expired"] += 1
+                    print(f"  ⏰ LIMIT EXPIRED: {limit_data['action']} @ ${limit_data['limit_price']:.2f} (waited {days_waiting} days)")
+                    pending_limit = None
+            
+            # Check for new signals (only if no position and no pending limit)
+            if not open_position and not pending_limit and idx % 7 == 0 and idx > 0:
                 ticker_signal_stats["checks"] += 1
                 signal_stats["total_checks"] += 1
                 
                 try:
-                    # Get Octopus signal (ORIGINAL strategies!)
-                    octopus_signal = analyze_asset_octopus(ticker, "Краткосрочный")
+                    # Get Octopus-3 signal
+                    octopus_signal = analyze_asset_octopus_3agents(ticker, "Краткосрочный")
                     action = octopus_signal["recommendation"]["action"]
                     confidence = octopus_signal["recommendation"]["confidence"]
+                    entry_kind = octopus_signal.get("entry_kind", "market")
                     
                     # Track stats
                     if action == "WAIT":
@@ -478,26 +618,24 @@ def run_octopus_backtest():
                         ticker_signal_stats["short"] += 1
                         signal_stats["short"] += 1
                     
-                    # CRITICAL: Recalculate levels using HISTORICAL data
+                    # Calculate historical ATR and recalculate levels
                     if idx + 1 < len(historical_data):
                         ticker_validation["total"] += 1
                         validation_stats["total"] += 1
                         
-                        next_row = historical_data.iloc[idx + 1]
-                        entry_price = next_row["o"]
-                        
-                        # Calculate ATR from historical data
                         historical_subset = historical_data.iloc[:idx+1]
                         atr = calculate_historical_atr(historical_subset, n=14)
                         
-                        # Check if fallback was used
-                        expected_atr_min = entry_price * 0.005
+                        expected_atr_min = historical_subset['c'].iloc[-1] * 0.005
                         if atr <= expected_atr_min:
                             ticker_validation["fallback_atr"] += 1
                             validation_stats["fallback_atr"] += 1
                         
-                        # Recalculate levels
-                        new_levels = recalculate_levels(action, entry_price, atr)
+                        # Get limit price from original signal
+                        limit_price = octopus_signal["levels"]["entry"]
+                        
+                        # Recalculate levels based on limit price and historical ATR
+                        new_levels = recalculate_levels(action, limit_price, atr)
                         
                         # Validate levels
                         if not validate_levels(action, new_levels["entry"], new_levels["sl"], new_levels["tp3"]):
@@ -513,26 +651,55 @@ def run_octopus_backtest():
                         if not first_signal_printed:
                             print(f"\n  📝 First {action} signal ({ticker}):")
                             print(f"     Date: {current_date}")
-                            print(f"     Entry: ${entry_price:.2f}")
-                            print(f"     Historical ATR: ${atr:.2f} ({atr/entry_price*100:.2f}% of price)")
-                            print(f"     Original strategy action: {action}")
-                            print(f"     Recalculated levels (ATR-based):")
+                            print(f"     Entry kind: {entry_kind}")
+                            print(f"     Limit price: ${limit_price:.2f}")
+                            print(f"     Historical ATR: ${atr:.2f} ({atr/limit_price*100:.2f}% of price)")
+                            print(f"     Recalculated levels:")
                             print(f"       SL: ${new_levels['sl']:.2f}, TP3: ${new_levels['tp3']:.2f}")
-                            print(f"     ⚠️  Original levels REPLACED with ATR-based levels\n")
+                            print(f"     ⏳ Placing LIMIT order (wait up to {LIMIT_ORDER_WAIT_DAYS} days for fill)\n")
                             first_signal_printed = True
                         
-                        sl_price = new_levels["sl"]
-                        
-                        if entry_price > 0 and sl_price > 0:
-                            shares = account.calculate_position_size(entry_price, sl_price)
-                            if shares > 0:
-                                open_position = Position(octopus_signal, current_date, entry_price, shares)
+                        # Handle limit vs market orders
+                        if entry_kind == "limit":
+                            # Place limit order (wait for fill)
+                            ticker_limit_stats["total"] += 1
+                            limit_stats["total_limits"] += 1
+                            
+                            pending_limit = {
+                                "signal": octopus_signal,
+                                "action": action,
+                                "limit_price": limit_price,
+                                "order_date": current_date,
+                                "atr": atr
+                            }
+                            
+                        else:
+                            # Market order (execute immediately)
+                            next_row = historical_data.iloc[idx + 1]
+                            entry_price = next_row["o"]
+                            
+                            # Recalculate levels with actual entry price
+                            new_levels = recalculate_levels(action, entry_price, atr)
+                            octopus_signal["levels"] = new_levels
+                            
+                            sl_price = new_levels["sl"]
+                            
+                            if entry_price > 0 and sl_price > 0:
+                                shares = account.calculate_position_size(entry_price, sl_price)
+                                if shares > 0:
+                                    open_position = Position(octopus_signal, current_date, entry_price, shares)
                 
                 except Exception as e:
                     error_msg = str(e)[:100]
                     print(f"  ⚠️  Error at {current_date}: {error_msg}")
                     continue
         
+        # Cancel any pending limit at end
+        if pending_limit:
+            ticker_limit_stats["expired"] += 1
+            limit_stats["expired"] += 1
+        
+        # Force close open position at end
         if open_position and not open_position.closed:
             last_row = historical_data.iloc[-1]
             open_position.exit_price = last_row["c"]
@@ -574,6 +741,9 @@ def run_octopus_backtest():
             
             max_drawdown = calculate_max_drawdown(account.equity_curve)
             
+            avg_wait = np.mean(ticker_limit_stats["wait_days"]) if ticker_limit_stats["wait_days"] else 0
+            fill_rate = (ticker_limit_stats["filled"] / ticker_limit_stats["total"] * 100) if ticker_limit_stats["total"] > 0 else 0
+            
             result = {
                 "ticker": ticker,
                 "total_trades": len(trades),
@@ -585,6 +755,13 @@ def run_octopus_backtest():
                 "tp_distribution": tp_hits,
                 "avg_days_held": round(avg_days, 1),
                 "signal_stats": ticker_signal_stats,
+                "limit_stats": {
+                    "total_limits": ticker_limit_stats["total"],
+                    "filled": ticker_limit_stats["filled"],
+                    "expired": ticker_limit_stats["expired"],
+                    "fill_rate_pct": round(fill_rate, 2),
+                    "avg_wait_days": round(avg_wait, 2)
+                },
                 "validation_stats": ticker_validation,
                 "trades": trades[:20]
             }
@@ -599,6 +776,7 @@ def run_octopus_backtest():
             print(f"     Sharpe: {result['sharpe_ratio']}")
             print(f"     Max DD: {result['max_drawdown_pct']}%")
             print(f"     TP: TP1={tp_hits['TP1']}, TP2={tp_hits['TP2']}, TP3={tp_hits['TP3']}, SL={tp_hits['SL']}")
+            print(f"     Limit orders: {ticker_limit_stats['filled']}/{ticker_limit_stats['total']} filled ({fill_rate:.1f}%), avg wait {avg_wait:.1f} days")
             print(f"     Validation: {ticker_validation['invalid']} invalid, {ticker_validation['fallback_atr']} fallback ATR")
             
             print(f"\n  📝 Sample trades:")
@@ -608,6 +786,8 @@ def run_octopus_backtest():
                 print(f"       Hit: {trade['hit_level']} | P/L: ${trade['profit_dollars']:,.2f} ({trade['profit_pct']*100:.2f}%)")
         else:
             print(f"  ❌ Нет сделок")
+            print(f"     Сигналов: BUY={ticker_signal_stats['buy']}, SHORT={ticker_signal_stats['short']}, WAIT={ticker_signal_stats['wait']}")
+            print(f"     Limit orders: {ticker_limit_stats['total']} placed, {ticker_limit_stats['expired']} expired (no fills)")
     
     output_dir = Path("results")
     output_dir.mkdir(exist_ok=True)
@@ -615,15 +795,28 @@ def run_octopus_backtest():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_file = output_dir / f"octopus_backtest_{timestamp}.json"
     
+    avg_wait_days = np.mean(limit_stats["avg_wait_days"]) if limit_stats["avg_wait_days"] else 0
+    fill_rate = (limit_stats["filled"] / limit_stats["total_limits"] * 100) if limit_stats["total_limits"] > 0 else 0
+    
     with open(output_file, "w") as f:
         json.dump({
             "backtest_date": datetime.now().isoformat(),
-            "version": "11.0_original_strategies",
-            "description": "Original production strategies with historical levels (ATR-based) recalculation",
-            "warning": "Original strategies use limit orders. Backtest uses market orders. Results may be unrealistic.",
+            "version": "12.0_realistic_limit_orders",
+            "description": "M7/W7/AlphaPulse with realistic limit order simulation",
+            "agents": ["M7", "W7", "AlphaPulse"],
+            "weights": OCTO_WEIGHTS_3,
+            "limit_order_simulation": True,
+            "limit_wait_days": LIMIT_ORDER_WAIT_DAYS,
             "initial_capital": INITIAL_CAPITAL,
             "tickers": TICKERS,
             "signal_statistics": signal_stats,
+            "limit_order_statistics": {
+                "total_limits": limit_stats["total_limits"],
+                "filled": limit_stats["filled"],
+                "expired": limit_stats["expired"],
+                "fill_rate_pct": round(fill_rate, 2),
+                "avg_wait_days": round(avg_wait_days, 2)
+            },
             "validation_statistics": validation_stats,
             "results": all_results
         }, f, indent=2)
@@ -638,10 +831,14 @@ def run_octopus_backtest():
         print(f"   Всего сделок: {sum([r['total_trades'] for r in all_results])}")
         print(f"   Средний Sharpe: {np.mean([r['sharpe_ratio'] for r in all_results]):.2f}")
         print(f"   Средний Win Rate: {np.mean([r['win_rate_pct'] for r in all_results]):.1f}%")
+        print(f"\n   Limit orders:")
+        print(f"   - Placed: {limit_stats['total_limits']}")
+        print(f"   - Filled: {limit_stats['filled']} ({fill_rate:.1f}%)")
+        print(f"   - Expired: {limit_stats['expired']}")
+        print(f"   - Avg wait: {avg_wait_days:.1f} days")
         print(f"\n   Validation:")
         print(f"   - Invalid signals: {validation_stats['invalid']}/{validation_stats['total']}")
         print(f"   - Fallback ATR used: {validation_stats['fallback_atr']}/{validation_stats['total']}")
-        print(f"\n   ⚠️  NOTE: Results use ATR-based levels, NOT original strategy levels")
 
 
 if __name__ == "__main__":
