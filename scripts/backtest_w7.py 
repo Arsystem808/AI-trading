@@ -4,37 +4,61 @@ W7 Strategy Individual Backtest
 Tests W7 strategy alone (no ensemble)
 """
 
-# [Identical structure to backtest_m7.py, but replace:]
-# - analyze_asset_m7 → analyze_asset_w7
-# - "M7" → "W7" in all strings
-# - "m7_backtest" → "w7_backtest" in filename
+import sys
+import os
+import json
+from pathlib import Path
+from datetime import datetime, timedelta
 
-# Import section:
-from core.strategy import (
-    analyze_asset_w7,  # Changed from analyze_asset_m7
-    _atr_like,
-    logger
-)
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# In run_w7_backtest() function:
-def run_w7_backtest():
-    print("🚀 W7 Strategy Individual Backtest\n")
+from scripts.backtest import run_backtest
+
+def main():
+    """Run backtest for W7 strategy only"""
     
-    print(f"""
-📝 Configuration:
-   - Strategy: W7 ONLY (weekly pivot-based)
-   - Market orders (entry at next day open)
-   [... same config ...]
-""")
+    # Test parameters
+    tickers = ["X:BTCUSD", "X:ETHUSD", "AAPL", "MSFT", "GOOGL"]
+    initial_capital = 100000
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=90)  # 3 months
     
-    # ... identical logic but call analyze_asset_w7:
-    w7_signal = analyze_asset_w7(ticker, "Краткосрочный")
+    print("=" * 50)
+    print("W7 STRATEGY BACKTEST")
+    print("=" * 50)
+    print(f"Period: {start_date.date()} to {end_date.date()}")
+    print(f"Tickers: {', '.join(tickers)}")
+    print(f"Initial Capital: ${initial_capital:,.0f}")
+    print()
     
-    # ... rest same ...
+    # Run backtest with W7 only
+    results = run_backtest(
+        tickers=tickers,
+        start_date=start_date,
+        end_date=end_date,
+        initial_capital=initial_capital,
+        strategy_name="W7"
+    )
     
-    output_file = output_dir / f"w7_backtest_{timestamp}.json"
+    # Save results
+    output_file = f"results/w7_backtest_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    Path("results").mkdir(exist_ok=True)
     
-    # ... rest identical ...
+    with open(output_file, 'w') as f:
+        json.dump(results, f, indent=2, default=str)
+    
+    print(f"\n✅ Results saved to: {output_file}")
+    
+    # Print summary
+    print("\n" + "=" * 50)
+    print("SUMMARY")
+    print("=" * 50)
+    print(f"Final Capital: ${results.get('final_capital', 0):,.2f}")
+    print(f"Total Return: {results.get('total_return_pct', 0):.2f}%")
+    print(f"Total Trades: {results.get('total_trades', 0)}")
+    
+    return results
 
 if __name__ == "__main__":
-    run_w7_backtest()
+    main()
