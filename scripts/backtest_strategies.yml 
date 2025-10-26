@@ -1,0 +1,62 @@
+name: Strategy Backtests
+
+on:
+  workflow_dispatch:  # Manual trigger
+  schedule:
+    - cron: '0 2 * * 0'  # Weekly on Sunday at 2 AM UTC
+
+jobs:
+  backtest-all:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run M7 Backtest
+        env:
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+        run: |
+          python scripts/backtest_m7.py
+      
+      - name: Run W7 Backtest
+        env:
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+        run: |
+          python scripts/backtest_w7.py
+      
+      - name: Run AlphaPulse Backtest
+        env:
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+        run: |
+          python scripts/backtest_alphapulse.py
+      
+      - name: Upload Results
+        uses: actions/upload-artifact@v3
+        with:
+          name: backtest-results
+          path: results/*.json
+          retention-days: 30
+      
+      - name: Create Summary
+        run: |
+          echo "## Backtest Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### M7 Strategy" >> $GITHUB_STEP_SUMMARY
+          python -c "import json; data = json.load(open(sorted(__import__('pathlib').Path('results').glob('m7_backtest_*.json'))[-1])); print(f'- Total Trades: {sum(r[\"total_trades\"] for r in data[\"results\"])}\n- BUY: {data[\"signal_statistics\"][\"buy\"]}, SHORT: {data[\"signal_statistics\"][\"short\"]}')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### W7 Strategy" >> $GITHUB_STEP_SUMMARY
+          python -c "import json; data = json.load(open(sorted(__import__('pathlib').Path('results').glob('w7_backtest_*.json'))[-1])); print(f'- Total Trades: {sum(r[\"total_trades\"] for r in data[\"results\"])}\n- BUY: {data[\"signal_statistics\"][\"buy\"]}, SHORT: {data[\"signal_statistics\"][\"short\"]}')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### AlphaPulse Strategy" >> $GITHUB_STEP_SUMMARY
+          python -c "import json; data = json.load(open(sorted(__import__('pathlib').Path('results').glob('alphapulse_backtest_*.json'))[-1])); print(f'- Total Trades: {sum(r[\"total_trades\"] for r in data[\"results\"])}\n- BUY: {data[\"signal_statistics\"][\"buy\"]}, SHORT: {data[\"signal_statistics\"][\"short\"]}')" >> $GITHUB_STEP_SUMMARY
