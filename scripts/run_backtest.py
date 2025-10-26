@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Octopus Historical Backtest v12.1 - ENHANCED DEBUG + MAJORITY VOTING
-Debug version to understand why agents vote WAIT
+Octopus Historical Backtest v12.2 - ALPHAPULSE FIX + MAJORITY VOTING
+Fixed: AlphaPulse use_ml parameter error
 """
 
 import sys
@@ -80,8 +80,9 @@ except ImportError as e:
     raise
 
 # === CONFIGURATION ===
-USE_MAJORITY_VOTING = True  # ⭐ Toggle between weighted and majority voting
-VOTING_DEBUG = True  # Show agent votes for first 3 signals
+USE_MAJORITY_VOTING = True
+VOTING_DEBUG = True
+MAX_DEBUG_PRINTS = 3
 
 OCTO_WEIGHTS_3 = {
     "M7": 0.27,
@@ -99,15 +100,13 @@ RISK_PER_TRADE_PCT = 0.01
 MAX_POSITION_PCT = 0.10
 LIMIT_ORDER_WAIT_DAYS = 7
 
-# Global debug counter
 debug_count = 0
-MAX_DEBUG_PRINTS = 3
 
 
 def analyze_asset_octopus_3agents(ticker: str, horizon: str = "Краткосрочный", debug: bool = False):
     """
     Custom Octopus using M7, W7, AlphaPulse
-    With majority voting option and enhanced debug
+    With majority voting and enhanced debug
     """
     global debug_count
     
@@ -115,7 +114,9 @@ def analyze_asset_octopus_3agents(ticker: str, horizon: str = "Краткоср�
         # Get signals from 3 agents
         m7_sig = analyze_asset_m7(ticker, horizon)
         w7_sig = analyze_asset_w7(ticker, horizon)
-        alpha_sig = analyze_asset_alphapulse(ticker, horizon, use_ml=False)
+        
+        # ✅ FIX: Remove use_ml parameter (not supported by AlphaPulse)
+        alpha_sig = analyze_asset_alphapulse(ticker, horizon)
         
         agents = {
             "M7": m7_sig,
@@ -130,7 +131,7 @@ def analyze_asset_octopus_3agents(ticker: str, horizon: str = "Краткоср�
             confidence = sig["recommendation"]["confidence"]
             actions.append((action, confidence, name))
         
-        # DEBUG: Print agent votes (first N times)
+        # DEBUG: Print agent votes
         if debug and VOTING_DEBUG and debug_count < MAX_DEBUG_PRINTS:
             print(f"\n  🗳️  Agent votes ({ticker}):")
             for action, confidence, name in actions:
@@ -141,7 +142,6 @@ def analyze_asset_octopus_3agents(ticker: str, horizon: str = "Краткоср�
         if USE_MAJORITY_VOTING:
             buy_votes = sum(1 for a, c, n in actions if a == "BUY")
             short_votes = sum(1 for a, c, n in actions if a == "SHORT")
-            wait_votes = sum(1 for a, c, n in actions if a == "WAIT")
             
             if buy_votes >= 2:
                 final_action = "BUY"
@@ -150,7 +150,6 @@ def analyze_asset_octopus_3agents(ticker: str, horizon: str = "Краткоср�
             else:
                 final_action = "WAIT"
             
-            # Average confidence of agents voting for final_action
             aligned_agents = [
                 (a, c, n) for a, c, n in actions 
                 if a == final_action
@@ -163,7 +162,7 @@ def analyze_asset_octopus_3agents(ticker: str, horizon: str = "Краткоср�
                 final_confidence = 0.50
             
             if debug and VOTING_DEBUG and debug_count <= MAX_DEBUG_PRINTS:
-                print(f"     Majority: BUY={buy_votes}, SHORT={short_votes}, WAIT={wait_votes}")
+                print(f"     Majority: BUY={buy_votes}, SHORT={short_votes}")
                 print(f"     ✅ Final: {final_action} ({final_confidence:.0%})")
         
         # WEIGHTED VOTING
@@ -176,7 +175,7 @@ def analyze_asset_octopus_3agents(ticker: str, horizon: str = "Краткоср�
                 for action, confidence, name in actions
             )
             
-            threshold = 0.05  # Lower threshold (was 0.15)
+            threshold = 0.05
             
             if weighted_sum > threshold:
                 final_action = "BUY"
@@ -185,7 +184,6 @@ def analyze_asset_octopus_3agents(ticker: str, horizon: str = "Краткоср�
             else:
                 final_action = "WAIT"
             
-            # Calculate final confidence
             aligned_conf = sum(
                 confidence * OCTO_WEIGHTS_3[name]
                 for action, confidence, name in actions
@@ -245,7 +243,6 @@ print(f"  ⚙️  Voting method: {'MAJORITY' if USE_MAJORITY_VOTING else 'WEIGHT
 
 
 def calculate_historical_atr(historical_df: pd.DataFrame, n: int = 14) -> float:
-    """Calculate ATR using existing _atr_like function with robust fallbacks"""
     if len(historical_df) < n:
         fallback_atr = float(historical_df['c'].iloc[-1]) * 0.02
         return fallback_atr
@@ -270,13 +267,12 @@ def calculate_historical_atr(historical_df: pd.DataFrame, n: int = 14) -> float:
 
 
 def recalculate_levels(action: str, entry_price: float, atr: float) -> Dict:
-    """Recalculate levels based on historical entry price and ATR"""
     if action == "BUY":
         sl = entry_price - 2.0*atr
         tp1 = entry_price + 1.5*atr
         tp2 = entry_price + 2.5*atr
         tp3 = entry_price + 4.0*atr
-    else:  # SHORT
+    else:
         sl = entry_price + 2.0*atr
         tp1 = entry_price - 1.5*atr
         tp2 = entry_price - 2.5*atr
@@ -292,7 +288,6 @@ def recalculate_levels(action: str, entry_price: float, atr: float) -> Dict:
 
 
 def validate_levels(action: str, entry: float, sl: float, tp3: float) -> bool:
-    """Validate that levels are in correct direction"""
     if action == "BUY":
         return sl < entry and tp3 > entry
     elif action == "SHORT":
@@ -301,13 +296,10 @@ def validate_levels(action: str, entry: float, sl: float, tp3: float) -> bool:
 
 
 def check_limit_fill(bar: pd.Series, limit_price: float, action: str) -> bool:
-    """Check if limit order would be filled during this bar"""
     high = bar["h"]
     low = bar["l"]
     
-    if action == "BUY":
-        return low <= limit_price <= high
-    elif action == "SHORT":
+    if action in ["BUY", "SHORT"]:
         return low <= limit_price <= high
     
     return False
@@ -550,7 +542,7 @@ def calculate_max_drawdown(equity_curve: List[float]) -> float:
 def run_octopus_backtest():
     global debug_count
     
-    print("🚀 Octopus Backtest v12.1 - ENHANCED DEBUG + MAJORITY VOTING\n")
+    print("🚀 Octopus Backtest v12.2 - ALPHAPULSE FIX + MAJORITY VOTING\n")
     
     print(f"""
 📝 Configuration:
@@ -559,6 +551,8 @@ def run_octopus_backtest():
    - Limit order simulation with {LIMIT_ORDER_WAIT_DAYS}-day wait window
    - Levels RECALCULATED using historical price/ATR
    - DEBUG: Shows agent votes for first {MAX_DEBUG_PRINTS} signals per ticker
+   
+   ✅ FIX: AlphaPulse use_ml parameter removed
    
    Risk Management:
    - Initial Capital: ${INITIAL_CAPITAL:,}
@@ -573,7 +567,7 @@ def run_octopus_backtest():
     validation_stats = {"total": 0, "invalid": 0, "fallback_atr": 0}
     
     for ticker in TICKERS:
-        debug_count = 0  # Reset debug counter for each ticker
+        debug_count = 0
         
         print(f"\n{'='*60}")
         print(f"📊 Backtesting {ticker.upper()}")
@@ -636,7 +630,7 @@ def run_octopus_backtest():
                 elif days_waiting >= LIMIT_ORDER_WAIT_DAYS:
                     ticker_limit_stats["expired"] += 1
                     limit_stats["expired"] += 1
-                    print(f"  ⏰ LIMIT EXPIRED: {limit_data['action']} @ ${limit_data['limit_price']:.2f} (waited {days_waiting} days)")
+                    print(f"  ⏰ LIMIT EXPIRED: {limit_data['action']} @ ${limit_data['limit_price']:.2f}")
                     pending_limit = None
             
             if not open_position and not pending_limit and idx % 7 == 0 and idx > 0:
@@ -644,7 +638,6 @@ def run_octopus_backtest():
                 signal_stats["total_checks"] += 1
                 
                 try:
-                    # Get Octopus-3 signal WITH DEBUG
                     octopus_signal = analyze_asset_octopus_3agents(ticker, "Краткосрочный", debug=True)
                     action = octopus_signal["recommendation"]["action"]
                     confidence = octopus_signal["recommendation"]["confidence"]
@@ -679,7 +672,6 @@ def run_octopus_backtest():
                         if not validate_levels(action, new_levels["entry"], new_levels["sl"], new_levels["tp3"]):
                             ticker_validation["invalid"] += 1
                             validation_stats["invalid"] += 1
-                            print(f"  🚨 Invalid levels: {action} entry=${new_levels['entry']:.2f}, sl=${new_levels['sl']:.2f}, tp3=${new_levels['tp3']:.2f}")
                             continue
                         
                         octopus_signal["levels"] = new_levels
@@ -695,7 +687,6 @@ def run_octopus_backtest():
                                 "order_date": current_date,
                                 "atr": atr
                             }
-                            
                         else:
                             next_row = historical_data.iloc[idx + 1]
                             entry_price = next_row["o"]
@@ -795,10 +786,9 @@ def run_octopus_backtest():
             print(f"     Sharpe: {result['sharpe_ratio']}")
             print(f"     Max DD: {result['max_drawdown_pct']}%")
             print(f"     TP: TP1={tp_hits['TP1']}, TP2={tp_hits['TP2']}, TP3={tp_hits['TP3']}, SL={tp_hits['SL']}")
-            print(f"     Limit orders: {ticker_limit_stats['filled']}/{ticker_limit_stats['total']} filled ({fill_rate:.1f}%)")
             
             print(f"\n  📝 Sample trades:")
-            for i, trade in enumerate(trades[:5], 1):
+            for i, trade in enumerate(trades[:3], 1):
                 print(f"    {i}. {trade['entry_date']} → {trade['exit_date']}")
                 print(f"       ${trade['entry_price']} → ${trade['exit_price']} | {trade['action']}")
                 print(f"       Hit: {trade['hit_level']} | P/L: ${trade['profit_dollars']:,.2f} ({trade['profit_pct']*100:.2f}%)")
@@ -818,10 +808,11 @@ def run_octopus_backtest():
     with open(output_file, "w") as f:
         json.dump({
             "backtest_date": datetime.now().isoformat(),
-            "version": "12.1_debug_majority_voting",
-            "description": "M7/W7/AlphaPulse with majority voting and enhanced debug",
+            "version": "12.2_alphapulse_fix",
+            "description": "M7/W7/AlphaPulse with majority voting, AlphaPulse fix applied",
             "agents": ["M7", "W7", "AlphaPulse"],
             "voting_method": "majority" if USE_MAJORITY_VOTING else "weighted",
+            "fix_applied": "Removed use_ml parameter from AlphaPulse call",
             "initial_capital": INITIAL_CAPITAL,
             "tickers": TICKERS,
             "signal_statistics": signal_stats,
