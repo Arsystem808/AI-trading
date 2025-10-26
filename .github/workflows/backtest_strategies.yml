@@ -1,4 +1,4 @@
-name: Strategy Backtests
+name: backtest_strategies
 
 on:
   workflow_dispatch:
