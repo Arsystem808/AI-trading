@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-Octopus Historical Backtest v9.1 - IMPORT FIX
-Fixed PolygonClient import issue + all v9.0 improvements
+Octopus Historical Backtest v9.3 - ENHANCED VALIDATION
+Added: Octopus import detection, levels validation, enhanced debugging
 """
 
 import sys
 import os
 import json
 import requests
+import inspect
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Dict, Optional, List, Tuple
+from typing import Dict, Optional, List
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# === BACKTEST MODE FLAG ===
 os.environ["BACKTEST_MODE"] = "1"
 print("🔧 Backtest mode enabled (performance logging disabled)\n")
 
@@ -24,7 +24,7 @@ if not POLYGON_API_KEY:
 
 print(f"Using API key: {POLYGON_API_KEY[:8]}***\n")
 
-# === SAFE IMPORTS ===
+# === SAFE IMPORTS (WITHOUT OCTOPUS YET!) ===
 print("📦 Importing dependencies...")
 
 import pandas as pd
@@ -77,10 +77,9 @@ if PolygonClient is None:
     
     print("  ✅ Simple PolygonClient created")
 
-# Import agents with fallbacks
+# Import helper functions (NOT Octopus yet!)
 try:
     from core.strategy import (
-        analyze_asset_octopus,
         analyze_asset_global,
         analyze_asset_w7,
         _atr_like,
@@ -111,7 +110,7 @@ except ImportError:
 
 print()
 
-# === M7 BACKTEST MONKEY PATCH ===
+# === M7 BACKTEST MONKEY PATCH (BEFORE OCTOPUS IMPORT!) ===
 print("🔧 Applying M7 monkey patch...")
 print("""
 ⚠️  IMPORTANT: M7 Strategy Modified for Backtest
@@ -218,22 +217,67 @@ def analyze_asset_m7_backtest(ticker, horizon="Краткосрочный", use_
             "source": "M7",
             "backtest_mode": True,
             "ma_gap": float(ma_gap),
+            "atr": float(atr14),
+            "entry": float(entry),
+            "tp3": float(tp3),
             "strategy_type": "ma_crossover",
             "original_strategy": "pivot_points"
         }
     }
 
-# Apply monkey patch
+# CRITICAL: Apply patch BEFORE importing Octopus!
 import core.strategy
 core.strategy.analyze_asset_m7 = analyze_asset_m7_backtest
+print("  ✅ M7 function patched in core.strategy module\n")
+
+# NOW import Octopus (it will use patched M7)
+try:
+    from core.strategy import analyze_asset_octopus
+    print("  ✅ Octopus imported (with patched M7)")
+    
+    # NEW: Check if Octopus has local import of M7
+    try:
+        octopus_source = inspect.getsource(analyze_asset_octopus)
+        if "from core.strategy import analyze_asset_m7" in octopus_source:
+            print("  ⚠️  WARNING: Octopus has local import of M7 - patch may not work!")
+            print("     Consider modifying core/strategy.py directly")
+        else:
+            print("  ✅ Octopus uses module-level M7 reference - patch should work")
+    except Exception as e:
+        print(f"  ⚠️  Could not inspect Octopus source: {e}")
+    
+    print()
+    
+except ImportError as e:
+    print(f"  ❌ Failed to import Octopus: {e}")
+    raise
 
 # Verify patch worked
 try:
     test_result = core.strategy.analyze_asset_m7("X:BTCUSD", "Краткосрочный")
     if test_result.get("meta", {}).get("backtest_mode") == True:
-        print("✅ M7 monkey patch verified successfully\n")
+        entry = test_result["levels"]["entry"]
+        tp3 = test_result["levels"]["tp3"]
+        atr = test_result["meta"].get("atr", 0)
+        action = test_result["recommendation"]["action"]
+        
+        print("✅ M7 monkey patch verified successfully")
+        print(f"   Test signal: {action} | entry=${entry:.2f}, TP3=${tp3:.2f}, ATR=${atr:.2f}")
+        print(f"   TP3 distance: ${abs(tp3-entry):.2f} (expected: ~${4*atr:.2f})")
+        
+        # Validate levels are correct
+        if action == "BUY":
+            if tp3 > entry and test_result["levels"]["sl"] < entry:
+                print(f"   ✅ Levels direction correct for BUY\n")
+            else:
+                print(f"   ❌ WARNING: Levels direction wrong for BUY!\n")
+        else:  # SHORT
+            if tp3 < entry and test_result["levels"]["sl"] > entry:
+                print(f"   ✅ Levels direction correct for SHORT\n")
+            else:
+                print(f"   ❌ WARNING: Levels direction wrong for SHORT!\n")
     else:
-        print("⚠️  WARNING: M7 monkey patch may not be applied correctly\n")
+        print("⚠️  WARNING: M7 patch may not be applied correctly\n")
 except Exception as e:
     print(f"⚠️  WARNING: M7 patch verification failed: {e}\n")
 
@@ -510,7 +554,7 @@ def calculate_max_drawdown(equity_curve: List[float]) -> float:
 
 
 def run_octopus_backtest():
-    print("🚀 Octopus Backtest v9.1 - IMPORT FIX + PRODUCTION READY\n")
+    print("🚀 Octopus Backtest v9.3 - ENHANCED VALIDATION\n")
     
     ml_available = check_ml_models()
     
@@ -529,6 +573,7 @@ def run_octopus_backtest():
     all_results = []
     signal_stats = {"total_checks": 0, "wait": 0, "buy": 0, "short": 0}
     agent_errors = {}
+    first_signal_printed = False
     
     for ticker in TICKERS:
         print(f"\n{'='*60}")
@@ -545,6 +590,7 @@ def run_octopus_backtest():
         open_position = None
         ticker_signal_stats = {"checks": 0, "wait": 0, "buy": 0, "short": 0}
         ticker_agent_errors = []
+        invalid_signals = 0
         
         for idx, row in historical_data.iterrows():
             current_date = row["date"].strftime("%Y-%m-%d")
@@ -575,6 +621,38 @@ def run_octopus_backtest():
                     octopus_signal = analyze_asset_octopus(ticker, "Краткосрочный")
                     action = octopus_signal["recommendation"]["action"]
                     
+                    # NEW: Validate levels
+                    entry = octopus_signal["levels"]["entry"]
+                    sl = octopus_signal["levels"]["sl"]
+                    tp1 = octopus_signal["levels"]["tp1"]
+                    tp2 = octopus_signal["levels"]["tp2"]
+                    tp3 = octopus_signal["levels"]["tp3"]
+                    
+                    # Validate signal integrity
+                    signal_valid = True
+                    if action == "BUY":
+                        if sl >= entry:
+                            print(f"  🚨 INVALID SL for BUY: entry=${entry:.2f}, sl=${sl:.2f} (SL should be < entry)")
+                            signal_valid = False
+                            invalid_signals += 1
+                        if tp3 <= entry:
+                            print(f"  🚨 INVALID TP3 for BUY: entry=${entry:.2f}, tp3=${tp3:.2f} (TP3 should be > entry)")
+                            signal_valid = False
+                            invalid_signals += 1
+                    elif action == "SHORT":
+                        if sl <= entry:
+                            print(f"  🚨 INVALID SL for SHORT: entry=${entry:.2f}, sl=${sl:.2f} (SL should be > entry)")
+                            signal_valid = False
+                            invalid_signals += 1
+                        if tp3 >= entry:
+                            print(f"  🚨 INVALID TP3 for SHORT: entry=${entry:.2f}, tp3=${tp3:.2f} (TP3 should be < entry)")
+                            signal_valid = False
+                            invalid_signals += 1
+                    
+                    if not signal_valid:
+                        continue  # Skip invalid signal
+                    
+                    # Track signal distribution
                     if action == "WAIT":
                         ticker_signal_stats["wait"] += 1
                         signal_stats["wait"] += 1
@@ -585,6 +663,17 @@ def run_octopus_backtest():
                         ticker_signal_stats["short"] += 1
                         signal_stats["short"] += 1
                     
+                    # NEW: Print first signal for debugging
+                    if not first_signal_printed and action != "WAIT":
+                        print(f"\n  📝 First {action} signal debug:")
+                        print(f"     Date: {current_date}")
+                        print(f"     Entry: ${entry:.2f}")
+                        print(f"     SL: ${sl:.2f}")
+                        print(f"     TP1: ${tp1:.2f}, TP2: ${tp2:.2f}, TP3: ${tp3:.2f}")
+                        print(f"     Validation: {'✅ VALID' if signal_valid else '❌ INVALID'}\n")
+                        first_signal_printed = True
+                    
+                    # Execute signal
                     if action != "WAIT":
                         if idx + 1 < len(historical_data):
                             next_row = historical_data.iloc[idx + 1]
@@ -604,6 +693,9 @@ def run_octopus_backtest():
         
         if ticker_agent_errors:
             agent_errors[ticker] = ticker_agent_errors
+        
+        if invalid_signals > 0:
+            print(f"\n  ⚠️  Invalid signals skipped: {invalid_signals}")
         
         if open_position and not open_position.closed:
             last_row = historical_data.iloc[-1]
@@ -660,6 +752,7 @@ def run_octopus_backtest():
                 "signal_stats": ticker_signal_stats,
                 "wait_rate_pct": round(wait_rate * 100, 1),
                 "agent_errors_count": len(ticker_agent_errors),
+                "invalid_signals_skipped": invalid_signals,
                 "trades": trades[:20]
             }
             
@@ -699,7 +792,7 @@ def run_octopus_backtest():
     with open(output_file, "w") as f:
         json.dump({
             "backtest_date": datetime.now().isoformat(),
-            "version": "9.1_import_fix",
+            "version": "9.3_enhanced_validation",
             "orchestrator": "analyze_asset_octopus",
             "agents": ["Global", "M7 (patched)", "W7", "AlphaPulse"],
             "m7_patch_applied": True,
