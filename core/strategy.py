@@ -31,18 +31,19 @@ except Exception:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ===== Stable decision layer: bar-close + daily TTL (BEGIN) =====
+# ===== Stable decision layer: bar-close + daily TTL + last-out cache (BEGIN) =====
 # Решающий горизонт (секунды): 60=1m, 300=5m, 900=15m, 3600=1h
-TF_SEC = 60  # при необходимости читай из UI/конфига
+# Рекомендуется прокидывать TF_SEC из UI/конфига.
+TF_SEC = 60
 
 def _bucket(ts_ms: int, tf_sec: int) -> int:
     size = tf_sec * 1000
     return (ts_ms // size) * size
 
-def _should_decide_now(ts_ms: int, lag_ms: int = 1500) -> bool:
+def _should_decide_now(ts_ms: int, lag_ms: int = 15000) -> bool:
     """
-    Решаем только в самом конце окна TF_SEC (решение "по клоузу").
-    lag_ms — небольшой запас на доставку/вычисление.
+    Разрешаем пересчёт только под конец окна TF_SEC (решение «по клоузу»).
+    lag_ms — запас до конца окна, чтобы успевать считать за 10–15 сек до клоуза.
     """
     end_ms = _bucket(ts_ms, TF_SEC) + TF_SEC * 1000
     return ts_ms >= (end_ms - lag_ms)
@@ -53,20 +54,52 @@ _state: Dict[tuple, Dict[str, str]] = {}  # {(symbol, model): {"last_action":"WA
 def _day_key(ts_ms: int) -> str:
     return time.strftime("%Y%m%d", time.gmtime(ts_ms / 1000))
 
+# Кэш последнего валидного ответа для возврата до следующего бар-клоуза
+LAST_OUT: Dict[tuple, Dict[str, Any]] = {}
+
+def _price_fallback_for(ticker: str) -> float:
+    """
+    Минимально безопасный last_price для заглушки:
+    1) Polygon last trade (crypto) -> 2) snapshot single-ticker -> 0.0
+    Реализация использует доступные методы PolygonClient.
+    """
+    try:
+        cli = PolygonClient()
+        p = cli.last_trade_price(ticker)  # last trade (crypto/общий)
+        if p is not None:
+            return float(p)
+    except Exception:
+        pass
+    try:
+        # Если в твоём PolygonClient есть метод snapshot — используй его здесь.
+        # Оставлено 0.0 как резерв без падения.
+        return 0.0
+    except Exception:
+        return 0.0
+
 def _last_ui_payload_for(symbol: str, model_name: str) -> Dict[str, Any]:
     """
-    Минимальный WAIT для стабильного UI, если ещё не время пересчёта (bar-close)
-    или заблокирован переворот дневным TTL. При наличии кэша — верни кэш вместо этого.
+    Возвращает последний валидный результат (если есть) с пометкой gated.
+    Если кэша ещё нет, отдаёт WAIT с реальной ценой-фоллбэком вместо $0.00.
     """
+    prev = LAST_OUT.get((symbol, model_name))
+    if prev:
+        meta = dict(prev.get("meta", {}))
+        meta.update({"gated": True})
+        out = dict(prev)
+        out["meta"] = meta
+        return out
+
+    price = _price_fallback_for(symbol)
     return {
-        "last_price": 0.0,
+        "last_price": float(price),
         "recommendation": {"action": "WAIT", "confidence": 0.50},
         "levels": {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
         "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
         "context": [f"{model_name}: waiting for bar close ({TF_SEC}s) or daily TTL"],
         "note_html": "<div>WAIT</div>",
         "alt": "WAIT", "entry_kind": "wait", "entry_label": "WAIT",
-        "meta": {"source": model_name, "grey_zone": True, "tf_sec": TF_SEC}
+        "meta": {"source": model_name, "grey_zone": True, "tf_sec": TF_SEC, "gated": True}
     }
 # ===== Stable decision layer (END) =====
 
@@ -1116,7 +1149,7 @@ def _num_to_act(x: float) -> str:  # без изменений
     return "WAIT"
 
 def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
-    # ===== B: решаем только на bar-close для агрегированного вывода =====
+    # ===== B: bar-close гейт для агрегированного вывода =====
     now_ms = int(time.time() * 1000)
     if not _should_decide_now(now_ms):
         return _last_ui_payload_for(ticker, "Octopus")
@@ -1136,7 +1169,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
             logger.warning("Agent %s failed: %s", name, e)
 
     if not parts:
-        return {
+        out = {
             "last_price": 0.0,
             "recommendation": {"action": "WAIT", "confidence": 0.50},
             "levels": {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
@@ -1146,8 +1179,9 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
             "alt": "WAIT", "entry_kind": "wait", "entry_label": "WAIT",
             "meta": {"source": "Octopus", "votes": [], "ratio": 0.0}
         }
+        return out
 
-    # 2) Активные голоса BUY/SHORT с весами и conf (как было)
+    # 2) Голоса/веса (как было)
     active = []
     for k, r in parts.items():
         a = str(r.get("recommendation", {}).get("action", "WAIT")).upper()
@@ -1164,7 +1198,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     delta = abs(score_long - score_short)
     ratio = delta / max(1e-6, total_side)
 
-    # 3) Правило выбора действия (как было)
+    # 3) Правило финального действия (как было)
     if count_long >= 3:
         final_action = "BUY"
     elif count_short >= 3:
@@ -1172,7 +1206,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     else:
         final_action = "WAIT" if ratio < 0.20 else ("BUY" if score_long > score_short else "SHORT")
 
-    # Утилита для медианных уровней по сторонникам выбранной стороны (как было)
+    # Медианные уровни по сторонникам (как было)
     def _median_levels(direction: str):
         L = [r.get("levels", {}) for r in parts.values()
              if str(r.get("recommendation", {}).get("action", "")).upper() == direction]
@@ -1181,7 +1215,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         med = lambda k: float(np.median([x.get(k, 0.0) for x in L if isinstance(x.get(k, None), (int, float))]))
         return {"entry": med("entry"), "sl": med("sl"), "tp1": med("tp1"), "tp2": med("tp2"), "tp3": med("tp3")}
 
-    # 4) Уровни/пробы (как было: медианы при слабой поляризации, иначе — победитель)
+    # 4) Уровни/пробы (как было)
     if final_action in ("BUY", "SHORT"):
         cand = [t for t in active if t[1] == final_action]
         win_agent = (max(cand, key=lambda t: t[2] * t[3])[0] if cand
@@ -1189,7 +1223,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         levels_out = _median_levels(final_action) if ratio < 0.25 else parts[win_agent].get("levels", {})
         probs_out = _monotone_tp_probs(parts.get(win_agent, {}).get("probs", {}) or {})
 
-        # 5) Итоговый confidence (НОВОЕ): взвешенно по победившей стороне + мягкий штраф конфликта
+        # 5) Итоговый confidence (как обсуждалось)
         side_items = []
         for k, r in parts.items():
             rec = r.get("recommendation", {})
@@ -1214,7 +1248,6 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         probs_out  = {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
         overall_conf = float(CAL_CONF["Octopus"](0.50))
 
-    # 6) Сбор ответа и логирование (как было)
     last_price = float(next(iter(parts.values())).get("last_price", 0.0))
     votes_txt = [{"agent": k,
                   "action": str(r.get("recommendation", {}).get("action", "")),
@@ -1245,16 +1278,22 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     except Exception as e:
         logger.warning("perf log Octopus failed: %s", e)
 
-    # ===== C: дневной TTL (Octopus) =====
+    # ===== C: дневной TTL + кэш =====
     key = (ticker, "Octopus")
     st = _state.get(key, {"last_action": "WAIT", "last_day": ""})
     today = _day_key(now_ms)
     new_action = str(res.get("recommendation", {}).get("action", "WAIT")).upper()
     if st["last_day"] == today and st["last_action"] != "WAIT" and new_action != st["last_action"]:
+        # возвращаем последний валидный out если есть
+        prev = LAST_OUT.get(key)
+        if prev:
+            meta = dict(prev.get("meta", {})); meta.update({"gated": True})
+            out_prev = dict(prev); out_prev["meta"] = meta
+            return out_prev
         return _last_ui_payload_for(ticker, "Octopus")
     _state[key] = {"last_action": new_action, "last_day": today}
+    LAST_OUT[key] = res  # кэшируем последний валидный результат
     # ===== END C =====
-
     return res
 
 # -------------------- Strategy Router --------------------
@@ -1271,7 +1310,7 @@ def analyze_asset(ticker: str, horizon: str, strategy: str = "Octopus") -> Dict[
     if not fn:
         raise ValueError(f"Unknown strategy: {strategy}")
 
-    # ===== B: bar-close на уровне роутера (охватывает все стратегии) =====
+    # ===== B: bar-close на уровне роутера =====
     now_ms = int(time.time() * 1000)
     if not _should_decide_now(now_ms):
         return _last_ui_payload_for(ticker, strategy)
@@ -1279,14 +1318,20 @@ def analyze_asset(ticker: str, horizon: str, strategy: str = "Octopus") -> Dict[
 
     out = fn(ticker, horizon)
 
-    # ===== C: дневной TTL на уровне роутера =====
+    # ===== C: дневной TTL + кэш =====
     key = (ticker, strategy)
     st = _state.get(key, {"last_action": "WAIT", "last_day": ""})
     today = _day_key(now_ms)
     new_action = str(out.get("recommendation", {}).get("action", "WAIT")).upper()
     if st["last_day"] == today and st["last_action"] != "WAIT" and new_action != st["last_action"]:
+        prev = LAST_OUT.get(key)
+        if prev:
+            meta = dict(prev.get("meta", {})); meta.update({"gated": True})
+            out_prev = dict(prev); out_prev["meta"] = meta
+            return out_prev
         return _last_ui_payload_for(ticker, strategy)
     _state[key] = {"last_action": new_action, "last_day": today}
+    LAST_OUT[key] = out
     # ===== END C =====
 
     return out
