@@ -1,11 +1,21 @@
 # -*- coding: utf-8 -*-
-# app.py — Arxora UI (final EOD): Valid until = конец дня (UTC), примеры тикеров, блок «О проекте» внизу
+# app.py — Arxora UI (final EOD)
 
-import os, re, traceback, importlib, sys, glob, subprocess
-from typing import Any, Dict, Optional, List
-from datetime import datetime, timezone
+from core.model_fetch import ensure_models
+ensure_models()  # подтягивает модели в ARXORA_MODEL_DIR или /tmp/models до любых загрузок
+
+import os
 from pathlib import Path
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional, List
+
 import streamlit as st
+# Если ниже используются — раскомментируй:
+# import pandas as pd
+# import numpy as np
+# import joblib
+
+MODEL_DIR = Path(os.getenv("ARXORA_MODEL_DIR", "/tmp/models"))
 
 # Опционально: pandas не требуется, но если установлен — импорт не навредит
 try:
