@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional, Callable
 
 import numpy as np
 import pandas as pd
+import time  # добавлено
 
 # -------------------- инфраструктура --------------------
 # Мягкие импорты, чтобы UI не падал при отсутствии зависимостей
@@ -29,6 +30,45 @@ except Exception:
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ===== Stable decision layer: bar-close + daily TTL (BEGIN) =====
+# Решающий горизонт (секунды): 60=1m, 300=5m, 900=15m, 3600=1h
+TF_SEC = 60  # при необходимости читай из UI/конфига
+
+def _bucket(ts_ms: int, tf_sec: int) -> int:
+    size = tf_sec * 1000
+    return (ts_ms // size) * size
+
+def _should_decide_now(ts_ms: int, lag_ms: int = 1500) -> bool:
+    """
+    Решаем только в самом конце окна TF_SEC (решение "по клоузу").
+    lag_ms — небольшой запас на доставку/вычисление.
+    """
+    end_ms = _bucket(ts_ms, TF_SEC) + TF_SEC * 1000
+    return ts_ms >= (end_ms - lag_ms)
+
+# Дневной TTL на смену стороны
+_state: Dict[tuple, Dict[str, str]] = {}  # {(symbol, model): {"last_action":"WAIT","last_day":"YYYYMMDD"}}
+
+def _day_key(ts_ms: int) -> str:
+    return time.strftime("%Y%m%d", time.gmtime(ts_ms / 1000))
+
+def _last_ui_payload_for(symbol: str, model_name: str) -> Dict[str, Any]:
+    """
+    Минимальный WAIT для стабильного UI, если ещё не время пересчёта (bar-close)
+    или заблокирован переворот дневным TTL. При наличии кэша — верни кэш вместо этого.
+    """
+    return {
+        "last_price": 0.0,
+        "recommendation": {"action": "WAIT", "confidence": 0.50},
+        "levels": {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+        "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+        "context": [f"{model_name}: waiting for bar close ({TF_SEC}s) or daily TTL"],
+        "note_html": "<div>WAIT</div>",
+        "alt": "WAIT", "entry_kind": "wait", "entry_label": "WAIT",
+        "meta": {"source": model_name, "grey_zone": True, "tf_sec": TF_SEC}
+    }
+# ===== Stable decision layer (END) =====
 
 # -------------------- small utils --------------------
 def _clip01(x: float) -> float:
@@ -1065,7 +1105,7 @@ except Exception:
         return res
 
 # -------------------- Оркестратор Octopus --------------------
-OCTO_WEIGHTS: Dict[str, float] = {"Global": 0.10, "M7": 0.20, "W7": 0.20, "AlphaPulse": 0.50}  # как и было
+OCTO_WEIGHTS: Dict[str, float] = {"Global": 0.25, "M7": 0.25, "W7": 0.25, "AlphaPulse": 0.25}  # как и было
 
 def _act_to_num(a: str) -> int:  # без изменений
     return 1 if a == "BUY" else (-1 if a == "SHORT" else 0)
@@ -1076,7 +1116,13 @@ def _num_to_act(x: float) -> str:  # без изменений
     return "WAIT"
 
 def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
-    # 1) Собираем ответы агентов
+    # ===== B: решаем только на bar-close для агрегированного вывода =====
+    now_ms = int(time.time() * 1000)
+    if not _should_decide_now(now_ms):
+        return _last_ui_payload_for(ticker, "Octopus")
+    # ===== END B =====
+
+    # 1) Собираем ответы агентов (как было)
     parts: Dict[str, Dict[str, Any]] = {}
     for name, fn in {
         "Global":     analyze_asset_global,
@@ -1101,7 +1147,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
             "meta": {"source": "Octopus", "votes": [], "ratio": 0.0}
         }
 
-    # 2) Строим активные голоса BUY/SHORT с весами и conf (как было)
+    # 2) Активные голоса BUY/SHORT с весами и conf (как было)
     active = []
     for k, r in parts.items():
         a = str(r.get("recommendation", {}).get("action", "WAIT")).upper()
@@ -1118,7 +1164,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     delta = abs(score_long - score_short)
     ratio = delta / max(1e-6, total_side)
 
-    # 3) Правило выбора действия (без изменений)
+    # 3) Правило выбора действия (как было)
     if count_long >= 3:
         final_action = "BUY"
     elif count_short >= 3:
@@ -1126,7 +1172,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     else:
         final_action = "WAIT" if ratio < 0.20 else ("BUY" if score_long > score_short else "SHORT")
 
-    # Утилита для медианных уровней по сторонникам выбранной стороны
+    # Утилита для медианных уровней по сторонникам выбранной стороны (как было)
     def _median_levels(direction: str):
         L = [r.get("levels", {}) for r in parts.values()
              if str(r.get("recommendation", {}).get("action", "")).upper() == direction]
@@ -1135,7 +1181,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         med = lambda k: float(np.median([x.get(k, 0.0) for x in L if isinstance(x.get(k, None), (int, float))]))
         return {"entry": med("entry"), "sl": med("sl"), "tp1": med("tp1"), "tp2": med("tp2"), "tp3": med("tp3")}
 
-    # 4) Уровни/пробы как было: медианы при слабой поляризации, иначе — от победителя
+    # 4) Уровни/пробы (как было: медианы при слабой поляризации, иначе — победитель)
     if final_action in ("BUY", "SHORT"):
         cand = [t for t in active if t[1] == final_action]
         win_agent = (max(cand, key=lambda t: t[2] * t[3])[0] if cand
@@ -1144,7 +1190,6 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         probs_out = _monotone_tp_probs(parts.get(win_agent, {}).get("probs", {}) or {})
 
         # 5) Итоговый confidence (НОВОЕ): взвешенно по победившей стороне + мягкий штраф конфликта
-        # 5.1 Взвешенный conf по сторонникам финальной стороны
         side_items = []
         for k, r in parts.items():
             rec = r.get("recommendation", {})
@@ -1154,7 +1199,6 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
                 side_items.append((w, c))
         overall_conf = (sum(w * c for w, c in side_items) / max(1e-6, sum(w for w, _ in side_items))) if side_items else 0.50
 
-        # 5.2 Мягкий штраф за сильное несогласие противоположной стороны
         score_side = score_long if final_action == "BUY" else score_short
         score_opp  = score_short if final_action == "BUY" else score_long
         try:
@@ -1163,9 +1207,8 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         except Exception:
             beta = 0.35
         penalty = 1.0 - beta * (score_opp / max(1e-6, score_side))
-        penalty = max(0.70, min(1.00, penalty))  # клип фактора
+        penalty = max(0.70, min(1.00, penalty))
         overall_conf = float(CAL_CONF["Octopus"](_clip01(overall_conf * penalty)))
-
     else:
         levels_out = {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
         probs_out  = {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
@@ -1202,6 +1245,16 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     except Exception as e:
         logger.warning("perf log Octopus failed: %s", e)
 
+    # ===== C: дневной TTL (Octopus) =====
+    key = (ticker, "Octopus")
+    st = _state.get(key, {"last_action": "WAIT", "last_day": ""})
+    today = _day_key(now_ms)
+    new_action = str(res.get("recommendation", {}).get("action", "WAIT")).upper()
+    if st["last_day"] == today and st["last_action"] != "WAIT" and new_action != st["last_action"]:
+        return _last_ui_payload_for(ticker, "Octopus")
+    _state[key] = {"last_action": new_action, "last_day": today}
+    # ===== END C =====
+
     return res
 
 # -------------------- Strategy Router --------------------
@@ -1217,14 +1270,23 @@ def analyze_asset(ticker: str, horizon: str, strategy: str = "Octopus") -> Dict[
     fn = STRATEGY_REGISTRY.get(strategy)
     if not fn:
         raise ValueError(f"Unknown strategy: {strategy}")
-    return fn(ticker, horizon)
 
-# -------------------- Тестовый запуск --------------------
-if __name__ == "__main__":
-    for s in ["Global", "M7", "W7", "AlphaPulse", "Octopus"]:
-        try:
-            print(f"\n=== {s} ===")
-            out = analyze_asset("AAPL", "Краткосрочный", s)
-            print({k: out[k] for k in ["last_price","recommendation","levels","probs"]})
-        except Exception as e:
-            print(f"{s} error:", e)
+    # ===== B: bar-close на уровне роутера (охватывает все стратегии) =====
+    now_ms = int(time.time() * 1000)
+    if not _should_decide_now(now_ms):
+        return _last_ui_payload_for(ticker, strategy)
+    # ===== END B =====
+
+    out = fn(ticker, horizon)
+
+    # ===== C: дневной TTL на уровне роутера =====
+    key = (ticker, strategy)
+    st = _state.get(key, {"last_action": "WAIT", "last_day": ""})
+    today = _day_key(now_ms)
+    new_action = str(out.get("recommendation", {}).get("action", "WAIT")).upper()
+    if st["last_day"] == today and st["last_action"] != "WAIT" and new_action != st["last_action"]:
+        return _last_ui_payload_for(ticker, strategy)
+    _state[key] = {"last_action": new_action, "last_day": today}
+    # ===== END C =====
+
+    return out
