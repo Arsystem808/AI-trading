@@ -32,9 +32,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 # ===== Stable decision layer: 12h bar-close + daily TTL + last-out cache (PROD) =====
 # Режим 12 часов для обоих рынков (два сигнала в сутки)
-TF_SEC_CRYPTO = 43200   # 12h
+TF_SEC_CRYPTO = 300   # 5m
 LAG_CRYPTO    = 30000   # 30s до клоуза
-TF_SEC_STOCKS = 43200   # 12h
+TF_SEC_STOCKS = 900   # 15m
 LAG_STOCKS    = 30000   # 30s до клоуза
 
 def _is_crypto(t: str) -> bool:
