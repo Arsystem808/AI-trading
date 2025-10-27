@@ -33,9 +33,9 @@ logger = logging.getLogger(__name__)
 
 # ===== Stable decision layer: daily bar-close + daily TTL + last-out cache (PROD) =====
 # Дневной режим для обоих рынков
-TF_SEC_CRYPTO = 86400   # 1 day
+TF_SEC_CRYPTO = 43200   # 1 day
 LAG_CRYPTO    = 30000   # 30s до клоуза
-TF_SEC_STOCKS = 86400   # 1 day
+TF_SEC_STOCKS = 43200   # 1 day
 LAG_STOCKS    = 30000   # 30s до клоуза
 
 def _is_crypto(t: str) -> bool:
