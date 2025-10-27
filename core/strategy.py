@@ -31,12 +31,12 @@ except Exception:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ===== Stable decision layer: bar-close + daily TTL + last-out cache (FINAL) =====
-# Профили таймфрейма и лага по рынкам
-TF_SEC_CRYPTO = 60      # 1m
-LAG_CRYPTO    = 15000   # 15s до клоуза
-TF_SEC_STOCKS = 300     # 5m (при 15m delay можно поставить 900)
-LAG_STOCKS    = 20000   # 20s до клоуза
+# ===== Stable decision layer: daily bar-close + daily TTL + last-out cache (PROD) =====
+# Дневной режим для обоих рынков
+TF_SEC_CRYPTO = 86400   # 1 day
+LAG_CRYPTO    = 30000   # 30s до клоуза
+TF_SEC_STOCKS = 86400   # 1 day
+LAG_STOCKS    = 30000   # 30s до клоуза
 
 def _is_crypto(t: str) -> bool:
     t = (t or "").upper()
@@ -65,10 +65,7 @@ LAST_OUT: Dict[tuple, Dict[str, Any]] = {}
 
 def _price_fallback_for(ticker: str) -> float:
     """
-    Берём цену: 1) last trade (crypto/stocks),
-               2) snapshot (если есть реализация в PolygonClient),
-               3) последний daily close,
-               4) 0.0 в крайнем случае.
+    Берём цену: 1) last trade (crypto/stocks), 2) daily close (fallback), 3) 0.0.
     """
     try:
         cli = PolygonClient()
@@ -87,8 +84,8 @@ def _price_fallback_for(ticker: str) -> float:
 
 def _last_ui_payload_for(symbol: str, model_name: str) -> Dict[str, Any]:
     """
-    Возвращаем последний валидный out (meta.gated=True) до клоуза.
-    Если кэша ещё нет — отдаём WAIT с реальной ценой, а не $0.00.
+    Возвращает последний валидный out (meta.gated=True) до daily‑close.
+    Если кэша ещё нет — отдаёт WAIT с реальной ценой‑фоллбэком.
     """
     prev = LAST_OUT.get((symbol, model_name))
     if prev:
@@ -98,13 +95,13 @@ def _last_ui_payload_for(symbol: str, model_name: str) -> Dict[str, Any]:
         return out
 
     price = _price_fallback_for(symbol)
-    tf_sec, _ = _tf_lag_for(model_name if model_name in ("Octopus","Global","M7","W7","AlphaPulse") else symbol)
+    tf_sec, _ = _tf_lag_for(symbol)
     return {
         "last_price": float(price),
         "recommendation": {"action": "WAIT", "confidence": 0.50},
         "levels": {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
         "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
-        "context": [f"{model_name}: waiting for bar close ({tf_sec}s) or daily TTL"],
+        "context": [f"{model_name}: waiting for daily close ({tf_sec}s) or daily TTL"],
         "note_html": "<div>WAIT</div>",
         "alt": "WAIT", "entry_kind": "wait", "entry_label": "WAIT",
         "meta": {"source": model_name, "grey_zone": True, "tf_sec": tf_sec, "gated": True}
