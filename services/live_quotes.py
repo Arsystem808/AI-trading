@@ -28,14 +28,13 @@ class LiveQuoteService:
         self._ws = None
         self._ws_thread = None
         if not POLY_KEY:
-            _log("WARNING: POLYGON_API_KEY is empty")
+            _log("WARNING: empty POLYGON_API_KEY")
 
     def ensure_ws(self):
         if not self.use_ws or self._ws_thread or _ws is None:
             return
         self._ws_thread = threading.Thread(target=self._run_ws, daemon=True)
         self._ws_thread.start()
-        _log("WS thread started")
 
     def subscribe(self, raw_sym: str):
         t = map_ticker(raw_sym)
@@ -49,9 +48,8 @@ class LiveQuoteService:
         try:
             if self._ws:
                 self._ws.send(json.dumps({"action":"subscribe","params":f"XT.{t}"}))
-                _log(f"WS subscribe XT.{t}")
-        except Exception as e:
-            _log(f"WS subscribe error: {e}")
+        except Exception:
+            pass
 
     def get_price(self, raw_sym: str):
         t = map_ticker(raw_sym)
@@ -71,19 +69,15 @@ class LiveQuoteService:
                 r = requests.get(url, timeout=2.5)
                 if r.ok:
                     j = r.json() or {}
-                    lt = (((j.get("ticker") or {}) ).get("lastTrade") or {})
+                    lt = (((j.get("ticker") or {})).get("lastTrade") or {})
                     price = float(lt.get("price") or lt.get("p") or 0.0)
                     ts = int(lt.get("timestamp") or lt.get("t") or now)
                     if price > 0.0:
                         with self._lock:
                             self._last[t] = (price, ts)
                         return price, ts, "snapshot"
-                else:
-                    _log(f"snapshot HTTP {r.status_code} for {t}")
             except Exception as e:
-                _log(f"snapshot failed for {t}: {e}")
-        else:
-            _log("snapshot skipped: empty key")
+                _log(f"snapshot error {t}: {e}")
 
         if POLY_KEY:
             try:
@@ -98,14 +92,9 @@ class LiveQuoteService:
                         with self._lock:
                             self._last[t] = (price2, ts2)
                         return price2, ts2, "rest-last"
-                else:
-                    _log(f"last-trade HTTP {r2.status_code} for {t}")
             except Exception as e:
-                _log(f"last-trade failed for {t}: {e}")
-        else:
-            _log("last-trade skipped: empty key")
+                _log(f"last-trade error {t}: {e}")
 
-        _log(f"no price for {t}; returning 0.0")
         return 0.0, now, "none"
 
     def _run_ws(self):
@@ -121,9 +110,8 @@ class LiveQuoteService:
                     subs = list(self._subs)
                 if subs:
                     ws.send(json.dumps({"action":"subscribe","params":",".join([f"XT.{t}" for t in subs])}))
-                _log("WS opened")
-            except Exception as e:
-                _log(f"WS on_open error: {e}")
+            except Exception:
+                pass
 
         def on_message(ws, msg):
             try:
@@ -138,22 +126,21 @@ class LiveQuoteService:
                                 ts = ev.get("t") or now
                                 if t and price:
                                     self._last[t] = (float(price), int(ts))
-            except Exception as e:
-                _log(f"WS on_message error: {e}")
+            except Exception:
+                pass
 
         def on_error(ws, err):
-            _log(f"WS error: {err}")
             time.sleep(1.0)
 
         def on_close(ws, a, b):
-            _log("WS closed; retry")
             time.sleep(1.0)
 
         while True:
             try:
-                self._ws = _ws.WebSocketApp(url, on_open=on_open, on_message=on_message,
-                                            on_error=on_error, on_close=on_close)
+                self._ws = _ws.WebSocketApp(
+                    url, on_open=on_open, on_message=on_message,
+                    on_error=on_error, on_close=on_close
+                )
                 self._ws.run_forever(ping_interval=20, ping_timeout=10)
-            except Exception as e:
-                _log(f"WS run_forever exception: {e}")
+            except Exception:
                 time.sleep(2.0)
