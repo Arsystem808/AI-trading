@@ -273,98 +273,47 @@ CAL_CONF = {
 
 # -------------------- Global --------------------
 def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный"):
-    # 1) Данные
-    cli = PolygonClient()
-    df = cli.daily_ohlc(ticker, days=200)
-    if df is None or df.empty or "close" not in df.columns:
-        return {
-            "last_price": 0.0,
-            "recommendation": {"action": "WAIT", "confidence": 0.55},
-            "levels": {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
-            "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
-            "context": ["Global: нет данных"],
-            "note_html": "<div>Global: ожидание</div>",
-            "alt": "WAIT", "entry_kind": "wait", "entry_label": "WAIT",
-            "meta": {"source":"Global","probs_debug":{"u":[],"p":[]}}
-        }
+    cli = PolygonClient(); df = cli.daily_ohlc(ticker, days=120)
+    current_price = float(df['close'].iloc[-1])
 
-    df = df.sort_values("timestamp")
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-    df = df.set_index("timestamp")
-    closes = df["close"].astype(float)
-    current_price = float(closes.iloc[-1])
+    closes = df['close']
+    short_ma = closes.rolling(20).mean().iloc[-1]
+    long_ma  = closes.rolling(50).mean().iloc[-1]
+    ma_gap   = float((short_ma - long_ma) / max(1e-9, long_ma))
+    slope    = _linreg_slope(closes.tail(30).values) / max(1e-9, current_price)
+    atr = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
+    atr28 = float(_atr_like(df, n=28).iloc[-1]) or 1e-9
+    vol_ratio = float(atr / max(1e-9, atr28))
 
-    # 2) Индикаторы
-    ma20 = closes.rolling(20).mean()
-    ma50 = closes.rolling(50).mean()
-    ma_gap = (ma20 - ma50) / ma50.replace(0, np.nan)  # относительный разрыв МА
-    rets = closes.pct_change()
-    slope30 = rets.rolling(30).mean()                 # сглаженный наклон
-    atr14 = _atr_like(df, n=14).astype(float)
-    atr28 = _atr_like(df, n=28).astype(float)
-    atr = float(atr14.iloc[-1] or 1e-9)
-    vol_ratio_series = (atr14 / atr28.replace(0, np.nan)).fillna(1.0)
+    action = "BUY" if short_ma > long_ma else "SHORT"
 
-    # 3) Z-score нормализация на длинном окне
-    def _z(s: pd.Series, w: int = 180) -> pd.Series:
-        m = s.rolling(w).mean()
-        v = s.rolling(w).std().replace(0, np.nan)
-        return (s - m) / v
-
-    gap_z   = float(_z(ma_gap).iloc[-1])   if len(ma_gap)   else 0.0
-    slope_z = float(_z(slope30).iloc[-1])  if len(slope30)  else 0.0
-    vol_z   = float(_z(vol_ratio_series).iloc[-1]) if len(vol_ratio_series) else 0.0
-
-    # 4) Сторона сделки (сохраняем исходную логику MA20 > MA50)
-    action = "BUY" if float(ma20.iloc[-1]) > float(ma50.iloc[-1]) else "SHORT"
-
-    # 5) Уверенность: логит из признаков + внешняя калибровка
-    #    Сигмоида избегает «плато 70%», калибратор выравнивает честность вероятностей.
-    logit = 0.10 + 0.90*gap_z + 0.70*slope_z - 0.55*vol_z
-    confidence_raw = float(1.0 / (1.0 + np.exp(-logit)))   # 0..1
-    confidence = float(CAL_CONF["Global"](confidence_raw)) # isotonic/sigmoid из конфигурации [внешняя калибровка]
-
-    # 6) Стоп/цели: режим‑зависимые множители вместо фиксированных 1/2/3×ATR
-    def _clip01(x: float) -> float: return max(0.0, min(1.0, float(x)))
-    trend_strength = _clip01(0.55*abs(gap_z)/1.6 + 0.45*abs(slope_z)/1.6)  # 0..1
-    vol_ratio = float(vol_ratio_series.iloc[-1]) if len(vol_ratio_series) else 1.0
-
-    # Множители целей растут при сильном тренде и слегка растягиваются при высокой волатильности
-    stretch = 0.25*_clip01((vol_ratio - 1.0)/0.8)
-    m1 = 0.85 + 0.65*trend_strength + 0.25*stretch
-    m2 = 1.55 + 1.30*trend_strength + 0.45*stretch
-    m3 = 2.20 + 2.10*trend_strength + 0.70*stretch
+    def _clp(x): return max(0.0, min(1.0, x))
+    base = 0.55 + 0.22*_clp(abs(ma_gap)/0.02) + 0.10*_clp((abs(slope)-0.0003)/0.0007) - 0.12*_clp((vol_ratio-1.10)/0.60)
+    confidence = float(max(0.55, min(0.86, base)))
+    confidence = float(CAL_CONF["Global"](confidence))
 
     entry = current_price
     if action == "BUY":
-        sl = entry - 2.0*atr
-        tp1, tp2, tp3 = entry + m1*atr, entry + m2*atr, entry + m3*atr
-        alt = "Покупка по рынку с режим‑зависимыми целями"
+        sl = current_price - 2*atr
+        tp1, tp2, tp3 = current_price + 1*atr, current_price + 2*atr, current_price + 3*atr
+        alt = "Покупка по рынку с консервативными целями"
     else:
-        sl = entry + 2.0*atr
-        tp1, tp2, tp3 = entry - m1*atr, entry - m2*atr, entry - m3*atr
-        alt = "Продажа по рынку с режим‑зависимыми целями"
+        sl = current_price + 2*atr
+        tp1, tp2, tp3 = current_price - 1*atr, current_price - 2*atr, current_price - 3*atr
+        alt = "Продажа по рынку с консервативными целями"
 
-    # 7) Вероятности TP: u = множители; крутизна зависит от волатильности и тренд‑силы
-    u1, u2, u3 = float(m1), float(m2), float(m3)
-    k = 0.12 + 0.28*_clip01((vol_ratio - 0.9)/0.8) + 0.10*trend_strength  # быстрее штрафует дальние цели в «шторм»
+    u1,u2,u3 = abs(tp1-entry)/atr, abs(tp2-entry)/atr, abs(tp3-entry)/atr
+    k = 0.16 + 0.12*_clp((vol_ratio - 1.00)/0.80)
     b1 = confidence
-    b2 = max(0.50, confidence - (0.08 + 0.04*max(0.0, vol_ratio - 1.0)))
-    b3 = max(0.45, confidence - (0.16 + 0.07*max(0.0, vol_ratio - 1.2)))
-
-    p1 = _clip01(b1 * math.exp(-k*(u1 - 1.0)))
-    p2 = _clip01(b2 * math.exp(-k*(u2 - 1.5)))
-    p3 = _clip01(b3 * math.exp(-k*(u3 - 2.2)))
+    b2 = max(0.50, confidence - (0.08 + 0.03*_clp(vol_ratio - 1.0)))
+    b3 = max(0.45, confidence - (0.16 + 0.05*_clp(vol_ratio - 1.2)))
+    p1 = _clip01(b1*math.exp(-k*(u1-1.0)))
+    p2 = _clip01(b2*math.exp(-k*(u2-1.5)))
+    p3 = _clip01(b3*math.exp(-k*(u3-2.2)))
     probs = _monotone_tp_probs({"tp1": p1, "tp2": p2, "tp3": p3})
 
-    # 8) Логирование и отладка
-    meta_debug = {
-        "u":[float(u1), float(u2), float(u3)],
-        "p":[float(probs["tp1"]), float(probs["tp2"]), float(probs["tp3"])],
-        "gap_z": float(gap_z), "slope_z": float(slope_z), "vol_z": float(vol_z),
-        "trend_strength": float(trend_strength), "vol_ratio": float(vol_ratio),
-        "conf_raw": float(confidence_raw), "conf_cal": float(confidence)
-    }
+    meta_debug = {"u":[float(u1),float(u2),float(u3)],
+                  "p":[float(probs['tp1']),float(probs['tp2']),float(probs['tp3'])]}
     try:
         log_agent_performance(
             agent="Global", ticker=ticker, horizon=horizon,
@@ -377,11 +326,10 @@ def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный
         logger.warning("perf log Global failed: %s", e)
 
     return {
-        "last_price": float(current_price),
-        "recommendation": {"action": action, "confidence": float(confidence)},
-        "levels": {"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3)},
-        "probs": probs, "context": [],
-        "note_html": f"<div>Global: {action} с {confidence:.0%}</div>",
+        "last_price": current_price,
+        "recommendation": {"action": action, "confidence": confidence},
+        "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
+        "probs": probs, "context": [], "note_html": f"<div>Global: {action} с {confidence:.0%}</div>",
         "alt": alt, "entry_kind": "market", "entry_label": f"{action} NOW",
         "meta": {"source":"Global","probs_debug": meta_debug}
     }
@@ -1065,7 +1013,7 @@ except Exception:
         return res
 
 # -------------------- Оркестратор Octopus --------------------
-OCTO_WEIGHTS: Dict[str, float] = {"Global": 0.10, "M7": 0.20, "W7": 0.20, "AlphaPulse": 0.50}  # как и было
+OCTO_WEIGHTS: Dict[str, float] = {"Global": 0.30, "M7": 0.25, "W7": 0.30, "AlphaPulse": 0.15}  # как и было
 
 def _act_to_num(a: str) -> int:  # без изменений
     return 1 if a == "BUY" else (-1 if a == "SHORT" else 0)
