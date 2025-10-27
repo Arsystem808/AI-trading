@@ -30,12 +30,13 @@ except Exception:
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-# ===== Stable decision layer: 12h bar-close + daily TTL + last-out cache (PROD) =====
-# Режим 12 часов для обоих рынков (два сигнала в сутки)
-TF_SEC_CRYPTO = 300   # 5m
-LAG_CRYPTO    = 30000   # 30s до клоуза
-TF_SEC_STOCKS = 900   # 15m
-LAG_STOCKS    = 30000   # 30s до клоуза
+
+# ===== Stable decision layer: 5m/15m bar-close + daily TTL + last-out cache (PROD) =====
+# Профили по рынкам
+TF_SEC_CRYPTO = 300     # 5m
+LAG_CRYPTO    = 15000   # 15s до клоуза
+TF_SEC_STOCKS = 900     # 15m
+LAG_STOCKS    = 20000   # 20s до клоуза
 
 def _is_crypto(t: str) -> bool:
     t = (t or "").upper()
@@ -53,7 +54,7 @@ def _should_decide_now_for(ticker: str, ts_ms: int) -> bool:
     end_ms = _bucket(ts_ms, tf_sec) + tf_sec * 1000
     return ts_ms >= (end_ms - lag_ms)
 
-# Дневной TTL на смену стороны (не даём переворачиваться в тот же календарный день UTC)
+# Дневной TTL на смену стороны (UTC)
 _state: Dict[tuple, Dict[str, str]] = {}  # {(symbol, model): {"last_action":"WAIT","last_day":"YYYYMMDD"}}
 
 def _day_key(ts_ms: int) -> str:
@@ -64,13 +65,21 @@ LAST_OUT: Dict[tuple, Dict[str, Any]] = {}
 
 def _price_fallback_for(ticker: str) -> float:
     """
-    Цена для заглушки: 1) last trade (crypto/stocks), 2) последний daily close (fallback), 3) 0.0.
+    Цена для заглушки:
+      1) last trade (crypto/stocks/ETF),
+      2) последний daily close (fallback),
+      3) 0.0 в крайнем случае.
     """
     try:
         cli = PolygonClient()
-        p = cli.last_trade_price(ticker)
-        if p is not None:
-            return float(p)
+        # 1) первично пробуем last trade
+        try:
+            p = cli.last_trade_price(ticker)
+            if p is not None:
+                return float(p)
+        except Exception:
+            p = None
+        # 2) fallback на daily close
         try:
             df = cli.daily_ohlc(ticker, days=2)
             if df is not None and not df.empty and "close" in df.columns:
@@ -79,12 +88,13 @@ def _price_fallback_for(ticker: str) -> float:
             pass
     except Exception:
         pass
+    # 3) крайний случай
     return 0.0
 
 def _last_ui_payload_for(symbol: str, model_name: str) -> Dict[str, Any]:
     """
-    Возвращает последний валидный out (meta.gated=True) до 12h‑клоуза.
-    Если кэша ещё нет — отдаёт WAIT с реальной ценой‑фоллбэком.
+    Между клоузами возвращает последний валидный результат (meta.gated=True).
+    Если кэша нет — отдаёт WAIT с реальной ценой из _price_fallback_for (без $0.00 при доступном daily close).
     """
     prev = LAST_OUT.get((symbol, model_name))
     if prev:
@@ -100,7 +110,7 @@ def _last_ui_payload_for(symbol: str, model_name: str) -> Dict[str, Any]:
         "recommendation": {"action": "WAIT", "confidence": 0.50},
         "levels": {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
         "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
-        "context": [f"{model_name}: waiting for 12h close ({tf_sec}s) or daily TTL"],
+        "context": [f"{model_name}: waiting for bar close ({tf_sec}s) or daily TTL"],
         "note_html": "<div>WAIT</div>",
         "alt": "WAIT", "entry_kind": "wait", "entry_label": "WAIT",
         "meta": {"source": model_name, "grey_zone": True, "tf_sec": tf_sec, "gated": True}
