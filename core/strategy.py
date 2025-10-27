@@ -6,12 +6,12 @@ import math
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, Callable
+from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
 
 # -------------------- инфраструктура --------------------
-# Мягкие импорты, чтобы UI не падал при отсутствии зависимостей
 try:
     from core.polygon_client import PolygonClient
 except Exception:
@@ -29,6 +29,44 @@ except Exception:
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# -------------------- Price Stabilization --------------------
+class StablePriceProvider:
+    """Фиксирует цены для всего цикла анализа"""
+    
+    def __init__(self):
+        self._frozen_prices = {}
+        self._frozen_timestamp = None
+    
+    def freeze_current_prices(self, tickers: list):
+        """Фиксирует цены на момент вызова (использует предыдущий день close)"""
+        cli = PolygonClient()
+        self._frozen_timestamp = datetime.now().isoformat()
+        
+        for ticker in tickers:
+            try:
+                # Загружаем данные за последние 2 дня чтобы получить предыдущий close
+                df = cli.daily_ohlc(ticker, days=3)
+                if df is not None and len(df) >= 2:
+                    # Используем закрытие предыдущего дня
+                    df = df.sort_values("timestamp")
+                    prev_close = float(df['close'].iloc[-2])  # -1 = текущий день, -2 = предыдущий
+                    self._frozen_prices[ticker] = prev_close
+                    logger.info(f"Frozen price for {ticker}: {prev_close}")
+                else:
+                    self._frozen_prices[ticker] = 0.0
+            except Exception as e:
+                logger.warning(f"Failed to freeze price for {ticker}: {e}")
+                self._frozen_prices[ticker] = 0.0
+    
+    def get_price(self, ticker: str) -> float:
+        return self._frozen_prices.get(ticker, 0.0)
+    
+    def get_timestamp(self) -> str:
+        return self._frozen_timestamp or datetime.now().isoformat()
+
+# Глобальный экземпляр
+PRICE_PROVIDER = StablePriceProvider()
 
 # -------------------- small utils --------------------
 def _clip01(x: float) -> float:
@@ -273,10 +311,9 @@ CAL_CONF = {
 
 # -------------------- Global --------------------
 def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный"):
-    # 1) Данные
-    cli = PolygonClient()
-    df = cli.daily_ohlc(ticker, days=200)
-    if df is None or df.empty or "close" not in df.columns:
+    # 1) Данные с фиксированной ценой
+    stable_price = PRICE_PROVIDER.get_price(ticker)
+    if stable_price == 0.0:
         return {
             "last_price": 0.0,
             "recommendation": {"action": "WAIT", "confidence": 0.55},
@@ -288,24 +325,38 @@ def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный
             "meta": {"source":"Global","probs_debug":{"u":[],"p":[]}}
         }
 
+    cli = PolygonClient()
+    df = cli.daily_ohlc(ticker, days=200)
+    if df is None or df.empty or "close" not in df.columns:
+        return {
+            "last_price": stable_price,
+            "recommendation": {"action": "WAIT", "confidence": 0.55},
+            "levels": {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+            "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+            "context": ["Global: нет исторических данных"],
+            "note_html": "<div>Global: ожидание</div>",
+            "alt": "WAIT", "entry_kind": "wait", "entry_label": "WAIT",
+            "meta": {"source":"Global","probs_debug":{"u":[],"p":[]}}
+        }
+
     df = df.sort_values("timestamp")
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     df = df.set_index("timestamp")
     closes = df["close"].astype(float)
-    current_price = float(closes.iloc[-1])
+    current_price = stable_price  # Используем фиксированную цену
 
     # 2) Индикаторы
     ma20 = closes.rolling(20).mean()
     ma50 = closes.rolling(50).mean()
-    ma_gap = (ma20 - ma50) / ma50.replace(0, np.nan)  # относительный разрыв МА
+    ma_gap = (ma20 - ma50) / ma50.replace(0, np.nan)
     rets = closes.pct_change()
-    slope30 = rets.rolling(30).mean()                 # сглаженный наклон
+    slope30 = rets.rolling(30).mean()
     atr14 = _atr_like(df, n=14).astype(float)
     atr28 = _atr_like(df, n=28).astype(float)
     atr = float(atr14.iloc[-1] or 1e-9)
     vol_ratio_series = (atr14 / atr28.replace(0, np.nan)).fillna(1.0)
 
-    # 3) Z-score нормализация на длинном окне
+    # 3) Z-score нормализация
     def _z(s: pd.Series, w: int = 180) -> pd.Series:
         m = s.rolling(w).mean()
         v = s.rolling(w).std().replace(0, np.nan)
@@ -315,21 +366,18 @@ def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный
     slope_z = float(_z(slope30).iloc[-1])  if len(slope30)  else 0.0
     vol_z   = float(_z(vol_ratio_series).iloc[-1]) if len(vol_ratio_series) else 0.0
 
-    # 4) Сторона сделки (сохраняем исходную логику MA20 > MA50)
+    # 4) Сторона сделки
     action = "BUY" if float(ma20.iloc[-1]) > float(ma50.iloc[-1]) else "SHORT"
 
-    # 5) Уверенность: логит из признаков + внешняя калибровка
-    #    Сигмоида избегает «плато 70%», калибратор выравнивает честность вероятностей.
+    # 5) Уверенность
     logit = 0.10 + 0.90*gap_z + 0.70*slope_z - 0.55*vol_z
-    confidence_raw = float(1.0 / (1.0 + np.exp(-logit)))   # 0..1
-    confidence = float(CAL_CONF["Global"](confidence_raw)) # isotonic/sigmoid из конфигурации [внешняя калибровка]
+    confidence_raw = float(1.0 / (1.0 + np.exp(-logit)))
+    confidence = float(CAL_CONF["Global"](confidence_raw))
 
-    # 6) Стоп/цели: режим‑зависимые множители вместо фиксированных 1/2/3×ATR
-    def _clip01(x: float) -> float: return max(0.0, min(1.0, float(x)))
-    trend_strength = _clip01(0.55*abs(gap_z)/1.6 + 0.45*abs(slope_z)/1.6)  # 0..1
+    # 6) Стоп/цели
+    trend_strength = _clip01(0.55*abs(gap_z)/1.6 + 0.45*abs(slope_z)/1.6)
     vol_ratio = float(vol_ratio_series.iloc[-1]) if len(vol_ratio_series) else 1.0
 
-    # Множители целей растут при сильном тренде и слегка растягиваются при высокой волатильности
     stretch = 0.25*_clip01((vol_ratio - 1.0)/0.8)
     m1 = 0.85 + 0.65*trend_strength + 0.25*stretch
     m2 = 1.55 + 1.30*trend_strength + 0.45*stretch
@@ -345,9 +393,9 @@ def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный
         tp1, tp2, tp3 = entry - m1*atr, entry - m2*atr, entry - m3*atr
         alt = "Продажа по рынку с режим‑зависимыми целями"
 
-    # 7) Вероятности TP: u = множители; крутизна зависит от волатильности и тренд‑силы
+    # 7) Вероятности TP
     u1, u2, u3 = float(m1), float(m2), float(m3)
-    k = 0.12 + 0.28*_clip01((vol_ratio - 0.9)/0.8) + 0.10*trend_strength  # быстрее штрафует дальние цели в «шторм»
+    k = 0.12 + 0.28*_clip01((vol_ratio - 0.9)/0.8) + 0.10*trend_strength
     b1 = confidence
     b2 = max(0.50, confidence - (0.08 + 0.04*max(0.0, vol_ratio - 1.0)))
     b3 = max(0.45, confidence - (0.16 + 0.07*max(0.0, vol_ratio - 1.2)))
@@ -363,7 +411,8 @@ def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный
         "p":[float(probs["tp1"]), float(probs["tp2"]), float(probs["tp3"])],
         "gap_z": float(gap_z), "slope_z": float(slope_z), "vol_z": float(vol_z),
         "trend_strength": float(trend_strength), "vol_ratio": float(vol_ratio),
-        "conf_raw": float(confidence_raw), "conf_cal": float(confidence)
+        "conf_raw": float(confidence_raw), "conf_cal": float(confidence),
+        "frozen_price": True
     }
     try:
         log_agent_performance(
@@ -371,7 +420,7 @@ def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный
             action=action, confidence=float(confidence),
             levels={"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3)},
             probs={"tp1": float(probs["tp1"]), "tp2": float(probs["tp2"]), "tp3": float(probs["tp3"])},
-            meta={"probs_debug": meta_debug}, ts=pd.Timestamp.utcnow().isoformat()
+            meta={"probs_debug": meta_debug}, ts=PRICE_PROVIDER.get_timestamp()
         )
     except Exception as e:
         logger.warning("perf log Global failed: %s", e)
@@ -383,7 +432,7 @@ def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный
         "probs": probs, "context": [],
         "note_html": f"<div>Global: {action} с {confidence:.0%}</div>",
         "alt": alt, "entry_kind": "market", "entry_label": f"{action} NOW",
-        "meta": {"source":"Global","probs_debug": meta_debug}
+        "meta": {"source":"Global","probs_debug": meta_debug, "frozen_price": True}
     }
 
 # -------------------- M7 (rules + optional ML overlay) --------------------
@@ -421,16 +470,14 @@ class _M7Predictor:
             logger.warning("M7 ML: model not found for %s (%s)", self.ticker, self.agent)
             return False
         self.model = md["model"]
-        # опциональный внешний скейлер
         try:
-            import joblib  # noqa: F401
+            import joblib
             meta = md.get("metadata", {}) or {}
             sp = meta.get("scaler_artifact")
             if sp:
                 p = Path(sp)
                 if not p.is_absolute(): p = Path(".")/p
                 if p.exists():
-                    import joblib
                     self.scaler = joblib.load(p)
         except Exception as e:
             logger.warning("M7 ML: scaler load failed: %s", e)
@@ -449,7 +496,6 @@ class _M7Predictor:
         return np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
 
     def _predict_proba_safe(self, X: np.ndarray, df_last_row: Optional[pd.DataFrame]=None) -> Optional[np.ndarray]:
-        # Сначала пробуем на одном признаковом векторе, затем fallback на df.tail(1) для ColumnTransformer/пайплайнов
         try:
             return self.model.predict_proba(X)
         except Exception as e1:
@@ -462,7 +508,7 @@ class _M7Predictor:
             logger.warning("M7 ML: predict_proba failed on X(%s)", e1)
             return None
 
-    def predict(self, df: pd.DataFrame, price: float, atr: float) -> Tuple[str, float]:
+    def predict(self, df: pd.DataFrame, price: float, atr: float):
         try:
             X = self._features(df, price, atr)
             if self.scaler is not None:
@@ -480,12 +526,10 @@ class _M7Predictor:
             if proba is None:
                 return ("WAIT", 0.5)
 
-            # бинарный случай -> класс 1 трактуем как LONG
             if proba.shape[1] == 2:
                 p_long = float(proba[0, 1])
                 cal = _m7_cal()["M7"]
                 p_long_cal = float(cal(p_long))
-                # явные пороги
                 if p_long_cal >= 0.55:
                     return ("BUY", p_long_cal)
                 elif p_long_cal <= 0.45:
@@ -493,7 +537,6 @@ class _M7Predictor:
                 else:
                     return ("WAIT", p_long_cal)
 
-            # многокласс
             acts = ["BUY","SHORT","WAIT"]
             idx = int(np.argmax(proba[0]))
             conf = float(proba[0, idx])
@@ -562,19 +605,27 @@ class M7TradingStrategy:
         return sigs
 
 def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False):
-    cli = PolygonClient()
-    df = cli.daily_ohlc(ticker, days=120)
-    if df is None or df.empty:
+    stable_price = PRICE_PROVIDER.get_price(ticker)
+    if stable_price == 0.0:
         return {"last_price": 0.0, "recommendation": {"action":"WAIT","confidence":0.5},
                 "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
                 "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0}, "context":["Нет данных для M7"],
                 "note_html":"<div>M7: ожидание</div>", "alt":"Ожидание", "entry_kind":"wait","entry_label":"WAIT",
-                "meta":{"source":"M7","grey_zone":True}}
+                "meta":{"source":"M7","grey_zone":True, "frozen_price": True}}
+
+    cli = PolygonClient()
+    df = cli.daily_ohlc(ticker, days=120)
+    if df is None or df.empty:
+        return {"last_price": stable_price, "recommendation": {"action":"WAIT","confidence":0.5},
+                "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
+                "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0}, "context":["Нет данных для M7"],
+                "note_html":"<div>M7: ожидание</div>", "alt":"Ожидание", "entry_kind":"wait","entry_label":"WAIT",
+                "meta":{"source":"M7","grey_zone":True, "frozen_price": True}}
 
     df = df.sort_values("timestamp")
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     df = df.set_index("timestamp")
-    price = float(df['close'].iloc[-1])
+    price = stable_price  # Используем фиксированную цену
     atr14 = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
 
     if use_ml:
@@ -590,7 +641,7 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
                         "context":[f"ML: нет сильного сигнала ({ml_conf:.2f})"],
                         "note_html":"<div>M7 ML: ожидание</div>", "alt":"ML wait",
                         "entry_kind":"wait","entry_label":"WAIT",
-                        "meta":{"source":"M7","ml_used":True,"ml_action":ml_action,"ml_conf_raw": ml_conf}}
+                        "meta":{"source":"M7","ml_used":True,"ml_action":ml_action,"ml_conf_raw": ml_conf, "frozen_price": True}}
             side = ml_action if ml_action in ("BUY","SHORT") else None
             if side:
                 filt = [s for s in signals if (side=="BUY" and s["type"].startswith("BUY")) or (side=="SHORT" and s["type"].startswith("SELL"))]
@@ -614,7 +665,7 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
                     "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3}, "probs": probs,
                     "context": [f"ML {side} + уровни M7: {best['level']}"], "note_html": f"<div>M7 ML: {side} у {best['level_value']}</div>",
                     "alt": "ML‑enhanced M7", "entry_kind":"limit", "entry_label": best["type"],
-                    "meta":{"source":"M7","ml_used":True,"ml_action":ml_action,"ml_conf_raw": ml_conf}}
+                    "meta":{"source":"M7","ml_used":True,"ml_action":ml_action,"ml_conf_raw": ml_conf, "frozen_price": True}}
 
     strategy = M7TradingStrategy()
     signals = strategy.generate_signals(df)
@@ -623,11 +674,11 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
                "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
                "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0}, "context":["Нет сигналов по стратегии M7"],
                "note_html":"<div>M7: ожидание</div>", "alt":"Ожидание сигналов от уровней",
-               "entry_kind":"wait","entry_label":"WAIT", "meta":{"source":"M7","grey_zone":True}}
+               "entry_kind":"wait","entry_label":"WAIT", "meta":{"source":"M7","grey_zone":True, "frozen_price": True}}
         try:
             log_agent_performance(agent="M7", ticker=ticker, horizon=horizon, action="WAIT", confidence=0.50,
                                   levels=res["levels"], probs=res["probs"], meta={"probs_debug":{"u":[],"p":[]}},
-                                  ts=pd.Timestamp.utcnow().isoformat())
+                                  ts=PRICE_PROVIDER.get_timestamp())
         except Exception:
             pass
         return res
@@ -659,7 +710,7 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
                               probs={"tp1": float(probs["tp1"]), "tp2": float(probs["tp2"]), "tp3": float(probs["tp3"])},
                               meta={"probs_debug":{"u":[float(u1),float(u2),float(u3)],
                                                    "p":[float(probs["tp1"]),float(probs["tp2"]),float(probs["tp3"])]}},
-                              ts=pd.Timestamp.utcnow().isoformat())
+                              ts=PRICE_PROVIDER.get_timestamp())
     except Exception:
         pass
     return {"last_price": price, "recommendation": {"action": act, "confidence": float(conf)},
@@ -667,10 +718,23 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
             "probs": probs, "context": [f"Сигнал от уровня {best['level']}"],
             "note_html": f"<div>M7: {best['type']} на уровне {best['level_value']}</div>",
             "alt": "Торговля по M7", "entry_kind": "limit", "entry_label": best['type'],
-            "meta":{"source":"M7","grey_zone": bool(0.48 <= conf <= 0.58)}}
+            "meta":{"source":"M7","grey_zone": bool(0.48 <= conf <= 0.58), "frozen_price": True}}
 
 # -------------------- W7 --------------------
 def analyze_asset_w7(ticker: str, horizon: str):
+    stable_price = PRICE_PROVIDER.get_price(ticker)
+    if stable_price == 0.0:
+        return {
+            "last_price": 0.0,
+            "recommendation": {"action": "WAIT", "confidence": 0.55},
+            "levels": {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+            "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+            "context": ["W7: нет данных"],
+            "note_html": "<div>W7: ожидание</div>",
+            "alt": "WAIT", "entry_kind": "wait", "entry_label": "WAIT",
+            "meta": {"source":"W7","probs_debug":{"u":[],"p":[]}, "frozen_price": True}
+        }
+
     cli = PolygonClient()
     cfg = _horizon_cfg(horizon); hz = cfg["hz"]
     days = max(90, cfg["look"] * 2)
@@ -678,7 +742,6 @@ def analyze_asset_w7(ticker: str, horizon: str):
     # Загружаем дневные данные
     df = cli.daily_ohlc(ticker, days=days)
 
-    # Приводим к DatetimeIndex для дальнейших weekly/daily агрегатов
     if df is None or df.empty:
         df = pd.DataFrame(columns=["open","high","low","close","volume","timestamp"])
     else:
@@ -686,30 +749,8 @@ def analyze_asset_w7(ticker: str, horizon: str):
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
         df = df.set_index("timestamp")
 
-    # Приоритет источников "текущей" цены:
-    # 1) last trade (live), 2) previous day bar close, 3) последний close из df, 4) 0.0 офлайн
-    price = None
-    try:
-        price = cli.last_trade_price(ticker)  # live-цена по последней сделке
-    except Exception:
-        price = None
-    if price is None:
-        try:
-            price = cli.prev_close(ticker)  # дневной бар предыдущего дня (OHLC)
-        except Exception:
-            price = None
-    if price is None and not df.empty:
-        try:
-            price = float(df["close"].iloc[-1])
-        except Exception:
-            price = None
-    if price is None:
-        price = 0.0
-    else:
-        try:
-            price = float(price)
-        except Exception:
-            price = 0.0
+    # Используем фиксированную цену вместо live-данных
+    price = stable_price
 
     closes = df["close"] if "close" in df.columns else pd.Series(dtype=float)
     tail = df.tail(cfg["look"]) if not df.empty else df
@@ -822,7 +863,7 @@ def analyze_asset_w7(ticker: str, horizon: str):
             action=action, confidence=float(conf),
             levels={"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3)},
             probs={"tp1": float(probs["tp1"]), "tp2": float(probs["tp2"]), "tp3": float(probs["tp3"])},
-            meta={"probs_debug": meta_debug}, ts=pd.Timestamp.utcnow().isoformat()
+            meta={"probs_debug": meta_debug}, ts=PRICE_PROVIDER.get_timestamp()
         )
     except Exception as e:
         logger.warning("perf log W7 failed: %s", e)
@@ -833,7 +874,7 @@ def analyze_asset_w7(ticker: str, horizon: str):
         "levels": {"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3)},
         "probs": probs, "context": [], "note_html": "<div>W7: контекст по волатильности и зонам</div>",
         "alt": alt, "entry_kind": entry_kind, "entry_label": entry_label,
-        "meta":{"source":"W7","grey_zone": bool(0.48 <= conf <= 0.58), "probs_debug": meta_debug}
+        "meta":{"source":"W7","grey_zone": bool(0.48 <= conf <= 0.58), "probs_debug": meta_debug, "frozen_price": True}
     }
 
 # -------------------- AlphaPulse --------------------
@@ -841,6 +882,8 @@ try:
     from core.agents.alphapulse import analyze_asset_alphapulse as _alphapulse_impl
 
     def analyze_asset_alphapulse(ticker: str, horizon: str = "Краткосрочный") -> Dict[str, Any]:
+        stable_price = PRICE_PROVIDER.get_price(ticker)
+        
         # 1) Вызов внешнего агента
         res = _alphapulse_impl(ticker, horizon)
         reco = res.get("recommendation", {}) or {}
@@ -851,7 +894,7 @@ try:
         conf_cal = float(CAL_CONF["AlphaPulse"](conf_ext))
         res.setdefault("recommendation", {})["confidence"] = conf_cal
 
-        # 3) Отладочная мета‑информация (u в ATR, p — probs)
+        # 3) Отладочная мета‑информация
         levels = res.get("levels", {}) or {}
         probs  = res.get("probs", {}) or {}
         u_vals = []
@@ -871,23 +914,23 @@ try:
             "probs_debug": {"u": u_vals, "p": [float(probs.get("tp1", 0.0)), float(probs.get("tp2", 0.0)), float(probs.get("tp3", 0.0))]},
             "overlay_used": False,
             "overlay_reason": "",
-            "fallback": res.get("meta", {}).get("fallback", False)
+            "fallback": res.get("meta", {}).get("fallback", False),
+            "frozen_price": True
         }
 
-        # 4) Оверлей поверх внешнего агента при нейтрали/слабой уверенности: |z| >= 1.0
+        # 4) Оверлей поверх внешнего агента
         try:
             df = PolygonClient().daily_ohlc(ticker, days=240)
-            price = float(df["close"].iloc[-1])
+            price = stable_price  # Используем фиксированную цену
             close = df["close"].astype(float)
             ma20  = close.rolling(20).mean()
             sd20  = close.rolling(20).std()
-            z     = float((close.iloc[-1] - ma20.iloc[-1]) / max(1e-9, sd20.iloc[-1]))
+            z     = float((price - ma20.iloc[-1]) / max(1e-9, sd20.iloc[-1]))
             abs_z = abs(z)
             atr   = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
 
             need_overlay = (action_ext == "WAIT") or (conf_cal <= 0.55)
             if need_overlay and abs_z >= 1.0:
-                # Сторона и уровни по MR
                 if z <= -1.0:
                     side, entry, sl = "BUY", price, max(0.0, price - 1.2 * atr)
                     tp1, tp2, tp3 = entry + 1.2 * atr, entry + 2.0 * atr, entry + 3.0 * atr
@@ -895,16 +938,14 @@ try:
                     side, entry, sl = "SHORT", price, price + 1.2 * atr
                     tp1, tp2, tp3 = entry - 1.2 * atr, entry - 2.0 * atr, entry - 3.0 * atr
 
-                # Градация уверенности по силе отклонения
                 if abs_z >= 2.0:
                     base_conf = 0.78
                 elif abs_z >= 1.5:
                     base_conf = 0.68
-                else:  # 1.0 ≤ |z| < 1.5
+                else:
                     base_conf = 0.58
                 conf = float(CAL_CONF["AlphaPulse"](float(max(0.55, min(0.82, base_conf)))))
 
-                # Probabilities с монотонией
                 k = 0.18
                 u1, u2, u3 = abs(tp1 - entry) / atr, abs(tp2 - entry) / atr, abs(tp3 - entry) / atr
                 b1, b2, b3 = conf, max(0.50, conf - 0.08), max(0.45, conf - 0.16)
@@ -913,7 +954,6 @@ try:
                 p3 = _clip01(b3 * math.exp(-k * (u3 - 2.2)))
                 probs_new = _monotone_tp_probs({"tp1": p1, "tp2": p2, "tp3": p3})
 
-                # Обновление результата поверх внешнего WAIT/low‑conf
                 res = {
                     "last_price": price,
                     "recommendation": {"action": side, "confidence": conf},
@@ -930,7 +970,8 @@ try:
                         "overlay_used": True,
                         "overlay_reason": f"abs_z={abs_z:.2f} ≥ 1.0",
                         "probs_debug": {"u": [float(u1), float(u2), float(u3)],
-                                        "p": [float(probs_new["tp1"]), float(probs_new["tp2"]), float(probs_new["tp3"])]}
+                                        "p": [float(probs_new["tp1"]), float(probs_new["tp2"]), float(probs_new["tp3"])]},
+                        "frozen_price": True
                     }
                 }
         except Exception:
@@ -947,7 +988,7 @@ try:
                 levels=res.get("levels", {}),
                 probs=res.get("probs", {}),
                 meta=res.get("meta", {}),
-                ts=pd.Timestamp.utcnow().isoformat(),
+                ts=PRICE_PROVIDER.get_timestamp(),
             )
         except Exception as e:
             logger.warning("perf log AlphaPulse failed: %s", e)
@@ -955,8 +996,9 @@ try:
         return res
 
 except Exception:
-    # Fallback: Mean‑Reversion на z-score с порогом ±1.0 и градуированной уверенностью
     def analyze_asset_alphapulse(ticker: str, horizon: str = "Краткосрочный") -> Dict[str, Any]:
+        stable_price = PRICE_PROVIDER.get_price(ticker)
+        
         def _safe_load_ohlc(sym: str, days: int):
             for mod in ("services.data", "core.data"):
                 try:
@@ -970,7 +1012,8 @@ except Exception:
                 return None
 
         df = _safe_load_ohlc(ticker, days=240)
-        price = float(df["close"].iloc[-1]) if (isinstance(df, pd.DataFrame) and len(df) and "close" in df.columns) else 0.0
+        price = stable_price  # Используем фиксированную цену
+        
         if not isinstance(df, pd.DataFrame) or len(df) < 50 or "close" not in df.columns:
             res = {
                 "last_price": price,
@@ -980,20 +1023,20 @@ except Exception:
                 "context": ["AlphaPulse: недостаточно данных"],
                 "note_html": "<div>AlphaPulse: ожидание</div>",
                 "alt": "WAIT", "entry_kind": "wait", "entry_label": "WAIT",
-                "meta": {"source": "AlphaPulse", "grey_zone": True, "fallback": True}
+                "meta": {"source": "AlphaPulse", "grey_zone": True, "fallback": True, "frozen_price": True}
             }
             try:
                 log_agent_performance(agent="AlphaPulse", ticker=ticker, horizon=horizon,
                                       action="WAIT", confidence=0.52,
                                       levels=res["levels"], probs=res["probs"], meta=res["meta"],
-                                      ts=pd.Timestamp.utcnow().isoformat())
+                                      ts=PRICE_PROVIDER.get_timestamp())
             except Exception as e:
                 logger.warning("perf log AlphaPulse failed: %s", e)
             return res
 
         close = df["close"].astype(float)
         ma20 = close.rolling(20).mean(); sd20 = close.rolling(20).std()
-        z = float((close.iloc[-1] - ma20.iloc[-1]) / max(1e-9, sd20.iloc[-1]))
+        z = float((price - ma20.iloc[-1]) / max(1e-9, sd20.iloc[-1]))
         atr = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
         abs_z = abs(z)
 
@@ -1006,13 +1049,13 @@ except Exception:
                 "context": [f"AlphaPulse: z={z:.2f} нейтрально (<1.0σ)"],
                 "note_html": "<div>AlphaPulse: нейтрально</div>",
                 "alt": "WAIT", "entry_kind": "wait", "entry_label": "WAIT",
-                "meta": {"source": "AlphaPulse", "grey_zone": True, "fallback": True}
+                "meta": {"source": "AlphaPulse", "grey_zone": True, "fallback": True, "frozen_price": True}
             }
             try:
                 log_agent_performance(agent="AlphaPulse", ticker=ticker, horizon=horizon,
                                       action="WAIT", confidence=0.52,
                                       levels=res["levels"], probs=res["probs"], meta=res["meta"],
-                                      ts=pd.Timestamp.utcnow().isoformat())
+                                      ts=PRICE_PROVIDER.get_timestamp())
             except Exception as e:
                 logger.warning("perf log AlphaPulse failed: %s", e)
             return res
@@ -1028,7 +1071,7 @@ except Exception:
             base_conf = 0.78
         elif abs_z >= 1.5:
             base_conf = 0.68
-        else:  # 1.0 ≤ |z| < 1.5
+        else:
             base_conf = 0.58
 
         conf = float(CAL_CONF["AlphaPulse"](float(max(0.55, min(0.82, base_conf)))))
@@ -1052,25 +1095,53 @@ except Exception:
             "context": [f"AlphaPulse MR(fallback): z={z:.2f}"],
             "note_html": "<div>AlphaPulse: mean‑reversion</div>",
             "alt": "Mean‑Reversion", "entry_kind": "market", "entry_label": side,
-            "meta": {"source": "AlphaPulse", "grey_zone": bool(0.48 <= conf <= 0.58), "fallback": True, "probs_debug": meta_debug}
+            "meta": {"source": "AlphaPulse", "grey_zone": bool(0.48 <= conf <= 0.58), "fallback": True, "probs_debug": meta_debug, "frozen_price": True}
         }
         try:
             log_agent_performance(
                 agent="AlphaPulse", ticker=ticker, horizon=horizon,
                 action=side, confidence=float(conf),
-                levels=res["levels"], probs=res["probs"], meta=res["meta"], ts=pd.Timestamp.utcnow().isoformat()
+                levels=res["levels"], probs=res["probs"], meta=res["meta"], ts=PRICE_PROVIDER.get_timestamp()
             )
         except Exception as e:
             logger.warning("perf log AlphaPulse failed: %s", e)
         return res
 
-# -------------------- Оркестратор Octopus --------------------
-OCTO_WEIGHTS: Dict[str, float] = {"Global": 0.10, "M7": 0.30, "W7": 0.40, "AlphaPulse": 0.20}  # как и было
+# -------------------- Portfolio Analysis --------------------
+def analyze_portfolio_stable(tickers: list, horizon: str = "Среднесрочный"):
+    """Анализ всего портфеля с фиксированными ценами"""
+    
+    # 1. Фиксируем цены на момент анализа
+    PRICE_PROVIDER.freeze_current_prices(tickers)
+    
+    results = {}
+    for ticker in tickers:
+        try:
+            # 2. Запускаем все стратегии с ОДИНАКОВЫМИ ценами
+            results[ticker] = {
+                "timestamp": PRICE_PROVIDER.get_timestamp(),
+                "frozen_price": PRICE_PROVIDER.get_price(ticker),
+                "strategies": {
+                    "Global": analyze_asset_global(ticker, horizon),
+                    "M7": analyze_asset_m7(ticker, horizon), 
+                    "W7": analyze_asset_w7(ticker, horizon),
+                    "AlphaPulse": analyze_asset_alphapulse(ticker, horizon)
+                },
+                "octopus": analyze_asset_octopus(ticker, horizon)
+            }
+        except Exception as e:
+            logger.error(f"Failed to analyze {ticker}: {e}")
+            results[ticker] = {"error": str(e)}
+    
+    return results
 
-def _act_to_num(a: str) -> int:  # без изменений
+# -------------------- Оркестратор Octopus --------------------
+OCTO_WEIGHTS: Dict[str, float] = {"Global": 0.10, "M7": 0.30, "W7": 0.40, "AlphaPulse": 0.20}
+
+def _act_to_num(a: str) -> int:
     return 1 if a == "BUY" else (-1 if a == "SHORT" else 0)
 
-def _num_to_act(x: float) -> str:  # без изменений
+def _num_to_act(x: float) -> str:
     if x > 0: return "BUY"
     if x < 0: return "SHORT"
     return "WAIT"
@@ -1098,10 +1169,10 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
             "context": ["Octopus: no agents responded"],
             "note_html": "<div>Octopus: WAIT</div>",
             "alt": "WAIT", "entry_kind": "wait", "entry_label": "WAIT",
-            "meta": {"source": "Octopus", "votes": [], "ratio": 0.0}
+            "meta": {"source": "Octopus", "votes": [], "ratio": 0.0, "frozen_price": True}
         }
 
-    # 2) Строим активные голоса BUY/SHORT с весами и conf (как было)
+    # 2) Строим активные голоса BUY/SHORT с весами и conf
     active = []
     for k, r in parts.items():
         a = str(r.get("recommendation", {}).get("action", "WAIT")).upper()
@@ -1118,7 +1189,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     delta = abs(score_long - score_short)
     ratio = delta / max(1e-6, total_side)
 
-    # 3) Правило выбора действия (без изменений)
+    # 3) Правило выбора действия
     if count_long >= 3:
         final_action = "BUY"
     elif count_short >= 3:
@@ -1126,7 +1197,6 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     else:
         final_action = "WAIT" if ratio < 0.20 else ("BUY" if score_long > score_short else "SHORT")
 
-    # Утилита для медианных уровней по сторонникам выбранной стороны
     def _median_levels(direction: str):
         L = [r.get("levels", {}) for r in parts.values()
              if str(r.get("recommendation", {}).get("action", "")).upper() == direction]
@@ -1135,7 +1205,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         med = lambda k: float(np.median([x.get(k, 0.0) for x in L if isinstance(x.get(k, None), (int, float))]))
         return {"entry": med("entry"), "sl": med("sl"), "tp1": med("tp1"), "tp2": med("tp2"), "tp3": med("tp3")}
 
-    # 4) Уровни/пробы как было: медианы при слабой поляризации, иначе — от победителя
+    # 4) Уровни/пробы
     if final_action in ("BUY", "SHORT"):
         cand = [t for t in active if t[1] == final_action]
         win_agent = (max(cand, key=lambda t: t[2] * t[3])[0] if cand
@@ -1143,8 +1213,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         levels_out = _median_levels(final_action) if ratio < 0.25 else parts[win_agent].get("levels", {})
         probs_out = _monotone_tp_probs(parts.get(win_agent, {}).get("probs", {}) or {})
 
-        # 5) Итоговый confidence (НОВОЕ): взвешенно по победившей стороне + мягкий штраф конфликта
-        # 5.1 Взвешенный conf по сторонникам финальной стороны
+        # 5) Итоговый confidence
         side_items = []
         for k, r in parts.items():
             rec = r.get("recommendation", {})
@@ -1154,7 +1223,6 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
                 side_items.append((w, c))
         overall_conf = (sum(w * c for w, c in side_items) / max(1e-6, sum(w for w, _ in side_items))) if side_items else 0.50
 
-        # 5.2 Мягкий штраф за сильное несогласие противоположной стороны
         score_side = score_long if final_action == "BUY" else score_short
         score_opp  = score_short if final_action == "BUY" else score_long
         try:
@@ -1163,7 +1231,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         except Exception:
             beta = 0.35
         penalty = 1.0 - beta * (score_opp / max(1e-6, score_side))
-        penalty = max(0.70, min(1.00, penalty))  # клип фактора
+        penalty = max(0.70, min(1.00, penalty))
         overall_conf = float(CAL_CONF["Octopus"](_clip01(overall_conf * penalty)))
 
     else:
@@ -1171,7 +1239,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         probs_out  = {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
         overall_conf = float(CAL_CONF["Octopus"](0.50))
 
-    # 6) Сбор ответа и логирование (как было)
+    # 6) Сбор ответа и логирование
     last_price = float(next(iter(parts.values())).get("last_price", 0.0))
     votes_txt = [{"agent": k,
                   "action": str(r.get("recommendation", {}).get("action", "")),
@@ -1188,7 +1256,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         "alt": "Octopus",
         "entry_kind": "market" if final_action != "WAIT" else "wait",
         "entry_label": final_action if final_action != "WAIT" else "WAIT",
-        "meta": {"source": "Octopus", "votes": votes_txt, "ratio": float(ratio)}
+        "meta": {"source": "Octopus", "votes": votes_txt, "ratio": float(ratio), "frozen_price": True}
     }
 
     try:
@@ -1197,7 +1265,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
             action=final_action, confidence=float(overall_conf),
             levels=levels_out, probs=probs_out,
             meta={"votes": votes_txt, "ratio": float(ratio)},
-            ts=pd.Timestamp.utcnow().isoformat()
+            ts=PRICE_PROVIDER.get_timestamp()
         )
     except Exception as e:
         logger.warning("perf log Octopus failed: %s", e)
@@ -1221,10 +1289,14 @@ def analyze_asset(ticker: str, horizon: str, strategy: str = "Octopus") -> Dict[
 
 # -------------------- Тестовый запуск --------------------
 if __name__ == "__main__":
-    for s in ["Global", "M7", "W7", "AlphaPulse", "Octopus"]:
-        try:
-            print(f"\n=== {s} ===")
-            out = analyze_asset("AAPL", "Краткосрочный", s)
-            print({k: out[k] for k in ["last_price","recommendation","levels","probs"]})
-        except Exception as e:
-            print(f"{s} error:", e)
+    # Пример использования стабильного анализа
+    portfolio = ["AAPL", "MSFT", "TSLA", "SPY"]
+    results = analyze_portfolio_stable(portfolio, "Среднесрочный")
+    
+    for ticker, data in results.items():
+        if "error" not in data:
+            print(f"\n=== {ticker} ===")
+            octopus = data.get("octopus", {})
+            print(f"Цена: {data.get('frozen_price')}")
+            print(f"Рекомендация: {octopus.get('recommendation', {})}")
+            print(f"Уровни: {octopus.get('levels', {})}")
