@@ -49,7 +49,10 @@ def _bucket(ts_ms: int, tf_sec: int) -> int:
     size = tf_sec * 1000
     return (ts_ms // size) * size
 
-def _should_decide_now_for(ticker: str, ts_ms: int) -> bool:
+# Флаг для разового «прогрева» без гейта (передай debug_force=True в Router/Octopus)
+def _should_decide_now_for(ticker: str, ts_ms: int, debug_force: bool = False) -> bool:
+    if debug_force:
+        return True
     tf_sec, lag_ms = _tf_lag_for(ticker)
     end_ms = _bucket(ts_ms, tf_sec) + tf_sec * 1000
     return ts_ms >= (end_ms - lag_ms)
@@ -72,14 +75,12 @@ def _price_fallback_for(ticker: str) -> float:
     """
     try:
         cli = PolygonClient()
-        # 1) первично пробуем last trade
         try:
             p = cli.last_trade_price(ticker)
             if p is not None:
                 return float(p)
         except Exception:
-            p = None
-        # 2) fallback на daily close
+            pass
         try:
             df = cli.daily_ohlc(ticker, days=2)
             if df is not None and not df.empty and "close" in df.columns:
@@ -88,13 +89,12 @@ def _price_fallback_for(ticker: str) -> float:
             pass
     except Exception:
         pass
-    # 3) крайний случай
     return 0.0
 
 def _last_ui_payload_for(symbol: str, model_name: str) -> Dict[str, Any]:
     """
     Между клоузами возвращает последний валидный результат (meta.gated=True).
-    Если кэша нет — отдаёт WAIT с реальной ценой из _price_fallback_for (без $0.00 при доступном daily close).
+    Если кэша нет — отдаёт WAIT с реальной ценой из _price_fallback_for.
     """
     prev = LAST_OUT.get((symbol, model_name))
     if prev:
@@ -1150,14 +1150,13 @@ except Exception:
         except Exception as e:
             logger.warning("perf log AlphaPulse failed: %s", e)
         return res
-
-# -------------------- Оркестратор Octopus (FINAL) --------------------
+# -------------------- Оркестратор Octopus (FINAL + debug_force) --------------------
 OCTO_WEIGHTS: Dict[str, float] = {"Global": 0.25, "M7": 0.25, "W7": 0.25, "AlphaPulse": 0.25}
 
-def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
+def analyze_asset_octopus(ticker: str, horizon: str, debug_force: bool = False) -> Dict[str, Any]:
     now_ms = int(time.time() * 1000)
-    # B: бар-гейт с учётом типа инструмента
-    if not _should_decide_now_for(ticker, now_ms):
+    # B: бар-гейт с учётом типа инструмента + разовый обход при debug_force
+    if not _should_decide_now_for(ticker, now_ms, debug_force=debug_force):
         return _last_ui_payload_for(ticker, "Octopus")
 
     parts: Dict[str, Dict[str, Any]] = {}
@@ -1258,7 +1257,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         "meta": {"source": "Octopus", "votes": votes_txt, "ratio": float(ratio)}
     }
 
-    # C: дневной TTL + кэш
+    # C: дневной TTL + кэш (без изменений)
     key = (ticker, "Octopus")
     st = _state.get(key, {"last_action": "WAIT", "last_day": ""})
     today = _day_key(now_ms)
@@ -1274,7 +1273,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     LAST_OUT[key] = res
     return res
 
-# -------------------- Strategy Router (FINAL) --------------------
+# -------------------- Strategy Router (FINAL + debug_force) --------------------
 STRATEGY_REGISTRY: Dict[str, Callable[[str, str], Dict[str, Any]]] = {
     "Octopus": analyze_asset_octopus,
     "Global": analyze_asset_global,
@@ -1283,19 +1282,23 @@ STRATEGY_REGISTRY: Dict[str, Callable[[str, str], Dict[str, Any]]] = {
     "AlphaPulse": analyze_asset_alphapulse,
 }
 
-def analyze_asset(ticker: str, horizon: str, strategy: str = "Octopus") -> Dict[str, Any]:
+def analyze_asset(ticker: str, horizon: str, strategy: str = "Octopus", debug_force: bool = False) -> Dict[str, Any]:
     fn = STRATEGY_REGISTRY.get(strategy)
     if not fn:
         raise ValueError(f"Unknown strategy: {strategy}")
 
     now_ms = int(time.time() * 1000)
-    # B: бар-гейт учитывает тип инструмента
-    if not _should_decide_now_for(ticker, now_ms):
+    # B: бар-гейт с возможностью разового обхода для «прогрева»
+    if not _should_decide_now_for(ticker, now_ms, debug_force=debug_force):
         return _last_ui_payload_for(ticker, strategy)
 
-    out = fn(ticker, horizon)
+    # Вызов целевой стратегии; debug_force прокидываем только для Octopus
+    if strategy == "Octopus":
+        out = analyze_asset_octopus(ticker, horizon, debug_force=debug_force)
+    else:
+        out = fn(ticker, horizon)
 
-    # C: дневной TTL + запись кэша
+    # C: дневной TTL + запись кэша (без изменений)
     key = (ticker, strategy)
     st = _state.get(key, {"last_action": "WAIT", "last_day": ""})
     today = _day_key(now_ms)
