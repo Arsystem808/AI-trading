@@ -1,4 +1,4 @@
-# core/model_fetch.py — bundle-first loader with version marker
+# core/model_fetch.py — bundle-first loader with filename+SHA marker
 
 import os
 import io
@@ -30,45 +30,52 @@ def _safe_extract_targz(bytes_data, dest: Path):
         tar.extractall(dest)
     log.info("✓ Bundle extracted to %s", dest)
 
-def _verify_sha256( bytes, expected_hex: str) -> bool:
+def _read_marker(marker: Path):
+    name, sh = None, None
+    if marker.exists():
+        try:
+            for line in marker.read_text(errors="ignore").splitlines():
+                if line.startswith("FILENAME="):
+                    name = line.split("=", 1)[1].strip()
+                elif line.startswith("SHA256="):
+                    sh = line.split("=", 1)[1].strip()
+        except Exception:
+            pass
+    return name, sh
+
+def _write_marker(marker: Path, name: str, sh: str):
     try:
-        if not expected_hex:
-            return True
-        h = sha256(data).hexdigest()
-        if h.lower() != expected_hex.lower():
-            log.warning("Bundle SHA256 mismatch: expected %s, got %s", expected_hex, h)
-            return False
-        return True
+        marker.write_text(f"FILENAME={name}\nSHA256={sh}\n")
     except Exception as e:
-        log.warning("SHA256 check failed: %s", e)
-        return False
+        log.warning("Write marker failed: %s", e)
 
 # ---------- Public API ----------
 def ensure_models():
     """
     Скачивает и распаковывает бандл моделей в ARXORA_MODEL_DIR (по умолчанию /tmp/models).
-    - Если версия бандла уже отмечена в .bundle_version — загрузка пропускается.
-    - Опционально проверяет MODEL_BUNDLE_SHA256.
-    - Фолбэк: пофайловые ссылки MODEL_AAPL_URL/MODEL_ETH_URL (если заданы).
+    - Пропускает загрузку, если .bundle_version совпадает по имени файла и SHA256.
+    - MODEL_BUNDLE_SHA256 (опционально) усиливает проверку; при отсутствии вычисляется из скачанного архива.
+    - Фолбэк: пофайловые ссылки MODEL_AAPL_URL/MODEL_ETH_URL.
     """
     dest = Path(os.getenv("ARXORA_MODEL_DIR", "/tmp/models"))
     dest.mkdir(parents=True, exist_ok=True)
 
     bundle_url = (os.getenv("MODEL_BUNDLE_URL") or "").strip()
-    bundle_sha = (os.getenv("MODEL_BUNDLE_SHA256") or "").strip()
+    conf_sha = (os.getenv("MODEL_BUNDLE_SHA256") or "").strip()
     marker = dest / ".bundle_version"
 
     if bundle_url and _is_valid_url(bundle_url):
-        ver = os.path.basename(bundle_url)  # например: models-20251028_030448.tar.gz
-        # Если версия совпала и каталог не пустой — пропускаем
-        if marker.exists() and marker.read_text(errors="ignore").strip() == ver:
-            try:
-                any_item = next(dest.iterdir(), None)
-            except Exception:
-                any_item = None
-            if any_item:
-                log.info("Bundle already present (%s) — skipping download", ver)
-                return
+        ver = os.path.basename(bundle_url.split("?", 1)[0])
+
+        # Пропуск, если совпадает имя и (если задан) SHA, и каталог не пустой
+        m_name, m_sha = _read_marker(marker)
+        try:
+            any_item = next(dest.iterdir(), None)
+        except Exception:
+            any_item = None
+        if any_item and m_name == ver and (not conf_sha or (m_sha and m_sha.lower() == conf_sha.lower())):
+            log.info("Bundle already present (%s) — skipping download", ver)
+            return
 
         try:
             log.info("⬇ Downloading model bundle from %s", bundle_url)
@@ -76,14 +83,15 @@ def ensure_models():
             r.raise_for_status()
             data = r.content
 
-            # Проверка целостности (опционально)
-            if bundle_sha and not _verify_sha256(data, bundle_sha):
-                log.warning("Bundle integrity failed — skipping extract")
-            else:
-                _safe_extract_targz(data, dest)
-                marker.write_text(ver)
-                log.info("Bundle version marked: %s", ver)
+            calc_sha = sha256(data).hexdigest()
+            if conf_sha and calc_sha.lower() != conf_sha.lower():
+                log.warning("Bundle SHA mismatch: expected %s got %s — skipping extract", conf_sha, calc_sha)
                 return
+
+            _safe_extract_targz(data, dest)
+            _write_marker(marker, ver, calc_sha)
+            log.info("Bundle version marked: %s", ver)
+            return
         except Exception as e:
             log.warning("Bundle download failed: %s", e)
     elif bundle_url:
@@ -110,4 +118,3 @@ def ensure_models():
             log.info("✓ %s saved (%d bytes)", fname, len(rr.content))
         except Exception as e:
             log.error("✗ Ошибка загрузки %s: %s", fname, e)
-
