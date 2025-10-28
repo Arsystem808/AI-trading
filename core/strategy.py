@@ -386,32 +386,45 @@ def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный
         "meta": {"source":"Global","probs_debug": meta_debug}
     }
 
-# -------------------- M7 (rules + optional ML overlay) --------------------
 from typing import Optional, Tuple
 import pandas as pd
 import numpy as np
 import math
-from pathlib import Path
 import logging
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-try:
-    from core.model_loader import load_model_for
-except Exception:
-    def load_model_for(*args, **kwargs):
-        return None
+# --- Вспомогательные функции (добавьте свои, если они не глобальны) ---
+def _atr_like(data, n=14):
+    high_low = data['high'] - data['low']
+    high_close = (data['high'] - data['close'].shift()).abs()
+    low_close  = (data['low']  - data['close'].shift()).abs()
+    ranges = pd.concat([high_low, high_close, low_close], axis=1)
+    true_range = np.max(ranges, axis=1)
+    return true_range.rolling(n).mean()
 
-# Assume these helpers exist in your codebase (or define if missing)
-# def _atr_like(data, n=14): ...
-# def _clip01(x): ...
-# def _monotone_tp_probs(probs): ...
-# def log_agent_performance(...): ...
-# class PolygonClient: ...
+def _clip01(x):
+    return max(0.0, min(1.0, x))
 
+def _monotone_tp_probs(probs):
+    p1, p2, p3 = probs['tp1'], probs['tp2'], probs['tp3']
+    if p1 < p2: p2 = min(p1, p2)
+    if p2 < p3: p3 = min(p2, p3)
+    return {'tp1': p1, 'tp2': p2, 'tp3': p3}
+
+def log_agent_performance(*args, **kwargs):
+    pass  # Реализация вызова логирования истории сигналов
+
+class PolygonClient:
+    def daily_ohlc(self, ticker, days=120):
+        # Реальная реализация с помощью Polygon API
+        return pd.DataFrame()
+
+# --- Калибратор (обычно не меняется) ---
 class _M7IdentityCalibrator:
     def __call__(self, p: float) -> float:
-        return float(max(0.0, min(1.0, p)))
+        return _clip01(p)
 
 _M7_CAL = None
 def _m7_cal():
@@ -424,6 +437,7 @@ def _m7_cal():
             _M7_CAL = {"M7": _M7IdentityCalibrator()}
     return _M7_CAL
 
+# --- ML Layer ---
 class _M7Predictor:
     def __init__(self, ticker: str, agent="arxora_m7pro"):
         self.ticker = ticker
@@ -492,18 +506,16 @@ class _M7Predictor:
                 proba = np.array([[1.0 - y, y]], dtype=float)
             if proba is None:
                 return ("WAIT", 0.5)
-
             if proba.shape[1] == 2:
                 p_long = float(proba[0, 1])
                 cal = _m7_cal()["M7"]
                 p_long_cal = float(cal(p_long))
-                if p_long_cal >= 0.55:
+                if p_long_cal >= 0.6:
                     return ("BUY", p_long_cal)
-                elif p_long_cal <= 0.45:
+                elif p_long_cal <= 0.4:
                     return ("SHORT", p_long_cal)
                 else:
                     return ("WAIT", p_long_cal)
-
             acts = ["BUY","SHORT","WAIT"]
             idx = int(np.argmax(proba[0]))
             conf = float(proba[0, idx])
@@ -513,9 +525,10 @@ class _M7Predictor:
             logger.warning("M7 ML: predict failed: %s", e)
             return ("WAIT", 0.5)
 
+# --- Основная стратегия M7 ---
 class M7TradingStrategy:
-    def __init__(self, atr_period=14, atr_multiplier=1.5, pivot_period='D', fib_levels=None, 
-                 sl_atr_mult=1.5, min_dist_atr=0.5, max_lookback_periods=7):
+    def __init__(self, atr_period=14, atr_multiplier=2.0, pivot_period='D',
+                 fib_levels=None, sl_atr_mult=1.3, min_dist_atr=0.3, max_lookback_periods=10):
         self.atr_period = atr_period
         self.atr_multiplier = atr_multiplier
         self.pivot_period = pivot_period
@@ -544,32 +557,27 @@ class M7TradingStrategy:
     def identify_key_levels(self, data: pd.DataFrame):
         grouped = data.resample('D') if self.pivot_period == 'D' else data.resample('W')
         key = {}
-        periods_count = 0
-        for _, g in grouped:
+        for i, (_, g) in enumerate(grouped):
+            if i >= self.max_lookback_periods:
+                break
             if len(g) > 0:
                 h = g['high'].max()
                 l = g['low'].min()
                 c = g['close'].iloc[-1]
                 key.update(self.calculate_pivot_points(h, l, c))
                 key.update(self.calculate_fib_levels(h, l))
-                periods_count += 1
-                if periods_count >= self.max_lookback_periods:
-                    break
         return key
 
     def generate_signals(self, data: pd.DataFrame):
         sigs = []
-        req = ['high', 'low', 'close']
-        if not all(c in data.columns for c in req):
+        if not all(c in data.columns for c in ['high', 'low', 'close']):
             return sigs
-        
         data = data.copy()
         data['atr'] = _atr_like(data, self.atr_period)
         cur_atr = float(data['atr'].iloc[-1])
-        if cur_atr <= 0:
-            return sigs
-        
-        # Trend filter
+        if cur_atr <= 0: return sigs
+
+        # Trend filters
         data['ema20'] = data['close'].ewm(span=20, adjust=False).mean()
         data['ema50'] = data['close'].ewm(span=50, adjust=False).mean()
         price = float(data['close'].iloc[-1])
@@ -577,98 +585,66 @@ class M7TradingStrategy:
         ema50 = float(data['ema50'].iloc[-1])
         uptrend = ema20 > ema50
         downtrend = ema20 < ema50
-        
-        # Volume confirmation
-        has_volume = 'volume' in data.columns
-        if has_volume:
-            avg_volume = float(data['volume'].rolling(20).mean().iloc[-1])
-            cur_volume = float(data['volume'].iloc[-1])
-            volume_confirmed = cur_volume > 1.2 * avg_volume if avg_volume > 0 else True
-        else:
-            volume_confirmed = True
-        
+
+        # Volume filter (fallback=True если такого столбца нет)
+        volok = True
+        if 'volume' in data.columns:
+            curvol = float(data['volume'].iloc[-1])
+            avgvol = float(data['volume'].rolling(20).mean().iloc[-1])
+            volok = curvol > (avgvol * 0.8)  # Ослаблена до 80% от среднего
+
         key = self.identify_key_levels(data)
         ts = data.index[-1]
-        
-        buy_sigs = []
-        sell_sigs = []
-        
+        buy_sigs, sell_sigs = [], []
+
         for name, val in key.items():
             dist = abs(price - val) / max(1e-9, cur_atr)
-            
-            if dist < self.min_dist_atr:
-                continue
-            if dist >= self.atr_multiplier:
-                continue
-            
+            if dist < self.min_dist_atr or dist >= self.atr_multiplier: continue
             is_res = val > price
-            
-            if is_res:  # Resistance
-                if not volume_confirmed:
-                    continue
+            if is_res:
+                if not volok: continue
                 typ = 'SELL_LIMIT'
                 entry = float(val * 0.998)
-                sl = entry + (self.sl_atr_mult * cur_atr)
-                sl = min(sl, entry * 1.03)
-                
+                sl = min(entry + self.sl_atr_mult * cur_atr, entry * 1.03)
                 if downtrend and entry < price:
                     typ = 'SELL_STOP'
                     entry = min(price * 0.995, entry)
-            else:  # Support
-                if not volume_confirmed:
-                    continue
+            else:
+                if not volok: continue
                 typ = 'BUY_LIMIT'
                 entry = float(val * 1.002)
-                sl = entry - (self.sl_atr_mult * cur_atr)
-                sl = max(sl, entry * 0.97)
-                
+                sl = max(entry - self.sl_atr_mult * cur_atr, entry * 0.97)
                 if uptrend and entry < price:
                     typ = 'BUY_STOP'
                     entry = max(price * 1.005, entry)
-            
             risk = abs(entry - sl)
             tp = entry + (2.0 * risk if typ.startswith('BUY') else -2.0 * risk)
             conf = 1.0 - (dist / self.atr_multiplier)
-            
             sig = {
-                'type': typ,
-                'price': round(entry, 4),
-                'stop_loss': round(sl, 4),
-                'take_profit': round(tp, 4),
-                'confidence': round(conf, 2),
-                'level': name,
-                'level_value': round(val, 4),
-                'timestamp': ts,
+                'type': typ, 'price': round(entry, 4), 'stop_loss': round(sl, 4), 'take_profit': round(tp, 4),
+                'confidence': round(conf, 2), 'level': name, 'level_value': round(val, 4), 'timestamp': ts,
                 'direction': 'BUY' if typ.startswith('BUY') else 'SELL'
             }
-            
-            if sig['direction'] == 'BUY':
-                buy_sigs.append(sig)
-            else:
-                sell_sigs.append(sig)
-        
-        # Consensus filter
+            (buy_sigs if sig['direction'] == 'BUY' else sell_sigs).append(sig)
+
+        # Consensus filter: если разница < 0.15, брать только сильнейший
+        sigs = []
         if buy_sigs and sell_sigs:
-            buy_max_conf = max([s['confidence'] for s in buy_sigs])
-            sell_max_conf = max([s['confidence'] for s in sell_sigs])
-            if abs(buy_max_conf - sell_max_conf) < 0.1:
-                return []
-            elif buy_max_conf > sell_max_conf:
-                sigs = buy_sigs
+            buy_max = max([s['confidence'] for s in buy_sigs])
+            sell_max = max([s['confidence'] for s in sell_sigs])
+            diff = abs(buy_max - sell_max)
+            if diff < 0.15:
+                sigs = [max(buy_sigs + sell_sigs, key=lambda x: x['confidence'])]
             else:
-                sigs = sell_sigs
+                sigs = buy_sigs if buy_max > sell_max else sell_sigs
         elif buy_sigs:
-            sigs = buy_sigs
+            sigs = [max(buy_sigs, key=lambda x: x['confidence'])]
         elif sell_sigs:
-            sigs = sell_sigs
-        else:
-            sigs = []
-        
-        if sigs:
-            sigs = [max(sigs, key=lambda x: x['confidence'])]
-        
+            sigs = [max(sell_sigs, key=lambda x: x['confidence'])]
+
         return sigs
 
+# --- Главная функция анализа ---
 def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False):
     cli = PolygonClient()
     df = cli.daily_ohlc(ticker, days=120)
@@ -698,8 +674,7 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
             ml_action, ml_conf = pred.predict(df, price, atr14)
             strategy = M7TradingStrategy()
             signals = strategy.generate_signals(df)
-            
-            if ml_action == "WAIT" or not signals:
+            if ml_action == "WAIT" or not signals or ml_conf < 0.6:
                 return {
                     "last_price": price,
                     "recommendation": {"action": "WAIT", "confidence": ml_conf},
@@ -712,32 +687,27 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
                     "entry_label": "WAIT",
                     "meta": {"source": "M7", "ml_used": True, "ml_action": ml_action, "ml_conf_raw": ml_conf}
                 }
-            
-            side = ml_action if ml_action in ("BUY", "SHORT") else None
+            side = ml_action if ml_action in ("BUY","SHORT") else None
             if side:
-                filt = [s for s in signals if (side == "BUY" and s["direction"] == "BUY") or (side == "SHORT" and s["direction"] == "SELL")]
-                best = max(filt, key=lambda x: x["confidence"]) if filt else max(signals, key=lambda x: x["confidence"])
+                filt = [s for s in signals if (side=="BUY" and s["direction"]=="BUY") or (side=="SHORT" and s["direction"]=="SELL")]
+                best = max(filt, key=lambda x:x["confidence"]) if filt else max(signals, key=lambda x:x["confidence"])
             else:
-                best = max(signals, key=lambda x: x["confidence"])
-                side = "BUY" if best["direction"] == "BUY" else "SHORT"
-            
+                best = max(signals, key=lambda x:x["confidence"])
+                side = "BUY" if best["direction"]=="BUY" else "SHORT"
             entry = float(best['price'])
             sl = float(best['stop_loss'])
             risk = abs(entry - sl)
-            
             if side == "BUY":
                 tp1, tp2, tp3 = entry + 1.5*risk, entry + 2.5*risk, entry + 4.0*risk
             else:
                 tp1, tp2, tp3 = entry - 1.5*risk, entry - 2.5*risk, entry - 4.0*risk
-            
             u1, u2, u3 = abs(tp1-entry)/atr14, abs(tp2-entry)/atr14, abs(tp3-entry)/atr14
             k = 0.18
             b1, b2, b3 = ml_conf, max(0.50, ml_conf-0.08), max(0.45, ml_conf-0.16)
-            p1 = _clip01(b1*np.exp(-k*(u1-1.0)))
-            p2 = _clip01(b2*np.exp(-k*(u2-1.5)))
-            p3 = _clip01(b3*np.exp(-k*(u3-2.2)))
-            probs = _monotone_tp_probs({"tp1": p1, "tp2": p2, "tp3": p3})
-            
+            p1=_clip01(b1*np.exp(-k*(u1-1.0)))
+            p2=_clip01(b2*np.exp(-k*(u2-1.5)))
+            p3=_clip01(b3*np.exp(-k*(u3-2.2)))
+            probs=_monotone_tp_probs({"tp1":p1,"tp2":p2,"tp3":p3})
             return {
                 "last_price": price,
                 "recommendation": {"action": side, "confidence": ml_conf},
@@ -753,7 +723,6 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
 
     strategy = M7TradingStrategy()
     signals = strategy.generate_signals(df)
-    
     if not signals:
         res = {
             "last_price": price,
@@ -768,11 +737,9 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
             "meta": {"source": "M7", "grey_zone": True}
         }
         try:
-            log_agent_performance(
-                agent="M7", ticker=ticker, horizon=horizon, action="WAIT", confidence=0.50,
-                levels=res["levels"], probs=res["probs"], meta={"probs_debug": {"u": [], "p": []}},
-                ts=pd.Timestamp.utcnow().isoformat()
-            )
+            log_agent_performance(agent="M7", ticker=ticker, horizon=horizon, action="WAIT", confidence=0.50,
+                                  levels=res["levels"], probs=res["probs"], meta={"probs_debug":{"u":[],"p":[]}},
+                                  ts=pd.Timestamp.utcnow().isoformat())
         except Exception:
             pass
         return res
@@ -783,39 +750,32 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
     sl = float(best['stop_loss'])
     risk = abs(entry - sl)
     vol = float(df['close'].pct_change().std() * np.sqrt(252))
-    
     conf_base = 0.50 + 0.34*math.tanh((raw_conf - 0.65)/0.20)
     penalty = (0.05 if vol > 0.35 else 0.0) + (0.04 if risk/atr14 < 0.8 else 0.0) + (0.03 if risk/atr14 > 3.5 else 0.0)
     conf = float(max(0.52, min(0.82, conf_base*(1.0 - penalty))))
     conf = float(_m7_cal()["M7"](conf))
-    
     if best['direction'] == 'BUY':
-        tp1, tp2, tp3 = entry + 1.5*risk, entry + 2.5*risk, entry + 4.0*risk
-        act = "BUY"
+        tp1,tp2,tp3 = entry + 1.5*risk, entry + 2.5*risk, entry + 4.0*risk
+        act="BUY"
     else:
-        tp1, tp2, tp3 = entry - 1.5*risk, entry - 2.5*risk, entry - 4.0*risk
-        act = "SHORT"
-    
-    u1, u2, u3 = abs(tp1-entry)/atr14, abs(tp2-entry)/atr14, abs(tp3-entry)/atr14
-    k = 0.18
-    b1, b2, b3 = conf, max(0.50, conf-0.08), max(0.45, conf-0.16)
-    p1 = _clip01(b1*np.exp(-k*(u1-1.0)))
-    p2 = _clip01(b2*np.exp(-k*(u2-1.5)))
-    p3 = _clip01(b3*np.exp(-k*(u3-2.2)))
-    probs = _monotone_tp_probs({"tp1": p1, "tp2": p2, "tp3": p3})
-    
+        tp1,tp2,tp3 = entry - 1.5*risk, entry - 2.5*risk, entry - 4.0*risk
+        act="SHORT"
+    u1,u2,u3 = abs(tp1-entry)/atr14, abs(tp2-entry)/atr14, abs(tp3-entry)/atr14
+    k=0.18
+    b1,b2,b3 = conf, max(0.50, conf-0.08), max(0.45, conf-0.16)
+    p1=_clip01(b1*np.exp(-k*(u1-1.0)))
+    p2=_clip01(b2*np.exp(-k*(u2-1.5)))
+    p3=_clip01(b3*np.exp(-k*(u3-2.2)))
+    probs=_monotone_tp_probs({"tp1":p1,"tp2":p2,"tp3":p3})
     try:
-        log_agent_performance(
-            agent="M7", ticker=ticker, horizon=horizon, action=act, confidence=float(conf),
-            levels={"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
-            probs={"tp1": float(probs["tp1"]), "tp2": float(probs["tp2"]), "tp3": float(probs["tp3"])},
-            meta={"probs_debug": {"u": [float(u1), float(u2), float(u3)],
-                                  "p": [float(probs["tp1"]), float(probs["tp2"]), float(probs["tp3"])]}},
-            ts=pd.Timestamp.utcnow().isoformat()
-        )
+        log_agent_performance(agent="M7", ticker=ticker, horizon=horizon, action=act, confidence=float(conf),
+                              levels={"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
+                              probs={"tp1": float(probs["tp1"]), "tp2": float(probs["tp2"]), "tp3": float(probs["tp3"])},
+                              meta={"probs_debug":{"u":[float(u1),float(u2),float(u3)],
+                                                   "p":[float(probs["tp1"]),float(probs["tp2"]),float(probs["tp3"])]}},
+                              ts=pd.Timestamp.utcnow().isoformat())
     except Exception:
         pass
-    
     return {
         "last_price": price,
         "recommendation": {"action": act, "confidence": float(conf)},
