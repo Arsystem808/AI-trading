@@ -1065,48 +1065,17 @@ except Exception:
         return res
 
 # -------------------- Оркестратор Octopus --------------------
-# Базовые (наследованные) веса на случай отсутствия конфигурации
-OCTO_WEIGHTS: Dict[str, float] = {"Global": 0.10, "M7": 0.20, "W7": 0.20, "AlphaPulse": 0.50}
+OCTO_WEIGHTS: Dict[str, float] = {"Global": 0.10, "M7": 0.20, "W7": 0.20, "AlphaPulse": 0.50}  # как и было
 
-def _act_to_num(a: str) -> int:
+def _act_to_num(a: str) -> int:  # без изменений
     return 1 if a == "BUY" else (-1 if a == "SHORT" else 0)
 
-def _num_to_act(x: float) -> str:
+def _num_to_act(x: float) -> str:  # без изменений
     if x > 0: return "BUY"
     if x < 0: return "SHORT"
     return "WAIT"
 
-# Нормализация горизонта + конфигурация под каждый
-def _hz(h: str) -> str:
-    h = (h or "").lower()
-    return "short" if h.startswith("крат") or "short" in h else "mid"
-
-HZ_CONFIG: Dict[str, Dict[str, Any]] = {
-    # Краткосрок: порог медианного слияния ниже, штраф конфликта базовый, без масштабирования уровней
-    "short": {
-        "weights": {"Global": 0.10, "M7": 0.22, "W7": 0.23, "AlphaPulse": 0.45},
-        "median_switch": 0.25,   # если поляризация ниже — берём медианы, как у тебя было 0.25
-        "conf_beta": 0.35,       # мягкий штраф за несогласие (оставлен как было)
-        "scale": {"tp": 1.00, "sl": 1.00},
-    },
-    # Среднесрок: требуем чуть большую поляризацию, штраф слабее, уровни шире
-    "mid": {
-        "weights": {"Global": 0.20, "M7": 0.20, "W7": 0.15, "AlphaPulse": 0.45},
-        "median_switch": 0.35,   # больше консенсуса для отказа от медиан
-        "conf_beta": 0.25,       # слабее штраф конфликта
-        "scale": {"tp": 1.35, "sl": 1.20},  # расширяем цели/стоп под среднесрок
-    },
-}
-
 def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
-    hz = _hz(horizon)
-    cfg = HZ_CONFIG.get(hz, HZ_CONFIG["short"])
-    WEIGHTS = cfg.get("weights", OCTO_WEIGHTS)
-    MEDIAN_SWITCH = float(cfg.get("median_switch", 0.25))
-    CONF_BETA_DEFAULT = float(cfg.get("conf_beta", 0.35))
-    SCALE_TP = float(cfg.get("scale", {}).get("tp", 1.0))
-    SCALE_SL = float(cfg.get("scale", {}).get("sl", 1.0))
-
     # 1) Собираем ответы агентов
     parts: Dict[str, Dict[str, Any]] = {}
     for name, fn in {
@@ -1129,15 +1098,15 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
             "context": ["Octopus: no agents responded"],
             "note_html": "<div>Octopus: WAIT</div>",
             "alt": "WAIT", "entry_kind": "wait", "entry_label": "WAIT",
-            "meta": {"source": "Octopus", "votes": [], "ratio": 0.0, "horizon": horizon}
+            "meta": {"source": "Octopus", "votes": [], "ratio": 0.0}
         }
 
-    # 2) Строим активные голоса BUY/SHORT с весами и conf
+    # 2) Строим активные голоса BUY/SHORT с весами и conf (как было)
     active = []
     for k, r in parts.items():
         a = str(r.get("recommendation", {}).get("action", "WAIT")).upper()
         c = float(r.get("recommendation", {}).get("confidence", 0.5))
-        w = float(WEIGHTS.get(k, 0.20))
+        w = float(OCTO_WEIGHTS.get(k, 0.20))
         if a in ("BUY", "SHORT"):
             active.append((k, a, _clip01(c), w))
 
@@ -1149,7 +1118,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     delta = abs(score_long - score_short)
     ratio = delta / max(1e-6, total_side)
 
-    # 3) Правило выбора действия
+    # 3) Правило выбора действия (без изменений)
     if count_long >= 3:
         final_action = "BUY"
     elif count_short >= 3:
@@ -1157,7 +1126,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     else:
         final_action = "WAIT" if ratio < 0.20 else ("BUY" if score_long > score_short else "SHORT")
 
-    # Вспомогательные уровни (медианы по сторонникам одной стороны)
+    # Утилита для медианных уровней по сторонникам выбранной стороны
     def _median_levels(direction: str):
         L = [r.get("levels", {}) for r in parts.values()
              if str(r.get("recommendation", {}).get("action", "")).upper() == direction]
@@ -1166,56 +1135,36 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         med = lambda k: float(np.median([x.get(k, 0.0) for x in L if isinstance(x.get(k, None), (int, float))]))
         return {"entry": med("entry"), "sl": med("sl"), "tp1": med("tp1"), "tp2": med("tp2"), "tp3": med("tp3")}
 
-    # Применение горизонт‑зависимого масштабирования уровней
-    def _apply_scale(levels: Dict[str, float], action: str) -> Dict[str, float]:
-        if not levels: return levels
-        e = float(levels.get("entry", 0.0) or 0.0)
-        if e == 0.0 or (SCALE_TP == 1.0 and SCALE_SL == 1.0):
-            return levels
-        out = dict(levels)
-        if action == "BUY":
-            out["sl"]  = e - (e - float(levels.get("sl", e))) * SCALE_SL
-            out["tp1"] = e + (float(levels.get("tp1", e)) - e) * SCALE_TP
-            out["tp2"] = e + (float(levels.get("tp2", e)) - e) * SCALE_TP
-            out["tp3"] = e + (float(levels.get("tp3", e)) - e) * SCALE_TP
-        elif action == "SHORT":
-            out["sl"]  = e + (float(levels.get("sl", e)) - e) * SCALE_SL
-            out["tp1"] = e - (e - float(levels.get("tp1", e))) * SCALE_TP
-            out["tp2"] = e - (e - float(levels.get("tp2", e))) * SCALE_TP
-            out["tp3"] = e - (e - float(levels.get("tp3", e))) * SCALE_TP
-        return out
-
-    # 4) Уровни/пробы: медианы при слабой поляризации, иначе — от победителя
+    # 4) Уровни/пробы как было: медианы при слабой поляризации, иначе — от победителя
     if final_action in ("BUY", "SHORT"):
         cand = [t for t in active if t[1] == final_action]
         win_agent = (max(cand, key=lambda t: t[2] * t[3])[0] if cand
                      else max(active, key=lambda t: t[2] * t[3])[0])
-        levels_out = _median_levels(final_action) if ratio < MEDIAN_SWITCH else parts[win_agent].get("levels", {})
+        levels_out = _median_levels(final_action) if ratio < 0.25 else parts[win_agent].get("levels", {})
         probs_out = _monotone_tp_probs(parts.get(win_agent, {}).get("probs", {}) or {})
 
-        # 5) Итоговый confidence: взвешенно по победившей стороне + мягкий штраф конфликта
+        # 5) Итоговый confidence (НОВОЕ): взвешенно по победившей стороне + мягкий штраф конфликта
+        # 5.1 Взвешенный conf по сторонникам финальной стороны
         side_items = []
         for k, r in parts.items():
             rec = r.get("recommendation", {})
             if str(rec.get("action", "")).upper() == final_action:
-                w = float(WEIGHTS.get(k, 0.20))
+                w = float(OCTO_WEIGHTS.get(k, 0.20))
                 c = _clip01(rec.get("confidence", 0.5))
                 side_items.append((w, c))
         overall_conf = (sum(w * c for w, c in side_items) / max(1e-6, sum(w for w, _ in side_items))) if side_items else 0.50
 
+        # 5.2 Мягкий штраф за сильное несогласие противоположной стороны
         score_side = score_long if final_action == "BUY" else score_short
         score_opp  = score_short if final_action == "BUY" else score_long
         try:
             import os as _os
-            beta = float(_os.getenv("OCTO_CONF_BETA", str(CONF_BETA_DEFAULT)))
+            beta = float(_os.getenv("OCTO_CONF_BETA", "0.35"))
         except Exception:
-            beta = CONF_BETA_DEFAULT
+            beta = 0.35
         penalty = 1.0 - beta * (score_opp / max(1e-6, score_side))
-        penalty = max(0.70, min(1.00, penalty))
+        penalty = max(0.70, min(1.00, penalty))  # клип фактора
         overall_conf = float(CAL_CONF["Octopus"](_clip01(overall_conf * penalty)))
-
-        # Применяем масштаб уровня под горизонт (делает mid «шире»)
-        levels_out = _apply_scale(levels_out, final_action)
 
     else:
         levels_out = {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
@@ -1234,12 +1183,12 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         "recommendation": {"action": final_action, "confidence": overall_conf},
         "levels": levels_out,
         "probs": probs_out,
-        "context": [f"Octopus: ratio={ratio:.2f}, votes={count_long}L/{count_short}S", f"Horizon={horizon}"],
+        "context": [f"Octopus: ratio={ratio:.2f}, votes={count_long}L/{count_short}S"],
         "note_html": f"<div>Octopus: {final_action} с {overall_conf:.0%}</div>",
         "alt": "Octopus",
         "entry_kind": "market" if final_action != "WAIT" else "wait",
         "entry_label": final_action if final_action != "WAIT" else "WAIT",
-        "meta": {"source": "Octopus", "votes": votes_txt, "ratio": float(ratio), "horizon": horizon}
+        "meta": {"source": "Octopus", "votes": votes_txt, "ratio": float(ratio)}
     }
 
     try:
@@ -1269,3 +1218,13 @@ def analyze_asset(ticker: str, horizon: str, strategy: str = "Octopus") -> Dict[
     if not fn:
         raise ValueError(f"Unknown strategy: {strategy}")
     return fn(ticker, horizon)
+
+# -------------------- Тестовый запуск --------------------
+if __name__ == "__main__":
+    for s in ["Global", "M7", "W7", "AlphaPulse", "Octopus"]:
+        try:
+            print(f"\n=== {s} ===")
+            out = analyze_asset("AAPL", "Краткосрочный", s)
+            print({k: out[k] for k in ["last_price","recommendation","levels","probs"]})
+        except Exception as e:
+            print(f"{s} error:", e)
