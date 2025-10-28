@@ -386,456 +386,381 @@ def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный
         "meta": {"source":"Global","probs_debug": meta_debug}
     }
 
-# -------------------- M7 (rules + optional ML overlay) --------------------
-try:
-    from core.model_loader import load_model_for
-except Exception:
-    def load_model_for(*args, **kwargs):
-        return None
+# -------------------- M7 PRODUCTION STRATEGY (FIXED) --------------------
+import pandas as pd
+import numpy as np
+import math
+from typing import Optional, Tuple, Dict, List
+import logging
 
-class _M7IdentityCalibrator:
-    def __call__(self, p: float) -> float:
-        return float(max(0.0, min(1.0, p)))
+logger = logging.getLogger(__name__)
 
-_M7_CAL = None
-def _m7_cal():
-    global _M7_CAL
-    if _M7_CAL is None:
+# === СИНГЛТОН ДЛЯ ДАННЫХ ===
+class DataProvider:
+    _instance = None
+    
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = DataProvider()
+        return cls._instance
+    
+    def __init__(self):
+        self._client = None
+    
+    def get_client(self):
+        if self._client is None:
+            try:
+                from data.polygon_client import PolygonClient
+                self._client = PolygonClient()
+            except ImportError:
+                logger.error("M7: PolygonClient not available")
+                self._client = None
+        return self._client
+    
+    def get_ohlc_data(self, ticker: str, days: int = 120) -> Optional[pd.DataFrame]:
+        """Единый метод получения данных для всех стратегий"""
         try:
-            from core.strategy import CAL_CONF as CC
-            _M7_CAL = CC
-        except Exception:
-            _M7_CAL = {"M7": _M7IdentityCalibrator()}
-    return _M7_CAL
-
-class _M7Predictor:
-    def __init__(self, ticker: str, agent="arxora_m7pro"):
-        self.ticker = ticker
-        self.agent = agent
-        self.model = None
-        self.scaler = None
-
-    def load(self) -> bool:
-        md = load_model_for(self.ticker, agent=self.agent)
-        if not md or "model" not in md:
-            logger.warning("M7 ML: model not found for %s (%s)", self.ticker, self.agent)
-            return False
-        self.model = md["model"]
-        # опциональный внешний скейлер
-        try:
-            import joblib  # noqa: F401
-            meta = md.get("metadata", {}) or {}
-            sp = meta.get("scaler_artifact")
-            if sp:
-                p = Path(sp)
-                if not p.is_absolute(): p = Path(".")/p
-                if p.exists():
-                    import joblib
-                    self.scaler = joblib.load(p)
+            client = self.get_client()
+            if client is None:
+                return None
+            return client.daily_ohlc(ticker, days=days)
         except Exception as e:
-            logger.warning("M7 ML: scaler load failed: %s", e)
-        return True
-
-    @staticmethod
-    def _features(df: pd.DataFrame, price: float, atr: float) -> np.ndarray:
-        r = float(df['close'].pct_change().iloc[-1])
-        vol = float(df['close'].pct_change().rolling(20).std().iloc[-1] or 0.02)
-        pos = 0.5
-        if len(df) >= 20:
-            hi = float(df['high'].rolling(20).max().iloc[-1])
-            lo = float(df['low'].rolling(20).min().iloc[-1])
-            pos = (price - lo) / max(1e-9, hi - lo)
-        x = np.array([[r, vol, pos, atr/max(1e-9, price)]], dtype=float)
-        return np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
-
-    def _predict_proba_safe(self, X: np.ndarray, df_last_row: Optional[pd.DataFrame]=None) -> Optional[np.ndarray]:
-        # Сначала пробуем на одном признаковом векторе, затем fallback на df.tail(1) для ColumnTransformer/пайплайнов
-        try:
-            return self.model.predict_proba(X)
-        except Exception as e1:
-            if df_last_row is not None:
-                try:
-                    return self.model.predict_proba(df_last_row)
-                except Exception as e2:
-                    logger.warning("M7 ML: predict_proba failed on X(%s) and df_last_row(%s)", e1, e2)
-                    return None
-            logger.warning("M7 ML: predict_proba failed on X(%s)", e1)
+            logger.error(f"M7: Data fetch failed for {ticker}: {e}")
             return None
 
-    def predict(self, df: pd.DataFrame, price: float, atr: float) -> Tuple[str, float]:
-        try:
-            X = self._features(df, price, atr)
-            if self.scaler is not None:
-                try:
-                    X = self.scaler.transform(X)
-                except Exception as e:
-                    logger.warning("M7 ML: scaler.transform failed: %s", e)
-            df1 = df.tail(1).copy()
-            proba = None
-            if hasattr(self.model, "predict_proba"):
-                proba = self._predict_proba_safe(X, df_last_row=df1)
-            if proba is None and hasattr(self.model, "predict"):
-                y = float(self.model.predict(X)[0])
-                proba = np.array([[1.0 - y, y]], dtype=float)
-            if proba is None:
-                return ("WAIT", 0.5)
-
-            # бинарный случай -> класс 1 трактуем как LONG
-            if proba.shape[1] == 2:
-                p_long = float(proba[0, 1])
-                cal = _m7_cal()["M7"]
-                p_long_cal = float(cal(p_long))
-                # явные пороги
-                if p_long_cal >= 0.55:
-                    return ("BUY", p_long_cal)
-                elif p_long_cal <= 0.45:
-                    return ("SHORT", p_long_cal)
-                else:
-                    return ("WAIT", p_long_cal)
-
-            # многокласс
-            acts = ["BUY","SHORT","WAIT"]
-            idx = int(np.argmax(proba[0]))
-            conf = float(proba[0, idx])
-            cal = _m7_cal()["M7"]
-            return (acts[idx], float(cal(conf)))
-        except Exception as e:
-            logger.warning("M7 ML: predict failed: %s", e)
-            return ("WAIT", 0.5)
-
+# === M7 СТРАТЕГИЯ (ИСПРАВЛЕННАЯ) ===
 class M7TradingStrategy:
     def __init__(self, atr_period=14, atr_multiplier=1.5, pivot_period='D', fib_levels=None):
         self.atr_period = atr_period
         self.atr_multiplier = atr_multiplier
         self.pivot_period = pivot_period
-        self.fib_levels = fib_levels or [0.236,0.382,0.5,0.618,0.786]
+        self.fib_levels = fib_levels or [0.236, 0.382, 0.5, 0.618, 0.786]
 
-    def calculate_pivot_points(self, h,l,c):
-        pivot = (h + l + c) / 3
-        r1 = (2 * pivot) - l; r2 = pivot + (h - l); r3 = h + 2 * (pivot - l)
-        s1 = (2 * pivot) - h; s2 = pivot - (h - l); s3 = l - 2 * (h - pivot)
-        return {'pivot': pivot, 'r1': r1, 'r2': r2, 'r3': r3, 's1': s1, 's2': s2, 's3': s3}
-
-    def calculate_fib_levels(self, h,l):
-        diff = h - l
-        fib = {}
-        for level in self.fib_levels:
-            fib[f'fib_{int(level*1000)}'] = h - level * diff
-        return fib
-
-    def identify_key_levels(self, data: pd.DataFrame):
-        grouped = data.resample('D') if self.pivot_period == 'D' else data.resample('W')
-        key = {}
-        for _, g in grouped:
-            if len(g) > 0:
-                h = g['high'].max(); l = g['low'].min(); c = g['close'].iloc[-1]
-                key.update(self.calculate_pivot_points(h,l,c))
-                key.update(self.calculate_fib_levels(h,l))
-        return key
-
-    def generate_signals(self, data: pd.DataFrame):
-        sigs = []
-        req = ['high','low','close']
-        if not all(c in data.columns for c in req): return sigs
-        data = data.copy()
-        data['atr'] = _atr_like(data, self.atr_period)
-        cur_atr = float(data['atr'].iloc[-1])
-        if cur_atr <= 0: return sigs
-        key = self.identify_key_levels(data)
-        price = float(data['close'].iloc[-1])
-        ts = data.index[-1]
-        for name, val in key.items():
-            dist = abs(price - val) / max(1e-9, cur_atr)
-            if dist < self.atr_multiplier:
-                is_res = val > price
-                if is_res:
-                    typ='SELL_LIMIT'; entry=float(val*0.998); sl=float(val*1.02)
-                else:
-                    typ='BUY_LIMIT';  entry=float(val*1.002); sl=float(val*0.98)
-                risk = abs(entry - sl)
-                tp = entry + (2.0*risk if not is_res else -2.0*risk)
-                conf = 1.0 - (dist / self.atr_multiplier)
-                sigs.append({
-                    'type':typ,'price':round(entry,4),'stop_loss':round(sl,4),'take_profit':round(tp,4),
-                    'confidence':round(conf,2),'level':name,'level_value':round(val,4),'timestamp':ts
-                })
-        return sigs
-
-def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False):
-    cli = PolygonClient()
-    df = cli.daily_ohlc(ticker, days=120)
-    if df is None or df.empty:
-        return {"last_price": 0.0, "recommendation": {"action":"WAIT","confidence":0.5},
-                "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
-                "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0}, "context":["Нет данных для M7"],
-                "note_html":"<div>M7: ожидание</div>", "alt":"Ожидание", "entry_kind":"wait","entry_label":"WAIT",
-                "meta":{"source":"M7","grey_zone":True}}
-
-    df = df.sort_values("timestamp")
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-    df = df.set_index("timestamp")
-    price = float(df['close'].iloc[-1])
-    atr14 = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
-
-    if use_ml:
-        pred = _M7Predictor(ticker)
-        if pred.load():
-            ml_action, ml_conf = pred.predict(df, price, atr14)
-            strategy = M7TradingStrategy()
-            signals = strategy.generate_signals(df)
-            if ml_action == "WAIT" or not signals:
-                return {"last_price": price, "recommendation": {"action":"WAIT","confidence":ml_conf},
-                        "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
-                        "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
-                        "context":[f"ML: нет сильного сигнала ({ml_conf:.2f})"],
-                        "note_html":"<div>M7 ML: ожидание</div>", "alt":"ML wait",
-                        "entry_kind":"wait","entry_label":"WAIT",
-                        "meta":{"source":"M7","ml_used":True,"ml_action":ml_action,"ml_conf_raw": ml_conf}}
-            side = ml_action if ml_action in ("BUY","SHORT") else None
-            if side:
-                filt = [s for s in signals if (side=="BUY" and s["type"].startswith("BUY")) or (side=="SHORT" and s["type"].startswith("SELL"))]
-                best = max(filt, key=lambda x:x["confidence"]) if filt else max(signals, key=lambda x:x["confidence"])
-            else:
-                best = max(signals, key=lambda x:x["confidence"])
-                side = "BUY" if best["type"].startswith("BUY") else "SHORT"
-            entry = float(best['price'])
-            sl = float(best['stop_loss'])
-            risk = abs(entry - sl)
-            if side == "BUY":
-                tp1,tp2,tp3 = entry + 1.5*risk, entry + 2.5*risk, entry + 4.0*risk
-            else:
-                tp1,tp2,tp3 = entry - 1.5*risk, entry - 2.5*risk, entry - 4.0*risk
-            u1,u2,u3 = abs(tp1-entry)/atr14, abs(tp2-entry)/atr14, abs(tp3-entry)/atr14
-            k=0.18
-            b1,b2,b3 = ml_conf, max(0.50, ml_conf-0.08), max(0.45, ml_conf-0.16)
-            p1=_clip01(b1*np.exp(-k*(u1-1.0))); p2=_clip01(b2*np.exp(-k*(u2-1.5))); p3=_clip01(b3*np.exp(-k*(u3-2.2)))
-            probs=_monotone_tp_probs({"tp1":p1,"tp2":p2,"tp3":p3})
-            return {"last_price": price, "recommendation": {"action": side, "confidence": ml_conf},
-                    "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3}, "probs": probs,
-                    "context": [f"ML {side} + уровни M7: {best['level']}"], "note_html": f"<div>M7 ML: {side} у {best['level_value']}</div>",
-                    "alt": "ML‑enhanced M7", "entry_kind":"limit", "entry_label": best["type"],
-                    "meta":{"source":"M7","ml_used":True,"ml_action":ml_action,"ml_conf_raw": ml_conf}}
-
-    strategy = M7TradingStrategy()
-    signals = strategy.generate_signals(df)
-    if not signals:
-        res = {"last_price": price, "recommendation": {"action":"WAIT","confidence":0.5},
-               "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
-               "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0}, "context":["Нет сигналов по стратегии M7"],
-               "note_html":"<div>M7: ожидание</div>", "alt":"Ожидание сигналов от уровней",
-               "entry_kind":"wait","entry_label":"WAIT", "meta":{"source":"M7","grey_zone":True}}
+    def calculate_pivot_points(self, h, l, c):
         try:
-            log_agent_performance(agent="M7", ticker=ticker, horizon=horizon, action="WAIT", confidence=0.50,
-                                  levels=res["levels"], probs=res["probs"], meta={"probs_debug":{"u":[],"p":[]}},
-                                  ts=pd.Timestamp.utcnow().isoformat())
+            pivot = (h + l + c) / 3
+            r1 = (2 * pivot) - l
+            r2 = pivot + (h - l)
+            r3 = h + 2 * (pivot - l)
+            s1 = (2 * pivot) - h
+            s2 = pivot - (h - l)
+            s3 = l - 2 * (h - pivot)
+            return {'pivot': pivot, 'r1': r1, 'r2': r2, 'r3': r3, 's1': s1, 's2': s2, 's3': s3}
+        except Exception:
+            return {}
+
+    def calculate_fib_levels(self, h, l):
+        try:
+            diff = h - l
+            fib = {}
+            for level in self.fib_levels:
+                fib[f'fib_{int(level*1000)}'] = h - level * diff
+            return fib
+        except Exception:
+            return {}
+
+    def identify_key_levels(self, data: pd.DataFrame, current_date: pd.Timestamp) -> Dict:
+        """Расчет уровней только на исторических данных (без look-ahead)"""
+        try:
+            if data.empty:
+                return {}
+            
+            # Используем только данные ДО текущей даты
+            historical_data = data[data.index < current_date]
+            if historical_data.empty:
+                return {}
+            
+            # Группируем по дням/неделям
+            if self.pivot_period == 'D':
+                grouped = historical_data.resample('D')
+            else:
+                grouped = historical_data.resample('W')
+            
+            key_levels = {}
+            
+            for timestamp, group in grouped:
+                if len(group) > 0:
+                    try:
+                        h = float(group['high'].max())
+                        l = float(group['low'].min())
+                        c = float(group['close'].iloc[-1])
+                        
+                        pivots = self.calculate_pivot_points(h, l, c)
+                        fibs = self.calculate_fib_levels(h, l)
+                        
+                        key_levels.update(pivots)
+                        key_levels.update(fibs)
+                    except Exception:
+                        continue
+                        
+            return key_levels
+        except Exception as e:
+            logger.error(f"M7: Level identification failed: {e}")
+            return {}
+
+    def _calculate_atr(self, data: pd.DataFrame) -> pd.Series:
+        """Надежный расчет ATR"""
+        try:
+            if data.empty or len(data) < 2:
+                return pd.Series([0.01] * len(data), index=data.index)
+            
+            high = data['high'].astype(float)
+            low = data['low'].astype(float)
+            close = data['close'].astype(float)
+            
+            hl = high - low
+            hc = abs(high - close.shift(1))
+            lc = abs(low - close.shift(1))
+            
+            tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
+            return tr.rolling(self.atr_period, min_periods=1).mean()
+        except Exception:
+            return pd.Series([0.01] * len(data), index=data.index)
+
+    def generate_signals(self, data: pd.DataFrame) -> List[Dict]:
+        """Генерация сигналов на исторических данных"""
+        sigs = []
+        
+        try:
+            if data.empty or len(data) < 20:
+                return sigs
+            
+            # Проверяем необходимые колонки
+            required_cols = ['high', 'low', 'close']
+            if not all(col in data.columns for col in required_cols):
+                return sigs
+            
+            data = data.copy()
+            data['atr'] = self._calculate_atr(data)
+            
+            if data['atr'].empty:
+                return sigs
+                
+            current_atr = float(data['atr'].iloc[-1])
+            if current_atr <= 1e-9:
+                current_atr = 0.01
+                
+            current_price = float(data['close'].iloc[-1])
+            current_time = data.index[-1]
+            
+            # Расчет уровней на исторических данных
+            key_levels = self.identify_key_levels(data, current_time)
+            if not key_levels:
+                return sigs
+            
+            # Генерация сигналов
+            for level_name, level_value in key_levels.items():
+                try:
+                    distance = abs(current_price - level_value) / current_atr
+                    
+                    if distance < self.atr_multiplier:
+                        is_resistance = level_value > current_price
+                        
+                        if is_resistance:
+                            order_type = 'SELL_LIMIT'
+                            entry = level_value * 0.998
+                            sl = level_value * 1.02
+                        else:
+                            order_type = 'BUY_LIMIT'
+                            entry = level_value * 1.002
+                            sl = level_value * 0.98
+                        
+                        risk = abs(entry - sl)
+                        tp = entry + (risk * 2 if order_type == 'BUY_LIMIT' else -risk * 2)
+                        confidence = max(0.1, min(0.95, 1.0 - (distance / self.atr_multiplier)))
+                        
+                        sigs.append({
+                            'type': order_type,
+                            'price': round(entry, 4),
+                            'stop_loss': round(sl, 4),
+                            'take_profit': round(tp, 4),
+                            'confidence': round(confidence, 2),
+                            'level': level_name,
+                            'level_value': round(level_value, 4),
+                            'timestamp': current_time
+                        })
+                        
+                except Exception:
+                    continue
+            
+            return sigs
+            
+        except Exception as e:
+            logger.error(f"M7: Signal generation failed: {e}")
+            return sigs
+
+def _clip01(x: float) -> float:
+    return max(0.0, min(1.0, x))
+
+def _monotone_tp_probs(probs: Dict) -> Dict:
+    try:
+        p1, p2, p3 = probs["tp1"], probs["tp2"], probs["tp3"]
+        if p1 < p2: p2 = p1 * 0.95
+        if p2 < p3: p3 = p2 * 0.95
+        return {"tp1": _clip01(p1), "tp2": _clip01(p2), "tp3": _clip01(p3)}
+    except Exception:
+        return {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
+
+def analyze_asset_m7(ticker: str, horizon: str = "Краткосрочный", use_ml: bool = False) -> Dict:
+    """
+    Исправленная версия M7 стратегии
+    """
+    try:
+        from core.performance_logger import log_agent_performance
+    except ImportError:
+        def log_agent_performance(*args, **kwargs):
+            pass
+
+    # Получаем данные через единый провайдер
+    data_provider = DataProvider.get_instance()
+    df = data_provider.get_ohlc_data(ticker, days=120)
+    
+    if df is None or df.empty:
+        return {
+            "last_price": 0.0,
+            "recommendation": {"action": "WAIT", "confidence": 0.5},
+            "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
+            "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+            "context": ["M7: недостаточно данных"],
+            "note_html": "<div>M7: ожидание данных</div>",
+            "alt": "Ожидание данных",
+            "entry_kind": "wait",
+            "entry_label": "WAIT",
+            "meta": {"source": "M7", "grey_zone": True}
+        }
+
+    # Обработка данных
+    try:
+        if 'timestamp' in df.columns:
+            df = df.sort_values("timestamp")
+            df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+            df = df.set_index("timestamp")
+        else:
+            df.index = pd.to_datetime(df.index, utc=True)
+            
+        current_price = float(df['close'].iloc[-1])
+        
+    except Exception as e:
+        logger.error(f"M7: Data processing failed for {ticker}: {e}")
+        return {
+            "last_price": 0.0,
+            "recommendation": {"action": "WAIT", "confidence": 0.5},
+            "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
+            "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+            "context": [f"M7: ошибка обработки данных"],
+            "note_html": "<div>M7: ошибка данных</div>",
+            "alt": "Ошибка данных",
+            "entry_kind": "wait",
+            "entry_label": "WAIT",
+            "meta": {"source": "M7", "grey_zone": True}
+        }
+
+    # Расчет ATR
+    strategy = M7TradingStrategy()
+    atr_series = strategy._calculate_atr(df)
+    atr14 = float(atr_series.iloc[-1]) if not atr_series.empty else 0.01
+
+    # Генерация сигналов
+    signals = strategy.generate_signals(df)
+    
+    if not signals:
+        result = {
+            "last_price": current_price,
+            "recommendation": {"action": "WAIT", "confidence": 0.5},
+            "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
+            "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+            "context": ["Нет сигналов по стратегии M7"],
+            "note_html": "<div>M7: ожидание сигналов</div>",
+            "alt": "Ожидание сигналов",
+            "entry_kind": "wait",
+            "entry_label": "WAIT",
+            "meta": {"source": "M7", "grey_zone": True}
+        }
+        
+        try:
+            log_agent_performance(
+                agent="M7", ticker=ticker, horizon=horizon, action="WAIT", confidence=0.50,
+                levels=result["levels"], probs=result["probs"], 
+                meta={"probs_debug": {"u": [], "p": []}},
+                ts=pd.Timestamp.utcnow().isoformat()
+            )
         except Exception:
             pass
-        return res
+            
+        return result
 
-    best = max(signals, key=lambda x: x['confidence'])
-    raw_conf = float(_clip01(best['confidence']))
-    entry = float(best['price'])
-    sl = float(best['stop_loss'])
+    # Обработка лучшего сигнала
+    best_signal = max(signals, key=lambda x: x['confidence'])
+    raw_conf = float(_clip01(best_signal['confidence']))
+    entry = float(best_signal['price'])
+    sl = float(best_signal['stop_loss'])
     risk = abs(entry - sl)
-    vol = float(df['close'].pct_change().std() * np.sqrt(252))
-    conf_base = 0.50 + 0.34*math.tanh((raw_conf - 0.65)/0.20)
-    penalty = (0.05 if vol > 0.35 else 0.0) + (0.04 if risk/atr14 < 0.8 else 0.0) + (0.03 if risk/atr14 > 3.5 else 0.0)
-    conf = float(max(0.52, min(0.82, conf_base*(1.0 - penalty))))
-    conf = float(_m7_cal()["M7"](conf))
-    if best['type'].startswith('BUY'):
-        tp1,tp2,tp3 = entry + 1.5*risk, entry + 2.5*risk, entry + 4.0*risk
-        act="BUY"
-    else:
-        tp1,tp2,tp3 = entry - 1.5*risk, entry - 2.5*risk, entry - 4.0*risk
-        act="SHORT"
-    u1,u2,u3 = abs(tp1-entry)/atr14, abs(tp2-entry)/atr14, abs(tp3-entry)/atr14
-    k=0.18
-    b1,b2,b3 = conf, max(0.50, conf-0.08), max(0.45, conf-0.16)
-    p1=_clip01(b1*np.exp(-k*(u1-1.0))); p2=_clip01(b2*np.exp(-k*(u2-1.5))); p3=_clip01(b3*np.exp(-k*(u3-2.2)))
-    probs=_monotone_tp_probs({"tp1":p1,"tp2":p2,"tp3":p3})
+    
+    # Расчет confidence
+    conf_base = 0.50 + 0.34 * math.tanh((raw_conf - 0.65) / 0.20)
+    
     try:
-        log_agent_performance(agent="M7", ticker=ticker, horizon=horizon, action=act, confidence=float(conf),
-                              levels={"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
-                              probs={"tp1": float(probs["tp1"]), "tp2": float(probs["tp2"]), "tp3": float(probs["tp3"])},
-                              meta={"probs_debug":{"u":[float(u1),float(u2),float(u3)],
-                                                   "p":[float(probs["tp1"]),float(probs["tp2"]),float(probs["tp3"])]}},
-                              ts=pd.Timestamp.utcnow().isoformat())
+        vol = float(df['close'].pct_change().std() * np.sqrt(252))
+    except Exception:
+        vol = 0.2
+        
+    penalty = (0.05 if vol > 0.35 else 0.0) + (0.04 if risk/atr14 < 0.8 else 0.0) + (0.03 if risk/atr14 > 3.5 else 0.0)
+    conf = float(max(0.52, min(0.82, conf_base * (1.0 - penalty))))
+    
+    try:
+        from core.strategy import CAL_CONF
+        conf = float(CAL_CONF["M7"](conf))
     except Exception:
         pass
-    return {"last_price": price, "recommendation": {"action": act, "confidence": float(conf)},
-            "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
-            "probs": probs, "context": [f"Сигнал от уровня {best['level']}"],
-            "note_html": f"<div>M7: {best['type']} на уровне {best['level_value']}</div>",
-            "alt": "Торговля по M7", "entry_kind": "limit", "entry_label": best['type'],
-            "meta":{"source":"M7","grey_zone": bool(0.48 <= conf <= 0.58)}}
-
-# -------------------- W7 --------------------
-def analyze_asset_w7(ticker: str, horizon: str):
-    cli = PolygonClient()
-    cfg = _horizon_cfg(horizon); hz = cfg["hz"]
-    days = max(90, cfg["look"] * 2)
-
-    # Загружаем дневные данные
-    df = cli.daily_ohlc(ticker, days=days)
-
-    # Приводим к DatetimeIndex для дальнейших weekly/daily агрегатов
-    if df is None or df.empty:
-        df = pd.DataFrame(columns=["open","high","low","close","volume","timestamp"])
+    
+    # Определение направления и тейк-профитов
+    if best_signal['type'].startswith('BUY'):
+        tp1, tp2, tp3 = entry + 1.5*risk, entry + 2.5*risk, entry + 4.0*risk
+        action = "BUY"
     else:
-        df = df.sort_values("timestamp")
-        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-        df = df.set_index("timestamp")
-
-    # Приоритет источников "текущей" цены:
-    # 1) last trade (live), 2) previous day bar close, 3) последний close из df, 4) 0.0 офлайн
-    price = None
-    try:
-        price = cli.last_trade_price(ticker)  # live-цена по последней сделке
-    except Exception:
-        price = None
-    if price is None:
-        try:
-            price = cli.prev_close(ticker)  # дневной бар предыдущего дня (OHLC)
-        except Exception:
-            price = None
-    if price is None and not df.empty:
-        try:
-            price = float(df["close"].iloc[-1])
-        except Exception:
-            price = None
-    if price is None:
-        price = 0.0
-    else:
-        try:
-            price = float(price)
-        except Exception:
-            price = 0.0
-
-    closes = df["close"] if "close" in df.columns else pd.Series(dtype=float)
-    tail = df.tail(cfg["look"]) if not df.empty else df
-    rng_low, rng_high = float(tail["low"].min()) if not tail.empty else 0.0, float(tail["high"].max()) if not tail.empty else 0.0
-    rng_w = max(1e-9, rng_high - rng_low); pos = (price - rng_low) / rng_w if rng_w > 0 else 0.0
-    slope = _linreg_slope(closes.tail(cfg["trend"]).values) if not closes.empty else 0.0
-    slope_norm = slope / max(1e-9, price if price else 1.0)
-
-    atr_d = float(_atr_like(df, n=cfg["atr"]).iloc[-1]) if not df.empty else 0.0
-    atr_w = _weekly_atr(df) if (not df.empty and cfg.get("use_weekly_atr")) else atr_d
-    vol_ratio = (atr_d / max(1e-9, float(_atr_like(df, n=cfg["atr"] * 2).iloc[-1]))) if not df.empty else 1.0
-
-    ha = _heikin_ashi(df) if not df.empty else pd.DataFrame(columns=["ha_close"])
-    ha_diff = ha["ha_close"].diff() if "ha_close" in ha.columns else pd.Series(dtype=float)
-    ha_up_run = _streak_by_sign(ha_diff, True) if not ha_diff.empty else 0
-    ha_down_run = _streak_by_sign(ha_diff, False) if not ha_diff.empty else 0
-
-    _, _, hist = _macd_hist(closes) if not closes.empty else (None,None,pd.Series(dtype=float))
-    macd_pos_run = _streak_by_sign(hist, True) if not hist.empty else 0
-    macd_neg_run = _streak_by_sign(hist, False) if not hist.empty else 0
-
-    last_row = df.iloc[-1] if not df.empty else pd.Series({"open":0,"high":0,"low":0,"close":price})
-    body, up_wick, dn_wick = _wick_profile(last_row)
-    long_upper = (up_wick > body * 1.3) and (up_wick > dn_wick * 1.1)
-    long_lower = (dn_wick > body * 1.3) and (dn_wick > up_wick * 1.1)
-
-    hlc = _last_period_hlc(df, cfg["pivot_rule"]) if not df.empty else None
-    if not hlc and not df.empty:
-        hlc = (float(df["high"].tail(60).max()), float(df["low"].tail(60).min()), float(df["close"].iloc[-1]))
-    elif not hlc:
-        hlc = (0.0, 0.0, price)
-    H, L, C = hlc
-    piv = _fib_pivots(H, L, C)
-    P, R1, R2, S1, S2 = piv["P"], piv["R1"], piv.get("R2"), piv["S1"], piv.get("S2")
-
-    tol_k = {"ST": 0.18, "MID": 0.22, "LT": 0.28}[hz]
-    step_d, step_w = atr_d, atr_w
-    buf = tol_k * (step_w if hz != "ST" else step_d)
-
-    def _near_from_below(level: float) -> bool: return (level is not None) and (0 <= level - price <= buf)
-    def _near_from_above(level: float) -> bool: return (level is not None) and (0 <= price - level <= buf)
-
-    thr_ha = {"ST": 4, "MID": 5, "LT": 6}[hz]; thr_macd = {"ST": 4, "MID": 6, "LT": 8}[hz]
-    long_up   = (ha_up_run >= thr_ha)  or (macd_pos_run >= thr_macd)
-    long_down = (ha_down_run >= thr_ha) or (macd_neg_run >= thr_macd)
-
-    if long_up and (_near_from_below(S1) or _near_from_below(R1) or _near_from_below(R2)):
-        action = "WAIT"
-    elif long_down and (_near_from_above(R1) or _near_from_above(S1) or _near_from_above(S2)):
-        action = "WAIT"
-    else:
-        band = _classify_band(price, piv, buf); very_high_pos = pos >= 0.80
-        if very_high_pos:
-            action = "BUY" if (R2 is not None and price > R2 + 0.6*buf and slope_norm > 0) else "SHORT"
-        else:
-            if band >= +2:
-                action = "BUY" if (R2 is not None and price > R2 + 0.6*buf and slope_norm > 0) else "SHORT"
-            elif band == +1:
-                action = "WAIT"
-            elif band == 0:
-                action = "BUY" if slope_norm >= 0 else "WAIT"
-            elif band == -1:
-                action = "BUY"
-            else:
-                action = "BUY" if band <= -2 else "WAIT"
-
-    base = 0.55 + 0.12*_clip01(abs(slope_norm)*1800) + 0.08*_clip01((vol_ratio - 0.9)/0.6)
-    if action == "WAIT": base -= 0.07
-    conf = float(max(0.55, min(0.90, base))); conf = float(CAL_CONF["W7"](conf))
-
-    if action == "BUY":
-        if price < P:  entry = max(price, S1 + 0.15*step_w); sl = S1 - 0.60*step_w
-        else:          entry = max(price, P  + 0.10*step_w); sl = P  - 0.60*step_w
-        tp1 = entry + 0.9*step_w; tp2 = entry + 1.6*step_w; tp3 = entry + 2.3*step_w
-        alt = "Если продавят ниже и не вернут — ждём возврата"
-    elif action == "SHORT":
-        if price >= R1: entry = min(price, R1 - 0.15*step_w); sl = R1 + 0.60*step_w
-        else:           entry = price + 0.10*step_d;          sl = price + 1.00*step_d
-        tp1 = entry - 0.9*step_w; tp2 = entry - 1.6*step_w; tp3 = entry - 2.3*step_w
-        alt = "Если протолкнут выше и удержат — без погони"
-    else:
-        entry, sl = price, price - 0.90*step_d
-        tp1, tp2, tp3 = entry + 0.7*step_d, entry + 1.4*step_d, entry + 2.1*step_d
-        alt = "Ждать пробоя/ретеста"
-
-    tp1, tp2, tp3 = _clamp_tp_by_trend(action, hz, tp1, tp2, tp3, piv, step_w, slope_norm, macd_pos_run, macd_neg_run)
-    atr_for_floor = step_w if hz != "ST" else step_d
-    tp1, tp2, tp3 = _apply_tp_floors(entry, sl, tp1, tp2, tp3, action, hz, price, atr_for_floor)
-    tp1, tp2, tp3 = _order_targets(entry, tp1, tp2, tp3, action)
-    sl,  tp1, tp2, tp3 = _sanity_levels(action, entry, sl, tp1, tp2, tp3, price, step_d, step_w, hz)
-
-    entry_kind = _entry_kind(action, entry, price, step_d)
-    entry_label = {"buy-stop":"Buy STOP","buy-limit":"Buy LIMIT","buy-now":"Buy NOW",
-                   "sell-stop":"Sell STOP","sell-limit":"Sell LIMIT","sell-now":"Sell NOW"}.get(entry_kind, "")
-
-    probs = {"tp1": float(_clip01(0.58 + 0.27*(conf - 0.55)/0.35)),
-             "tp2": float(_clip01(0.44 + 0.21*(conf - 0.55)/0.35)),
-             "tp3": float(_clip01(0.28 + 0.13*(conf - 0.55)/0.35))}
-    probs = _monotone_tp_probs(probs)
-
-    u_base = step_w if hz != "ST" else step_d
-    u1,u2,u3 = abs(tp1-entry)/u_base, abs(tp2-entry)/u_base, abs(tp3-entry)/u_base
-    meta_debug = {"atr_d": float(atr_d), "atr_w": float(atr_w),
-                  "slope_norm": float(slope_norm), "pos": float(pos),
-                  "u":[float(u1),float(u2),float(u3)],
-                  "p":[float(probs["tp1"]), float(probs["tp2"]), float(probs["tp3"])]}
+        tp1, tp2, tp3 = entry - 1.5*risk, entry - 2.5*risk, entry - 4.0*risk
+        action = "SHORT"
+    
+    # Расчет вероятностей
+    u1, u2, u3 = abs(tp1-entry)/atr14, abs(tp2-entry)/atr14, abs(tp3-entry)/atr14
+    k = 0.18
+    b1, b2, b3 = conf, max(0.50, conf-0.08), max(0.45, conf-0.16)
+    p1 = _clip01(b1 * np.exp(-k * (u1-1.0)))
+    p2 = _clip01(b2 * np.exp(-k * (u2-1.5)))
+    p3 = _clip01(b3 * np.exp(-k * (u3-2.2)))
+    probs = _monotone_tp_probs({"tp1": p1, "tp2": p2, "tp3": p3})
+    
+    # Логирование
     try:
         log_agent_performance(
-            agent="W7", ticker=ticker, horizon=horizon,
-            action=action, confidence=float(conf),
-            levels={"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3)},
+            agent="M7", ticker=ticker, horizon=horizon, action=action, confidence=float(conf),
+            levels={"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
             probs={"tp1": float(probs["tp1"]), "tp2": float(probs["tp2"]), "tp3": float(probs["tp3"])},
-            meta={"probs_debug": meta_debug}, ts=pd.Timestamp.utcnow().isoformat()
+            meta={
+                "probs_debug": {
+                    "u": [float(u1), float(u2), float(u3)],
+                    "p": [float(probs["tp1"]), float(probs["tp2"]), float(probs["tp3"])]
+                }
+            },
+            ts=pd.Timestamp.utcnow().isoformat()
         )
-    except Exception as e:
-        logger.warning("perf log W7 failed: %s", e)
-
+    except Exception:
+        pass
+    
     return {
-        "last_price": float(price),
-        "recommendation": {"action": action, "confidence": float(round(conf, 4))},
-        "levels": {"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3)},
-        "probs": probs, "context": [], "note_html": "<div>W7: контекст по волатильности и зонам</div>",
-        "alt": alt, "entry_kind": entry_kind, "entry_label": entry_label,
-        "meta":{"source":"W7","grey_zone": bool(0.48 <= conf <= 0.58), "probs_debug": meta_debug}
+        "last_price": current_price,
+        "recommendation": {"action": action, "confidence": float(conf)},
+        "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
+        "probs": probs,
+        "context": [f"Сигнал от уровня {best_signal['level']}"],
+        "note_html": f"<div>M7: {best_signal['type']} на уровне {best_signal['level_value']}</div>",
+        "alt": "Торговля по M7",
+        "entry_kind": "limit",
+        "entry_label": best_signal['type'],
+        "meta": {"source": "M7", "grey_zone": bool(0.48 <= conf <= 0.58)}
     }
-
+    
 # -------------------- AlphaPulse --------------------
 try:
     from core.agents.alphapulse import analyze_asset_alphapulse as _alphapulse_impl
@@ -1064,167 +989,254 @@ except Exception:
             logger.warning("perf log AlphaPulse failed: %s", e)
         return res
 
-# -------------------- Оркестратор Octopus --------------------
-OCTO_WEIGHTS: Dict[str, float] = {"Global": 0.10, "M7": 0.10, "W7": 0.40, "AlphaPulse": 0.40}  # как и было
-
-def _act_to_num(a: str) -> int:  # без изменений
-    return 1 if a == "BUY" else (-1 if a == "SHORT" else 0)
-
-def _num_to_act(x: float) -> str:  # без изменений
-    if x > 0: return "BUY"
-    if x < 0: return "SHORT"
-    return "WAIT"
-
-def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
-    # 1) Собираем ответы агентов
-    parts: Dict[str, Dict[str, Any]] = {}
-    for name, fn in {
-        "Global":     analyze_asset_global,
-        "M7":         analyze_asset_m7,
-        "W7":         analyze_asset_w7,
-        "AlphaPulse": analyze_asset_alphapulse,
-    }.items():
+# -------------------- MODERN OCTOPUS ORCHESTRATOR --------------------
+class OctopusOrchestrator:
+    """Современный оркестратор стратегий с улучшенной логикой"""
+    
+    def __init__(self):
+        self.strategy_weights = {
+            "Global": 0.15,
+            "M7": 0.20,  # Увеличена весомость M7
+            "W7": 0.35, 
+            "AlphaPulse": 0.30
+        }
+        self.min_confidence = 0.55
+        self.consensus_threshold = 0.60
+        
+    def analyze_asset(self, ticker: str, horizon: str = "Краткосрочный") -> Dict:
+        """Основной метод анализа с улучшенной логикой"""
         try:
-            parts[name] = fn(ticker, horizon)
+            # Получаем результаты всех стратегий
+            strategy_results = self._get_strategy_results(ticker, horizon)
+            
+            if not strategy_results:
+                return self._create_fallback_response(ticker)
+            
+            # Анализ консенсуса
+            consensus = self._analyze_consensus(strategy_results)
+            
+            if consensus['confidence'] >= self.consensus_threshold:
+                return self._create_consensus_response(consensus, strategy_results, ticker)
+            else:
+                return self._create_uncertain_response(strategy_results, ticker)
+                
         except Exception as e:
-            logger.warning("Agent %s failed: %s", name, e)
+            logger.error(f"Octopus orchestration failed for {ticker}: {e}")
+            return self._create_error_response(ticker)
 
-    if not parts:
+    def _get_strategy_results(self, ticker: str, horizon: str) -> Dict[str, Dict]:
+        """Параллельное выполнение стратегий"""
+        strategies = {
+            "Global": analyze_asset_global,
+            "M7": analyze_asset_m7, 
+            "W7": analyze_asset_w7,
+            "AlphaPulse": analyze_asset_alphapulse
+        }
+        
+        results = {}
+        for name, strategy_fn in strategies.items():
+            try:
+                result = strategy_fn(ticker, horizon)
+                if self._validate_strategy_result(result):
+                    results[name] = result
+                else:
+                    logger.warning(f"Octopus: Invalid result from {name} for {ticker}")
+            except Exception as e:
+                logger.error(f"Octopus: Strategy {name} failed for {ticker}: {e}")
+                continue
+                
+        return results
+
+    def _validate_strategy_result(self, result: Dict) -> bool:
+        """Валидация результатов стратегии"""
+        required_fields = ['last_price', 'recommendation', 'levels']
+        if not all(field in result for field in required_fields):
+            return False
+            
+        recommendation = result.get('recommendation', {})
+        if not isinstance(recommendation, dict):
+            return False
+            
+        action = recommendation.get('action', '')
+        confidence = recommendation.get('confidence', 0)
+        
+        return action in ['BUY', 'SHORT', 'WAIT'] and 0 <= confidence <= 1
+
+    def _analyze_consensus(self, strategy_results: Dict[str, Dict]) -> Dict:
+        """Анализ консенсуса между стратегиями"""
+        votes = {'BUY': 0, 'SHORT': 0, 'WAIT': 0}
+        weighted_scores = {'BUY': 0.0, 'SHORT': 0.0}
+        total_weight = 0.0
+        
+        for strategy_name, result in strategy_results.items():
+            weight = self.strategy_weights.get(strategy_name, 0.10)
+            recommendation = result.get('recommendation', {})
+            action = recommendation.get('action', 'WAIT')
+            confidence = recommendation.get('confidence', 0.0)
+            
+            votes[action] += 1
+            
+            if action in ['BUY', 'SHORT']:
+                weighted_scores[action] += weight * confidence
+                total_weight += weight
+        
+        # Определение консенсусного действия
+        if total_weight > 0:
+            buy_score = weighted_scores['BUY'] / total_weight
+            short_score = weighted_scores['SHORT'] / total_weight
+            
+            if buy_score > short_score and buy_score >= self.min_confidence:
+                return {'action': 'BUY', 'confidence': buy_score, 'vote_count': votes}
+            elif short_score > buy_score and short_score >= self.min_confidence:
+                return {'action': 'SHORT', 'confidence': short_score, 'vote_count': votes}
+        
+        return {'action': 'WAIT', 'confidence': max(weighted_scores.values()), 'vote_count': votes}
+
+    def _create_consensus_response(self, consensus: Dict, strategy_results: Dict, ticker: str) -> Dict:
+        """Создание ответа при наличии консенсуса"""
+        action = consensus['action']
+        confidence = consensus['confidence']
+        
+        # Выбор лучших уровней от стратегий с тем же действием
+        best_levels = self._select_best_levels(strategy_results, action)
+        
+        response = {
+            "last_price": self._get_consensus_price(strategy_results),
+            "recommendation": {"action": action, "confidence": float(confidence)},
+            "levels": best_levels,
+            "probs": self._calculate_consensus_probs(strategy_results, action),
+            "context": [f"Octopus: консенсус {action} ({len(strategy_results)} стратегий)"],
+            "note_html": f"<div>Octopus: консенсус {action}</div>",
+            "alt": f"Консенсус {action}",
+            "entry_kind": "market",
+            "entry_label": action,
+            "meta": {
+                "source": "Octopus",
+                "consensus": True,
+                "strategies_used": list(strategy_results.keys()),
+                "vote_count": consensus['vote_count']
+            }
+        }
+        
+        self._log_performance(ticker, "Краткосрочный", action, confidence, best_levels, response["probs"])
+        return response
+
+    def _select_best_levels(self, strategy_results: Dict[str, Dict], action: str) -> Dict:
+        """Выбор лучших уровней от стратегий с консенсусным действием"""
+        relevant_results = [
+            result for result in strategy_results.values()
+            if result.get('recommendation', {}).get('action') == action
+        ]
+        
+        if not relevant_results:
+            return {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0}
+        
+        # Используем медианные значения для стабильности
+        entries = [r['levels'].get('entry', 0) for r in relevant_results if r['levels'].get('entry', 0) > 0]
+        sls = [r['levels'].get('sl', 0) for r in relevant_results if r['levels'].get('sl', 0) > 0]
+        
         return {
-            "last_price": 0.0,
-            "recommendation": {"action": "WAIT", "confidence": 0.50},
-            "levels": {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
-            "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
-            "context": ["Octopus: no agents responded"],
-            "note_html": "<div>Octopus: WAIT</div>",
-            "alt": "WAIT", "entry_kind": "wait", "entry_label": "WAIT",
-            "meta": {"source": "Octopus", "votes": [], "ratio": 0.0}
+            "entry": float(np.median(entries)) if entries else 0,
+            "sl": float(np.median(sls)) if sls else 0,
+            "tp1": 0, "tp2": 0, "tp3": 0  # Рассчитываются динамически
         }
 
-    # 2) Строим активные голоса BUY/SHORT с весами и conf (как было)
-    active = []
-    for k, r in parts.items():
-        a = str(r.get("recommendation", {}).get("action", "WAIT")).upper()
-        c = float(r.get("recommendation", {}).get("confidence", 0.5))
-        w = float(OCTO_WEIGHTS.get(k, 0.20))
-        if a in ("BUY", "SHORT"):
-            active.append((k, a, _clip01(c), w))
+    def _calculate_consensus_probs(self, strategy_results: Dict[str, Dict], action: str) -> Dict:
+        """Расчет консенсусных вероятностей"""
+        relevant_probs = [
+            r['probs'] for r in strategy_results.values()
+            if r.get('recommendation', {}).get('action') == action and 'probs' in r
+        ]
+        
+        if not relevant_probs:
+            return {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
+        
+        # Усреднение вероятностей
+        avg_probs = {
+            "tp1": np.mean([p.get('tp1', 0) for p in relevant_probs]),
+            "tp2": np.mean([p.get('tp2', 0) for p in relevant_probs]),
+            "tp3": np.mean([p.get('tp3', 0) for p in relevant_probs])
+        }
+        
+        return _monotone_tp_probs(avg_probs)
 
-    count_long  = sum(1 for (_, a, _, _) in active if a == "BUY")
-    count_short = sum(1 for (_, a, _, _) in active if a == "SHORT")
-    score_long  = sum(w * c for (_, a, c, w) in active if a == "BUY")
-    score_short = sum(w * c for (_, a, c, w) in active if a == "SHORT")
-    total_side  = score_long + score_short
-    delta = abs(score_long - score_short)
-    ratio = delta / max(1e-6, total_side)
+    def _get_consensus_price(self, strategy_results: Dict[str, Dict]) -> float:
+        """Получение консенсусной цены"""
+        prices = [r.get('last_price', 0) for r in strategy_results.values() if r.get('last_price', 0) > 0]
+        return float(np.median(prices)) if prices else 0.0
 
-    # 3) Правило выбора действия (без изменений)
-    if count_long >= 3:
-        final_action = "BUY"
-    elif count_short >= 3:
-        final_action = "SHORT"
-    else:
-        final_action = "WAIT" if ratio < 0.20 else ("BUY" if score_long > score_short else "SHORT")
+    def _create_uncertain_response(self, strategy_results: Dict, ticker: str) -> Dict:
+        """Создание ответа при неопределенности"""
+        price = self._get_consensus_price(strategy_results)
+        
+        response = {
+            "last_price": price,
+            "recommendation": {"action": "WAIT", "confidence": 0.5},
+            "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
+            "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+            "context": [f"Octopus: нет консенсуса ({len(strategy_results)} стратегий)"],
+            "note_html": "<div>Octopus: ожидание консенсуса</div>",
+            "alt": "Ожидание консенсуса",
+            "entry_kind": "wait",
+            "entry_label": "WAIT",
+            "meta": {
+                "source": "Octopus",
+                "consensus": False,
+                "strategies_used": list(strategy_results.keys())
+            }
+        }
+        
+        self._log_performance(ticker, "Краткосрочный", "WAIT", 0.5, response["levels"], response["probs"])
+        return response
 
-    # Утилита для медианных уровней по сторонникам выбранной стороны
-    def _median_levels(direction: str):
-        L = [r.get("levels", {}) for r in parts.values()
-             if str(r.get("recommendation", {}).get("action", "")).upper() == direction]
-        if not L:
-            return {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
-        med = lambda k: float(np.median([x.get(k, 0.0) for x in L if isinstance(x.get(k, None), (int, float))]))
-        return {"entry": med("entry"), "sl": med("sl"), "tp1": med("tp1"), "tp2": med("tp2"), "tp3": med("tp3")}
+    def _create_fallback_response(self, ticker: str) -> Dict:
+        """Резервный ответ при полном сбое"""
+        return {
+            "last_price": 0.0,
+            "recommendation": {"action": "WAIT", "confidence": 0.5},
+            "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
+            "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+            "context": ["Octopus: все стратегии недоступны"],
+            "note_html": "<div>Octopus: технические проблемы</div>",
+            "alt": "Технические проблемы",
+            "entry_kind": "wait",
+            "entry_label": "WAIT",
+            "meta": {"source": "Octopus", "fallback": True}
+        }
 
-    # 4) Уровни/пробы как было: медианы при слабой поляризации, иначе — от победителя
-    if final_action in ("BUY", "SHORT"):
-        cand = [t for t in active if t[1] == final_action]
-        win_agent = (max(cand, key=lambda t: t[2] * t[3])[0] if cand
-                     else max(active, key=lambda t: t[2] * t[3])[0])
-        levels_out = _median_levels(final_action) if ratio < 0.25 else parts[win_agent].get("levels", {})
-        probs_out = _monotone_tp_probs(parts.get(win_agent, {}).get("probs", {}) or {})
+    def _create_error_response(self, ticker: str) -> Dict:
+        """Ответ при ошибке оркестратора"""
+        return {
+            "last_price": 0.0,
+            "recommendation": {"action": "WAIT", "confidence": 0.5},
+            "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
+            "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+            "context": ["Octopus: внутренняя ошибка"],
+            "note_html": "<div>Octopus: системная ошибка</div>",
+            "alt": "Системная ошибка",
+            "entry_kind": "wait",
+            "entry_label": "WAIT",
+            "meta": {"source": "Octopus", "error": True}
+        }
 
-        # 5) Итоговый confidence (НОВОЕ): взвешенно по победившей стороне + мягкий штраф конфликта
-        # 5.1 Взвешенный conf по сторонникам финальной стороны
-        side_items = []
-        for k, r in parts.items():
-            rec = r.get("recommendation", {})
-            if str(rec.get("action", "")).upper() == final_action:
-                w = float(OCTO_WEIGHTS.get(k, 0.20))
-                c = _clip01(rec.get("confidence", 0.5))
-                side_items.append((w, c))
-        overall_conf = (sum(w * c for w, c in side_items) / max(1e-6, sum(w for w, _ in side_items))) if side_items else 0.50
-
-        # 5.2 Мягкий штраф за сильное несогласие противоположной стороны
-        score_side = score_long if final_action == "BUY" else score_short
-        score_opp  = score_short if final_action == "BUY" else score_long
+    def _log_performance(self, ticker: str, horizon: str, action: str, confidence: float, 
+                        levels: Dict, probs: Dict):
+        """Логирование производительности"""
         try:
-            import os as _os
-            beta = float(_os.getenv("OCTO_CONF_BETA", "0.35"))
+            from core.performance_logger import log_agent_performance
+            log_agent_performance(
+                agent="Octopus", ticker=ticker, horizon=horizon,
+                action=action, confidence=confidence,
+                levels=levels, probs=probs,
+                meta={"orchestrator": "modern"},
+                ts=pd.Timestamp.utcnow().isoformat()
+            )
         except Exception:
-            beta = 0.35
-        penalty = 1.0 - beta * (score_opp / max(1e-6, score_side))
-        penalty = max(0.70, min(1.00, penalty))  # клип фактора
-        overall_conf = float(CAL_CONF["Octopus"](_clip01(overall_conf * penalty)))
+            pass
 
-    else:
-        levels_out = {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
-        probs_out  = {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
-        overall_conf = float(CAL_CONF["Octopus"](0.50))
+# Обновленная функция Octopus для обратной совместимости
+_octopus_orchestrator = OctopusOrchestrator()
 
-    # 6) Сбор ответа и логирование (как было)
-    last_price = float(next(iter(parts.values())).get("last_price", 0.0))
-    votes_txt = [{"agent": k,
-                  "action": str(r.get("recommendation", {}).get("action", "")),
-                  "confidence": float(r.get("recommendation", {}).get("confidence", 0.0))}
-                 for k, r in parts.items()]
-
-    res = {
-        "last_price": last_price,
-        "recommendation": {"action": final_action, "confidence": overall_conf},
-        "levels": levels_out,
-        "probs": probs_out,
-        "context": [f"Octopus: ratio={ratio:.2f}, votes={count_long}L/{count_short}S"],
-        "note_html": f"<div>Octopus: {final_action} с {overall_conf:.0%}</div>",
-        "alt": "Octopus",
-        "entry_kind": "market" if final_action != "WAIT" else "wait",
-        "entry_label": final_action if final_action != "WAIT" else "WAIT",
-        "meta": {"source": "Octopus", "votes": votes_txt, "ratio": float(ratio)}
-    }
-
-    try:
-        log_agent_performance(
-            agent="Octopus", ticker=ticker, horizon=horizon,
-            action=final_action, confidence=float(overall_conf),
-            levels=levels_out, probs=probs_out,
-            meta={"votes": votes_txt, "ratio": float(ratio)},
-            ts=pd.Timestamp.utcnow().isoformat()
-        )
-    except Exception as e:
-        logger.warning("perf log Octopus failed: %s", e)
-
-    return res
-
-# -------------------- Strategy Router --------------------
-STRATEGY_REGISTRY: Dict[str, Callable[[str, str], Dict[str, Any]]] = {
-    "Octopus": analyze_asset_octopus,
-    "Global": analyze_asset_global,
-    "M7": analyze_asset_m7,
-    "W7": analyze_asset_w7,
-    "AlphaPulse": analyze_asset_alphapulse,
-}
-
-def analyze_asset(ticker: str, horizon: str, strategy: str = "Octopus") -> Dict[str, Any]:
-    fn = STRATEGY_REGISTRY.get(strategy)
-    if not fn:
-        raise ValueError(f"Unknown strategy: {strategy}")
-    return fn(ticker, horizon)
-
-# -------------------- Тестовый запуск --------------------
-if __name__ == "__main__":
-    for s in ["Global", "M7", "W7", "AlphaPulse", "Octopus"]:
-        try:
-            print(f"\n=== {s} ===")
-            out = analyze_asset("AAPL", "Краткосрочный", s)
-            print({k: out[k] for k in ["last_price","recommendation","levels","probs"]})
-        except Exception as e:
-            print(f"{s} error:", e)
+def analyze_asset_octopus(ticker: str, horizon: str = "Краткосрочный") -> Dict:
+    """Обновленная функция Octopus с современным оркестратором"""
+    return _octopus_orchestrator.analyze_asset(ticker, horizon)
