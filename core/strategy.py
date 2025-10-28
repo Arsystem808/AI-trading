@@ -387,6 +387,15 @@ def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный
     }
 
 # -------------------- M7 (rules + optional ML overlay) --------------------
+import pandas as pd
+import numpy as np
+import math
+from typing import Optional, Tuple
+import logging
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
 try:
     from core.model_loader import load_model_for
 except Exception:
@@ -421,16 +430,14 @@ class _M7Predictor:
             logger.warning("M7 ML: model not found for %s (%s)", self.ticker, self.agent)
             return False
         self.model = md["model"]
-        # опциональный внешний скейлер
         try:
-            import joblib  # noqa: F401
+            import joblib
             meta = md.get("metadata", {}) or {}
             sp = meta.get("scaler_artifact")
             if sp:
                 p = Path(sp)
                 if not p.is_absolute(): p = Path(".")/p
                 if p.exists():
-                    import joblib
                     self.scaler = joblib.load(p)
         except Exception as e:
             logger.warning("M7 ML: scaler load failed: %s", e)
@@ -449,7 +456,6 @@ class _M7Predictor:
         return np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
 
     def _predict_proba_safe(self, X: np.ndarray, df_last_row: Optional[pd.DataFrame]=None) -> Optional[np.ndarray]:
-        # Сначала пробуем на одном признаковом векторе, затем fallback на df.tail(1) для ColumnTransformer/пайплайнов
         try:
             return self.model.predict_proba(X)
         except Exception as e1:
@@ -480,12 +486,10 @@ class _M7Predictor:
             if proba is None:
                 return ("WAIT", 0.5)
 
-            # бинарный случай -> класс 1 трактуем как LONG
             if proba.shape[1] == 2:
                 p_long = float(proba[0, 1])
                 cal = _m7_cal()["M7"]
                 p_long_cal = float(cal(p_long))
-                # явные пороги
                 if p_long_cal >= 0.55:
                     return ("BUY", p_long_cal)
                 elif p_long_cal <= 0.45:
@@ -493,7 +497,6 @@ class _M7Predictor:
                 else:
                     return ("WAIT", p_long_cal)
 
-            # многокласс
             acts = ["BUY","SHORT","WAIT"]
             idx = int(np.argmax(proba[0]))
             conf = float(proba[0, idx])
@@ -502,6 +505,107 @@ class _M7Predictor:
         except Exception as e:
             logger.warning("M7 ML: predict failed: %s", e)
             return ("WAIT", 0.5)
+
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ИСПРАВЛЕНИЯ СТРАТЕГИИ ---
+
+def calculate_dynamic_stop_loss(entry_price: float, is_long: bool, atr_value: float, atr_multiplier: float = 1.5) -> float:
+    """Динамический стоп-лосс на основе ATR"""
+    if is_long:
+        return entry_price - atr_value * atr_multiplier
+    else:
+        return entry_price + atr_value * atr_multiplier
+
+def calculate_smart_entry(level_value: float, current_price: float, atr_value: float, is_resistance: bool) -> Optional[float]:
+    """Умное размещение ордера с учетом текущей цены и волатильности"""
+    price_to_level_distance = abs(current_price - level_value)
+    
+    # Если цена слишком далеко от уровня - не выставляем ордер
+    if price_to_level_distance > atr_value * 2:
+        return None
+    
+    if is_resistance:
+        # Для сопротивления - продажа на подходе к уровню (чуть ниже уровня)
+        entry = level_value - atr_value * 0.1  # 0.1 ATR от уровня
+        # Проверяем, что ордер выше текущей цены (ожидаем роста к уровню)
+        if entry <= current_price:
+            return None
+    else:
+        # Для поддержки - покупка на подходе к уровню (чуть выше уровня)
+        entry = level_value + atr_value * 0.1  # 0.1 ATR от уровня
+        # Проверяем, что ордер ниже текущей цены (ожидаем падения к уровню)
+        if entry >= current_price:
+            return None
+    
+    return entry
+
+def is_trend_towards_level(current_price: float, level_value: float, data: pd.DataFrame, lookback: int = 10) -> bool:
+    """Проверяет, движется ли цена к уровню"""
+    if len(data) < lookback:
+        return True
+    
+    # Простой анализ тренда по скользящим средним
+    sma_fast = data['close'].rolling(5).mean().iloc[-1]
+    sma_slow = data['close'].rolling(20).mean().iloc[-1]
+    
+    if level_value > current_price:  # Уровень сопротивления выше текущей цены
+        # Для покупки у сопротивления нужен восходящий тренд
+        return sma_fast > sma_slow
+    else:  # Уровень поддержки ниже текущей цены
+        # Для продажи у поддержки нужен нисходящий тренд
+        return sma_fast < sma_slow
+
+def prioritize_signals(signals):
+    """Приоритизация сигналов по типам уровней"""
+    if not signals:
+        return []
+    
+    level_priority = {
+        'pivot': 10, 'r1': 9, 's1': 9, 'r2': 8, 's2': 8, 'r3': 7, 's3': 7,
+        'fib_786': 6, 'fib_618': 5, 'fib_500': 4, 'fib_382': 3, 'fib_236': 2
+    }
+    
+    # Группируем по направлению
+    buy_signals = [s for s in signals if s['type'].startswith('BUY')]
+    sell_signals = [s for s in signals if s['type'].startswith('SELL')]
+    
+    # Выбираем лучший в каждом направлении
+    best_buy = max(buy_signals, key=lambda x: (level_priority.get(x['level'], 0), x['confidence'])) if buy_signals else None
+    best_sell = max(sell_signals, key=lambda x: (level_priority.get(x['level'], 0), x['confidence'])) if sell_signals else None
+    
+    # Если есть оба - выбираем по приоритету уровня
+    if best_buy and best_sell:
+        buy_prio = level_priority.get(best_buy['level'], 0)
+        sell_prio = level_priority.get(best_sell['level'], 0)
+        if buy_prio > sell_prio:
+            return [best_buy]
+        elif sell_prio > buy_prio:
+            return [best_sell]
+        else:
+            return [best_buy] if best_buy['confidence'] > best_sell['confidence'] else [best_sell]
+    elif best_buy:
+        return [best_buy]
+    elif best_sell:
+        return [best_sell]
+    else:
+        return []
+
+def additional_filters(signal: dict, data: pd.DataFrame) -> bool:
+    """Дополнительные фильтры для валидации сигнала"""
+    current_price = data['close'].iloc[-1]
+    entry = signal['price']
+    
+    # Фильтр: максимальное расстояние от текущей цены (5%)
+    max_distance_percent = 0.05
+    if abs(entry - current_price) / current_price > max_distance_percent:
+        return False
+        
+    # Фильтр: минимальный риск-ревард 1:1.5
+    risk = abs(signal['price'] - signal['stop_loss'])
+    reward = abs(signal['price'] - signal['take_profit'])
+    if reward / risk < 1.5:
+        return False
+        
+    return True
 
 class M7TradingStrategy:
     def __init__(self, atr_period=14, atr_multiplier=1.5, pivot_period='D', fib_levels=None):
@@ -533,35 +637,117 @@ class M7TradingStrategy:
                 key.update(self.calculate_fib_levels(h,l))
         return key
 
-    def generate_signals(self, data: pd.DataFrame):
+    def generate_intelligent_signals(self, data: pd.DataFrame):
+        """Улучшенная генерация сигналов с умным размещением ордеров"""
         sigs = []
         req = ['high','low','close']
-        if not all(c in data.columns for c in req): return sigs
+        if not all(c in data.columns for c in req): 
+            return sigs
+            
         data = data.copy()
         data['atr'] = _atr_like(data, self.atr_period)
         cur_atr = float(data['atr'].iloc[-1])
-        if cur_atr <= 0: return sigs
-        key = self.identify_key_levels(data)
-        price = float(data['close'].iloc[-1])
+        if cur_atr <= 0: 
+            return sigs
+            
+        key_levels = self.identify_key_levels(data)
+        current_price = float(data['close'].iloc[-1])
         ts = data.index[-1]
-        for name, val in key.items():
-            dist = abs(price - val) / max(1e-9, cur_atr)
-            if dist < self.atr_multiplier:
-                is_res = val > price
-                if is_res:
-                    typ='SELL_LIMIT'; entry=float(val*0.998); sl=float(val*1.02)
-                else:
-                    typ='BUY_LIMIT';  entry=float(val*1.002); sl=float(val*0.98)
-                risk = abs(entry - sl)
-                tp = entry + (2.0*risk if not is_res else -2.0*risk)
-                conf = 1.0 - (dist / self.atr_multiplier)
-                sigs.append({
-                    'type':typ,'price':round(entry,4),'stop_loss':round(sl,4),'take_profit':round(tp,4),
-                    'confidence':round(conf,2),'level':name,'level_value':round(val,4),'timestamp':ts
-                })
+        
+        for level_name, level_value in key_levels.items():
+            distance_in_atr = abs(current_price - level_value) / max(1e-9, cur_atr)
+            
+            # Фильтр 1: только близкие уровни
+            if distance_in_atr >= self.atr_multiplier:
+                continue
+                
+            is_resistance = level_value > current_price
+            
+            # Фильтр 2: проверяем направление тренда
+            if not is_trend_towards_level(current_price, level_value, data):
+                continue
+                
+            # Фильтр 3: умное размещение ордера
+            entry_price = calculate_smart_entry(level_value, current_price, cur_atr, is_resistance)
+            if entry_price is None:
+                continue
+                
+            # Определяем тип сделки
+            if is_resistance:
+                order_type = 'SELL_LIMIT'
+                is_long = False
+            else:
+                order_type = 'BUY_LIMIT' 
+                is_long = True
+                
+            # Динамический стоп-лосс на основе ATR
+            stop_loss = calculate_dynamic_stop_loss(entry_price, is_long, cur_atr, 1.5)
+            
+            # Динамический тейк-профит (риск-ревард 1:2)
+            risk = abs(entry_price - stop_loss)
+            if is_long:
+                take_profit = entry_price + risk * 2
+            else:
+                take_profit = entry_price - risk * 2
+                
+            confidence = 1.0 - (distance_in_atr / self.atr_multiplier)
+            
+            sigs.append({
+                'type': order_type,
+                'price': round(entry_price, 4),
+                'stop_loss': round(stop_loss, 4),
+                'take_profit': round(take_profit, 4),
+                'confidence': round(confidence, 2),
+                'level': level_name,
+                'level_value': round(level_value, 4),
+                'timestamp': ts,
+                'distance_atr': round(distance_in_atr, 2)
+            })
+        
         return sigs
 
+    def generate_signals(self, data: pd.DataFrame):
+        """Основная функция генерации сигналов с приоритизацией"""
+        # Генерируем интеллектуальные сигналы
+        raw_signals = self.generate_intelligent_signals(data)
+        
+        # Применяем дополнительные фильтры
+        filtered_signals = [s for s in raw_signals if additional_filters(s, data)]
+        
+        # Приоритизируем сигналы (оставляем только лучший)
+        prioritized_signals = prioritize_signals(filtered_signals)
+        
+        return prioritized_signals
+
+def _clip01(x):
+    return max(0.0, min(1.0, x))
+
+def _monotone_tp_probs(probs):
+    p1, p2, p3 = probs["tp1"], probs["tp2"], probs["tp3"]
+    if p1 < p2: p2 = p1 * 0.95
+    if p2 < p3: p3 = p2 * 0.95
+    return {"tp1": _clip01(p1), "tp2": _clip01(p2), "tp3": _clip01(p3)}
+
+def _atr_like(df, n=14):
+    hl = df['high'] - df['low']
+    hc = abs(df['high'] - df['close'].shift())
+    lc = abs(df['low'] - df['close'].shift())
+    tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
+    return tr.rolling(n).mean()
+
 def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False):
+    # Импорты внутри функции для сохранения совместимости
+    try:
+        from data.polygon_client import PolygonClient
+        from core.performance_logger import log_agent_performance
+    except ImportError:
+        # Заглушки для совместимости
+        class PolygonClient:
+            def daily_ohlc(self, *args, **kwargs):
+                return None
+        def log_agent_performance(*args, **kwargs):
+            pass
+    
     cli = PolygonClient()
     df = cli.daily_ohlc(ticker, days=120)
     if df is None or df.empty:
@@ -594,10 +780,20 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
             side = ml_action if ml_action in ("BUY","SHORT") else None
             if side:
                 filt = [s for s in signals if (side=="BUY" and s["type"].startswith("BUY")) or (side=="SHORT" and s["type"].startswith("SELL"))]
-                best = max(filt, key=lambda x:x["confidence"]) if filt else max(signals, key=lambda x:x["confidence"])
+                best = max(filt, key=lambda x:x["confidence"]) if filt else (signals[0] if signals else None)
             else:
-                best = max(signals, key=lambda x:x["confidence"])
-                side = "BUY" if best["type"].startswith("BUY") else "SHORT"
+                best = signals[0] if signals else None
+                side = "BUY" if best and best["type"].startswith("BUY") else "SHORT" if best else "WAIT"
+            
+            if not best:
+                return {"last_price": price, "recommendation": {"action":"WAIT","confidence":ml_conf},
+                        "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
+                        "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
+                        "context":[f"ML: нет подходящих уровней ({ml_conf:.2f})"],
+                        "note_html":"<div>M7 ML: ожидание</div>", "alt":"ML wait",
+                        "entry_kind":"wait","entry_label":"WAIT",
+                        "meta":{"source":"M7","ml_used":True,"ml_action":ml_action,"ml_conf_raw": ml_conf}}
+            
             entry = float(best['price'])
             sl = float(best['stop_loss'])
             risk = abs(entry - sl)
@@ -632,7 +828,7 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
             pass
         return res
 
-    best = max(signals, key=lambda x: x['confidence'])
+    best = signals[0]  # Уже приоритизирован
     raw_conf = float(_clip01(best['confidence']))
     entry = float(best['price'])
     sl = float(best['stop_loss'])
