@@ -5,15 +5,12 @@ from core.model_fetch import ensure_models
 ensure_models()  # подтягивает модели в ARXORA_MODEL_DIR или /tmp/models до любых загрузок
 
 import os
+import traceback  # ← КРИТИЧНО: добавь эту строку
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, List
 
 import streamlit as st
-# Если ниже используются — раскомментируй:
-# import pandas as pd
-# import numpy as np
-# import joblib
 
 MODEL_DIR = Path(os.getenv("ARXORA_MODEL_DIR", "/tmp/models"))
 
