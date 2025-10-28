@@ -1,8 +1,17 @@
 # -*- coding: utf-8 -*-
 # app.py — Arxora UI (final EOD)
 
-from core.model_fetch import ensure_models
-ensure_models()  # подтягивает модели в ARXORA_MODEL_DIR или /tmp/models до любых загрузок
+# Безопасный импорт и вызов ensure_models
+try:
+    from core.model_fetch import ensure_models
+    try:
+        ensure_models()  # подтягивает модели в ARXORA_MODEL_DIR или /tmp/models до любых загрузок
+    except Exception as e:
+        import logging as _lg
+        _lg.warning("ensure_models failed: %s", e)
+except Exception as e:
+    import logging as _lg
+    _lg.warning("model_fetch import skipped: %s", e)
 
 import os
 import re
