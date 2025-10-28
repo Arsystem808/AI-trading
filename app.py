@@ -5,13 +5,17 @@ from core.model_fetch import ensure_models
 ensure_models()  # подтягивает модели в ARXORA_MODEL_DIR или /tmp/models до любых загрузок
 
 import os
-import traceback  # ← КРИТИЧНО: добавь эту строку
+import re
+import sys
+import importlib
+import traceback
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, List
 
 import streamlit as st
 
+# ===== Paths / Env =====
 MODEL_DIR = Path(os.getenv("ARXORA_MODEL_DIR", "/tmp/models"))
 
 # Опционально: pandas не требуется, но если установлен — импорт не навредит
@@ -101,14 +105,21 @@ def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
     else:                return ("Sell Stop","Entry (Sell Stop)") if entry < last_price else ("Sell Limit","Entry (Sell Limit)")
 
 def normalize_for_polygon(symbol: str) -> str:
+    """Нормализует ввод под Polygon:
+       - X:PAIR для крипто (BTCUSD/ETHUSDT → X:BTCUSD/X:ETHUSD),
+       - C:PAIR для форекса (если введено явно),
+       - без префикса — считаем тикером equity/ETF (AAPL, HQQ, SPY)."""
     s = (symbol or "").strip().upper().replace(" ", "")
-    if s.startswith(("X:", "C:", "O:")):
+    # Явные префиксы: X:, C:, O:, I: — оставляем, чистим USDx
+    if ":" in s:
         head, tail = s.split(":", 1)
         tail = tail.replace("USDT", "USD").replace("USDC", "USD")
         return f"{head}:{tail}"
-    if re.match(r"^[A-Z]{2,10}USD(T|C)?$", s):
+    # Крипто без префикса (пары к USD/USDT/USDC)
+    if re.match(r"^[A-Z]{2,10}USD(T|C)?$", s or ""):
         s = s.replace("USDT", "USD").replace("USDC", "USD")
         return f"X:{s}"
+    # Иначе — акции/ETF/индексы без префикса
     return s
 
 def rr_line(levels: Dict[str, float]) -> str:
@@ -134,9 +145,6 @@ def card_html(title: str, value: str, sub: Optional[str]=None, color: Optional[s
 # ===== Только Polygon: человекочитаемое имя актива =====
 @st.cache_data(show_spinner=False, ttl=86400)
 def resolve_asset_title_polygon(raw_symbol: str, normalized: str) -> str:
-    """
-    Пытается получить name через Polygon v3/reference/tickers/{ticker}; при ошибке/отсутствии ключа возвращает тикер.
-    """
     s = (raw_symbol or "").strip().upper()
     t = (normalized or s).strip().upper()
     api = os.getenv("POLYGON_API_KEY") or os.getenv("POLYGON_KEY")
@@ -200,38 +208,23 @@ def run_model_by_name(ticker_norm: str, model_name: str) -> Dict[str, Any]:
         return getattr(mod, fname)(ticker_norm, "Краткосрочный")
     raise RuntimeError(f"Стратегия {model_name} недоступна.")
 
-# ===== Простой AI‑override (две строки + скобочная шкала, НОРМАЛИЗАЦИЯ ПО OVERALL) =====
+# ===== Простой AI‑override (две строки + скобочная шкала, нормировано по overall) =====
 def render_confidence_breakdown_inline(ticker: str, conf_pct: float):
-    """
-    Визуализация:
-      - Заполняется только доля общей уверенности (overall).
-      - Доля AI рисуется внутри заполненной части; Rules = Overall - AI (не меньше 0).
-      - При отрицательном delta (overall < rules) сегмент AI = 0, но знак «−» в подписи сохраняется.
-    """
-    # Чтение/сохранение overall в Session State
     try:
         overall = float(conf_pct or 0.0)
     except Exception:
         overall = 0.0
     st.session_state["last_overall_conf_pct"] = overall
-
-    # Базовая «правиловая» доля; может приходить из бэка и переопределяться извне
     rules_pct = float(st.session_state.get("last_rules_pct", 44.0))
-
-    # Разложение на Rules + AI
     ai_delta = overall - rules_pct
-    ai_pct = max(0.0, min(overall, ai_delta))  # AI не превосходит overall и не уходит ниже 0
+    ai_pct = max(0.0, min(overall, ai_delta))
     sign = "−" if ai_delta < 0 else ""
-
-    # Геометрия текстовой шкалы
-    WIDTH = 28  # больше детализация, можно 20 если нужно компактнее
+    WIDTH = 28
     filled = int(round(WIDTH * (overall / 100.0))) if overall > 0 else 0
     ai_chars = int(round(filled * (ai_pct / overall))) if overall > 0 else 0
     rules_chars = max(0, filled - ai_chars)
     empty_chars = max(0, WIDTH - filled)
-
     bar = "[" + ("░" * rules_chars) + ("█" * ai_chars) + ("·" * empty_chars) + "]"
-
     html = f"""
     <div style="background:#2b2b2b;color:#fff;border-radius:12px;padding:10px 12px;
                 font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;">
@@ -274,14 +267,12 @@ if run and ticker:
 
         last_price = float(out.get("last_price", 0.0) or 0.0)
 
-        # ——— Новый блок: Человекочитаемое имя актива (только Polygon) ———
         asset_title = resolve_asset_title_polygon(ticker, symbol_for_engine)
         st.markdown(
             f"<div style='text-align:center; font-weight:800; letter-spacing:.2px; "
             f"font-size:clamp(20px,3.6vw,34px); margin-top:4px;'>{asset_title}</div>",
             unsafe_allow_html=True
         )
-        # Цена под названием
         st.markdown(
             f"<div style='font-size:3rem; font-weight:800; text-align:center; margin:6px 0 14px 0;'>"
             f"${last_price:.2f}</div>",
@@ -306,15 +297,12 @@ if run and ticker:
         </div>
         """, unsafe_allow_html=True)
 
-        # As‑of / Valid until = конец дня UTC
         now_utc = datetime.now(timezone.utc)
         eod_utc = now_utc.replace(hour=23, minute=59, second=59, microsecond=0)
         st.caption(f"As‑of: {now_utc.strftime('%Y-%m-%dT%H:%M:%SZ')} UTC • Valid until: {eod_utc.strftime('%Y-%m-%dT%H:%M:%SZ')} • Model: {model}")
 
-        # Простой AI‑override (нормированный)
         render_confidence_breakdown_inline(ticker, conf_pct_val)
 
-        # Targets
         if action in ("BUY", "SHORT"):
             c1, c2, c3 = st.columns(3)
             with c1: st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
@@ -327,7 +315,6 @@ if run and ticker:
             if rr:
                 st.markdown(f"<div style='margin-top:6px; color:#FFA94D; font-weight:600;'>{rr}</div>", unsafe_allow_html=True)
 
-        # Custom phrases (ваши тексты)
         CUSTOM_PHRASES = {
             "CONTEXT": {
                 "support":["Цена у уровня покупательской активности. Оптимально — вход по ордеру из AI‑анализа с акцентом на рост; важен контроль риска и пересмотр плана при закреплении ниже зоны."],
@@ -344,7 +331,6 @@ if run and ticker:
             st.markdown(f"<div style='opacity:0.9; margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
         st.caption(CUSTOM_PHRASES["DISCLAIMER"])
 
-        # Лёгкий лог (без графиков/эффективности)
         try:
             log_agent_performance(model, ticker, datetime.today(), 0.0)
         except Exception:
@@ -360,7 +346,6 @@ elif not ticker:
 # ===== Footer / About =====
 st.markdown("---")
 st.markdown("<style>.stButton > button { font-weight: 600; }</style>", unsafe_allow_html=True)
-
 st.markdown(
     """
     <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 6px;">
@@ -376,3 +361,4 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+
