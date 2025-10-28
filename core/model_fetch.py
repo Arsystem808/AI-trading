@@ -1,4 +1,4 @@
-# core/model_fetch.py — bundle-first loader (fixed)
+# core/model_fetch.py — bundle-first safe loader
 
 import os
 import io
@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 import requests
 
-logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
 def _is_valid_url(u: str) -> bool:
     try:
@@ -18,46 +18,50 @@ def _is_valid_url(u: str) -> bool:
     except Exception:
         return False
 
-def _extract_targz(bytes_ bytes, dest: pathlib.Path):
+def _safe_extract_targz(bytes_ bytes, dest: pathlib.Path):
     dest.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(fileobj=io.BytesIO(bytes_data), mode="r:gz") as tar:
+    # Безопасная распаковка: защита от path traversal
+    with tarfile.open(fileobj=io.BytesIO(bytes_data), mode="r:*") as tar:
+        for m in tar.getmembers():
+            target = dest / m.name
+            if not str(target.resolve()).startswith(str(dest.resolve())):
+                raise RuntimeError(f"Unsafe path in tar: {m.name}")
         tar.extractall(dest)
-    logging.info("✓ Bundle extracted to %s", dest)
+    log.info("✓ Bundle extracted to %s", dest)
 
 def ensure_models():
     dest = pathlib.Path(os.getenv("ARXORA_MODEL_DIR", "/tmp/models"))
     dest.mkdir(parents=True, exist_ok=True)
 
-    # 1) Бандл из релиза GitHub (предпочтительно)
     bundle_url = (os.getenv("MODEL_BUNDLE_URL") or "").strip()
     if bundle_url and _is_valid_url(bundle_url):
         try:
-            logging.info("⬇ Downloading model bundle from %s", bundle_url)
+            log.info("⬇ Downloading model bundle from %s", bundle_url)
             r = requests.get(bundle_url, timeout=240, allow_redirects=True)
             r.raise_for_status()
-            _extract_targz(r.content, dest)
+            _safe_extract_targz(r.content, dest)
             return
         except Exception as e:
-            logging.warning("Bundle download failed: %s", e)
+            log.warning("Bundle download failed: %s", e)
 
-    # 2) Фолбэк: пофайловые ссылки (если заданы)
+    # Фолбэк: пофайловые ссылки, если заданы (можно удалить, если не нужно)
     assets = {
         "alphapulse_AAPL.joblib": os.getenv("MODEL_AAPL_URL"),
         "alphapulse_ETHUSD.joblib": os.getenv("MODEL_ETH_URL"),
     }
     for fname, url in assets.items():
         if not url or not _is_valid_url(url):
-            logging.warning("Пропускаю %s: некорректный или пустой URL в Secrets", fname)
+            log.warning("Пропускаю %s: некорректный или пустой URL в Secrets", fname)
             continue
         path = dest / fname
         if path.exists() and path.stat().st_size > 0:
-            logging.info("✓ %s уже существует", fname)
+            log.info("✓ %s уже существует", fname)
             continue
         try:
-            logging.info("⬇ Downloading %s", fname)
+            log.info("⬇ Downloading %s", fname)
             rr = requests.get(url.strip(), timeout=180, allow_redirects=True)
             rr.raise_for_status()
             path.write_bytes(rr.content)
-            logging.info("✓ %s saved (%d bytes)", fname, len(rr.content))
+            log.info("✓ %s saved (%d bytes)", fname, len(rr.content))
         except Exception as e:
-            logging.error("✗ Ошибка загрузки %s: %s", fname, e)
+            log.error("✗ Ошибка загрузки %s: %s", fname, e)
