@@ -386,17 +386,7 @@ def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный
         "meta": {"source":"Global","probs_debug": meta_debug}
     }
 
-# -------------------- M7 ULTRA STRATEGY (BACKWARD COMPATIBLE) --------------------
-import pandas as pd
-import numpy as np
-import math
-from typing import Optional, Tuple, Dict, List
-import logging
-from pathlib import Path
-
-logger = logging.getLogger(__name__)
-
-# === СОХРАНЯЕМ ВСЮ СУЩЕСТВУЮЩУЮ ML ЛОГИКУ БЕЗ ИЗМЕНЕНИЙ ===
+# -------------------- M7 (rules + optional ML overlay) --------------------
 try:
     from core.model_loader import load_model_for
 except Exception:
@@ -431,14 +421,16 @@ class _M7Predictor:
             logger.warning("M7 ML: model not found for %s (%s)", self.ticker, self.agent)
             return False
         self.model = md["model"]
+        # опциональный внешний скейлер
         try:
-            import joblib
+            import joblib  # noqa: F401
             meta = md.get("metadata", {}) or {}
             sp = meta.get("scaler_artifact")
             if sp:
                 p = Path(sp)
                 if not p.is_absolute(): p = Path(".")/p
                 if p.exists():
+                    import joblib
                     self.scaler = joblib.load(p)
         except Exception as e:
             logger.warning("M7 ML: scaler load failed: %s", e)
@@ -457,6 +449,7 @@ class _M7Predictor:
         return np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
 
     def _predict_proba_safe(self, X: np.ndarray, df_last_row: Optional[pd.DataFrame]=None) -> Optional[np.ndarray]:
+        # Сначала пробуем на одном признаковом векторе, затем fallback на df.tail(1) для ColumnTransformer/пайплайнов
         try:
             return self.model.predict_proba(X)
         except Exception as e1:
@@ -487,10 +480,12 @@ class _M7Predictor:
             if proba is None:
                 return ("WAIT", 0.5)
 
+            # бинарный случай -> класс 1 трактуем как LONG
             if proba.shape[1] == 2:
                 p_long = float(proba[0, 1])
                 cal = _m7_cal()["M7"]
                 p_long_cal = float(cal(p_long))
+                # явные пороги
                 if p_long_cal >= 0.55:
                     return ("BUY", p_long_cal)
                 elif p_long_cal <= 0.45:
@@ -498,6 +493,7 @@ class _M7Predictor:
                 else:
                     return ("WAIT", p_long_cal)
 
+            # многокласс
             acts = ["BUY","SHORT","WAIT"]
             idx = int(np.argmax(proba[0]))
             conf = float(proba[0, idx])
@@ -507,216 +503,12 @@ class _M7Predictor:
             logger.warning("M7 ML: predict failed: %s", e)
             return ("WAIT", 0.5)
 
-# === УЛУЧШЕННАЯ СТРАТЕГИЯ С СОВРЕМЕННЫМИ ИНДИКАТОРАМИ ===
-class M7UltraEnhancer:
-    """Добавляет современные индикаторы и адаптивное управление рисками"""
-    
-    @staticmethod
-    def calculate_advanced_indicators(data: pd.DataFrame) -> pd.DataFrame:
-        """Добавляет RSI, MACD, VWAP, Bollinger Bands к данным"""
-        df = data.copy()
-        
-        # RSI
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        df['rsi'] = 100 - (100 / (1 + rs))
-        
-        # MACD
-        exp1 = df['close'].ewm(span=12).mean()
-        exp2 = df['close'].ewm(span=26).mean()
-        df['macd'] = exp1 - exp2
-        df['macd_signal'] = df['macd'].ewm(span=9).mean()
-        df['macd_histogram'] = df['macd'] - df['macd_signal']
-        
-        # VWAP (если есть объем)
-        if 'volume' in df.columns:
-            typical_price = (df['high'] + df['low'] + df['close']) / 3
-            df['vwap'] = (typical_price * df['volume']).cumsum() / df['volume'].cumsum()
-        else:
-            df['vwap'] = df['close'].rolling(20).mean()
-        
-        # Bollinger Bands
-        df['bb_middle'] = df['close'].rolling(20).mean()
-        bb_std = df['close'].rolling(20).std()
-        df['bb_upper'] = df['bb_middle'] + (bb_std * 2)
-        df['bb_lower'] = df['bb_middle'] - (bb_std * 2)
-        df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
-        
-        return df
-    
-    @staticmethod
-    def detect_market_regime(data: pd.DataFrame) -> str:
-        """Определяет режим рынка для адаптации параметров"""
-        if len(data) < 20:
-            return "NEUTRAL"
-            
-        # ADX-like тренд (упрощенный)
-        high_low = data['high'] - data['low']
-        high_close = abs(data['high'] - data['close'].shift())
-        low_close = abs(data['low'] - data['close'].shift())
-        true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        atr = true_range.rolling(14).mean()
-        
-        # Сила тренда (упрощенный ADX)
-        up_move = data['high'].diff()
-        down_move = data['low'].diff().abs()
-        plus_dm = up_move.where((up_move > down_move) & (up_move > 0), 0)
-        minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0)
-        plus_di = 100 * (plus_dm.rolling(14).mean() / atr)
-        minus_di = 100 * (minus_dm.rolling(14).mean() / atr)
-        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
-        adx = dx.rolling(14).mean()
-        
-        current_adx = adx.iloc[-1] if not pd.isna(adx.iloc[-1]) else 0
-        current_atr_ratio = atr.iloc[-1] / data['close'].iloc[-1] if not pd.isna(atr.iloc[-1]) else 0
-        
-        if current_adx > 25 and current_atr_ratio < 0.02:
-            return "TRENDING"
-        elif current_atr_ratio > 0.03:
-            return "VOLATILE"
-        elif current_adx < 20 and abs(data['close'].iloc[-1] - data['vwap'].iloc[-1]) / data['close'].iloc[-1] < 0.01:
-            return "MEAN_REVERSION"
-        else:
-            return "NEUTRAL"
-    
-    @staticmethod
-    def adaptive_risk_parameters(regime: str, volatility: float) -> Dict:
-        """Адаптивные параметры риска под режим рынка"""
-        base_params = {
-            "TRENDING": {
-                "stop_multiplier": 1.2, 
-                "reward_ratio": 3.0, 
-                "confidence_boost": 0.15,
-                "max_position_size": 0.8
-            },
-            "MEAN_REVERSION": {
-                "stop_multiplier": 2.0, 
-                "reward_ratio": 1.8, 
-                "confidence_boost": 0.08,
-                "max_position_size": 0.6
-            },
-            "VOLATILE": {
-                "stop_multiplier": 2.5, 
-                "reward_ratio": 2.5, 
-                "confidence_boost": -0.10,
-                "max_position_size": 0.4
-            },
-            "NEUTRAL": {
-                "stop_multiplier": 1.8, 
-                "reward_ratio": 2.2, 
-                "confidence_boost": 0.05,
-                "max_position_size": 0.7
-            }
-        }
-        
-        params = base_params[regime]
-        # Дополнительная адаптация под волатильность
-        if volatility > 0.04:  # Высокая волатильность
-            params["stop_multiplier"] *= 1.3
-            params["max_position_size"] *= 0.7
-            
-        return params
-    
-    @staticmethod
-    def calculate_volume_weighted_levels(data: pd.DataFrame, period: int = 20) -> Dict:
-        """Volume-Weighted уровни поддержки/сопротивления"""
-        if 'volume' not in data.columns or len(data) < period:
-            return {}
-            
-        volume_profile = {}
-        recent_data = data.tail(period)
-        
-        for i in range(len(recent_data)):
-            # Группируем по ценовым уровням с шагом 0.1%
-            price_level = round(recent_data['close'].iloc[i] * 1000) / 1000
-            volume_profile[price_level] = volume_profile.get(price_level, 0) + recent_data['volume'].iloc[i]
-        
-        # Находим уровни с наибольшим объемом (POC - Point of Control)
-        if not volume_profile:
-            return {}
-            
-        sorted_levels = sorted(volume_profile.items(), key=lambda x: x[1], reverse=True)
-        return {f"vol_poc_{i}": level for i, (level, vol) in enumerate(sorted_levels[:3])}
-    
-    @staticmethod
-    def advanced_signal_filters(signal: Dict, data: pd.DataFrame) -> bool:
-        """Современные фильтры для сигналов"""
-        if len(data) < 20:
-            return True
-            
-        current_rsi = data['rsi'].iloc[-1]
-        current_macd = data['macd'].iloc[-1]
-        current_macd_signal = data['macd_signal'].iloc[-1]
-        bb_position = data['bb_position'].iloc[-1]
-        
-        # RSI фильтры
-        if signal['type'].startswith('BUY'):
-            if current_rsi > 70:  # Перекупленность
-                return False
-            if current_macd < current_macd_signal:  # Медвежий MACD
-                return False
-            if bb_position > 0.8:  # Верхняя полоса Боллинджера
-                return False
-                
-        elif signal['type'].startswith('SELL'):
-            if current_rsi < 30:  # Перепроданность
-                return False
-            if current_macd > current_macd_signal:  # Бычий MACD
-                return False
-            if bb_position < 0.2:  # Нижняя полоса Боллинджера
-                return False
-        
-        # VWAP фильтр (цена далеко от VWAP)
-        vwap_distance = abs(data['close'].iloc[-1] - data['vwap'].iloc[-1]) / data['close'].iloc[-1]
-        if vwap_distance > 0.03:  # Слишком далеко от VWAP
-            return False
-            
-        return True
-    
-    @staticmethod
-    def calculate_smart_probabilities(entry: float, sl: float, tp1: float, tp2: float, tp3: float, 
-                                    data: pd.DataFrame, regime: str, base_confidence: float) -> Dict:
-        """Умные вероятности на основе исторических данных"""
-        if len(data) < 50:
-            return {
-                "tp1": base_confidence * 0.8,
-                "tp2": base_confidence * 0.6, 
-                "tp3": base_confidence * 0.4
-            }
-        
-        # Анализ исторических достижений целей
-        lookback = min(50, len(data) - 1)
-        risk = abs(entry - sl)
-        
-        # Режим-зависимые множители
-        regime_multipliers = {
-            "TRENDING": [1.2, 1.0, 0.8],
-            "MEAN_REVERSION": [0.9, 0.7, 0.5],
-            "VOLATILE": [0.8, 0.6, 0.4],
-            "NEUTRAL": [1.0, 0.8, 0.6]
-        }
-        
-        multipliers = regime_multipliers[regime]
-        
-        probs = {
-            "tp1": _clip01(base_confidence * 0.9 * multipliers[0]),
-            "tp2": _clip01(base_confidence * 0.7 * multipliers[1]),
-            "tp3": _clip01(base_confidence * 0.5 * multipliers[2])
-        }
-        
-        return _monotone_tp_probs(probs)
-
-# === ОСНОВНАЯ СТРАТЕГИЯ С ИНТЕГРАЦИЕЙ УЛУЧШЕНИЙ ===
 class M7TradingStrategy:
-    def __init__(self, atr_period=14, atr_multiplier=1.5, pivot_period='D', fib_levels=None, use_enhancements=True):
+    def __init__(self, atr_period=14, atr_multiplier=1.5, pivot_period='D', fib_levels=None):
         self.atr_period = atr_period
         self.atr_multiplier = atr_multiplier
         self.pivot_period = pivot_period
         self.fib_levels = fib_levels or [0.236,0.382,0.5,0.618,0.786]
-        self.use_enhancements = use_enhancements
-        self.enhancer = M7UltraEnhancer() if use_enhancements else None
 
     def calculate_pivot_points(self, h,l,c):
         pivot = (h + l + c) / 3
@@ -739,117 +531,37 @@ class M7TradingStrategy:
                 h = g['high'].max(); l = g['low'].min(); c = g['close'].iloc[-1]
                 key.update(self.calculate_pivot_points(h,l,c))
                 key.update(self.calculate_fib_levels(h,l))
-        
-        # Добавляем Volume-Weighted уровни если используем улучшения
-        if self.use_enhancements and self.enhancer:
-            volume_levels = self.enhancer.calculate_volume_weighted_levels(data)
-            key.update(volume_levels)
-            
         return key
 
     def generate_signals(self, data: pd.DataFrame):
         sigs = []
         req = ['high','low','close']
         if not all(c in data.columns for c in req): return sigs
-        
-        # Добавляем современные индикаторы если используем улучшения
-        if self.use_enhancements and self.enhancer:
-            data = self.enhancer.calculate_advanced_indicators(data)
-        
         data = data.copy()
         data['atr'] = _atr_like(data, self.atr_period)
         cur_atr = float(data['atr'].iloc[-1])
         if cur_atr <= 0: return sigs
-        
-        # Определяем режим рынка если используем улучшения
-        market_regime = "NEUTRAL"
-        volatility = 0.0
-        if self.use_enhancements and self.enhancer:
-            market_regime = self.enhancer.detect_market_regime(data)
-            volatility = data['close'].pct_change().std()
-        
         key = self.identify_key_levels(data)
         price = float(data['close'].iloc[-1])
         ts = data.index[-1]
-        
         for name, val in key.items():
             dist = abs(price - val) / max(1e-9, cur_atr)
             if dist < self.atr_multiplier:
                 is_res = val > price
-                
-                # Адаптивные параметры риска
-                if self.use_enhancements and self.enhancer:
-                    risk_params = self.enhancer.adaptive_risk_parameters(market_regime, volatility)
-                    stop_multiplier = risk_params["stop_multiplier"]
-                    reward_ratio = risk_params["reward_ratio"]
-                else:
-                    stop_multiplier = 1.5
-                    reward_ratio = 2.0
-                
                 if is_res:
-                    typ='SELL_LIMIT'
-                    entry=float(val*(1 - 0.001 * stop_multiplier))  # Динамический отступ
-                    sl=float(val*(1 + 0.02 * stop_multiplier))     # Динамический стоп
+                    typ='SELL_LIMIT'; entry=float(val*0.998); sl=float(val*1.02)
                 else:
-                    typ='BUY_LIMIT'
-                    entry=float(val*(1 + 0.001 * stop_multiplier))  # Динамический отступ
-                    sl=float(val*(1 - 0.02 * stop_multiplier))     # Динамический стоп
-                
+                    typ='BUY_LIMIT';  entry=float(val*1.002); sl=float(val*0.98)
                 risk = abs(entry - sl)
-                tp = entry + (reward_ratio * risk if not is_res else -reward_ratio * risk)
+                tp = entry + (2.0*risk if not is_res else -2.0*risk)
                 conf = 1.0 - (dist / self.atr_multiplier)
-                
-                # Усиление confidence по режиму рынка
-                if self.use_enhancements and self.enhancer:
-                    conf = conf + risk_params["confidence_boost"]
-                    conf = max(0.1, min(0.95, conf))
-                
-                signal_data = {
-                    'type': typ, 'price': round(entry,4), 'stop_loss': round(sl,4), 
-                    'take_profit': round(tp,4), 'confidence': round(conf,2),
-                    'level': name, 'level_value': round(val,4), 'timestamp': ts
-                }
-                
-                # Применяем современные фильтры
-                if self.use_enhancements and self.enhancer:
-                    if not self.enhancer.advanced_signal_filters(signal_data, data):
-                        continue
-                
-                sigs.append(signal_data)
-        
+                sigs.append({
+                    'type':typ,'price':round(entry,4),'stop_loss':round(sl,4),'take_profit':round(tp,4),
+                    'confidence':round(conf,2),'level':name,'level_value':round(val,4),'timestamp':ts
+                })
         return sigs
 
-# === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (БЕЗ ИЗМЕНЕНИЙ) ===
-def _clip01(x):
-    return max(0.0, min(1.0, x))
-
-def _monotone_tp_probs(probs):
-    p1, p2, p3 = probs["tp1"], probs["tp2"], probs["tp3"]
-    if p1 < p2: p2 = p1 * 0.95
-    if p2 < p3: p3 = p2 * 0.95
-    return {"tp1": _clip01(p1), "tp2": _clip01(p2), "tp3": _clip01(p3)}
-
-def _atr_like(df, n=14):
-    hl = df['high'] - df['low']
-    hc = abs(df['high'] - df['close'].shift())
-    lc = abs(df['low'] - df['close'].shift())
-    tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
-    return tr.rolling(n).mean()
-
-# === ОСНОВНАЯ ФУНКЦИЯ АНАЛИЗА С УЛУЧШЕНИЯМИ ===
-def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False, use_enhancements=True):
-    """
-    Production версия M7 с современными улучшениями
-    use_enhancements: Включить RSI, MACD, VWAP, Volume уровни и адаптивное управление
-    """
-    try:
-        from data.polygon_client import PolygonClient
-        from core.performance_logger import log_agent_performance
-    except ImportError:
-        class PolygonClient:
-            def daily_ohlc(self, *args, **kwargs): return None
-        def log_agent_performance(*args, **kwargs): pass
-
+def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False):
     cli = PolygonClient()
     df = cli.daily_ohlc(ticker, days=120)
     if df is None or df.empty:
@@ -869,9 +581,8 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False,
         pred = _M7Predictor(ticker)
         if pred.load():
             ml_action, ml_conf = pred.predict(df, price, atr14)
-            strategy = M7TradingStrategy(use_enhancements=use_enhancements)
+            strategy = M7TradingStrategy()
             signals = strategy.generate_signals(df)
-            
             if ml_action == "WAIT" or not signals:
                 return {"last_price": price, "recommendation": {"action":"WAIT","confidence":ml_conf},
                         "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
@@ -879,9 +590,7 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False,
                         "context":[f"ML: нет сильного сигнала ({ml_conf:.2f})"],
                         "note_html":"<div>M7 ML: ожидание</div>", "alt":"ML wait",
                         "entry_kind":"wait","entry_label":"WAIT",
-                        "meta":{"source":"M7","ml_used":True,"ml_action":ml_action,"ml_conf_raw": ml_conf,
-                               "enhancements_used": use_enhancements}}
-            
+                        "meta":{"source":"M7","ml_used":True,"ml_action":ml_action,"ml_conf_raw": ml_conf}}
             side = ml_action if ml_action in ("BUY","SHORT") else None
             if side:
                 filt = [s for s in signals if (side=="BUY" and s["type"].startswith("BUY")) or (side=="SHORT" and s["type"].startswith("SELL"))]
@@ -889,58 +598,32 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False,
             else:
                 best = max(signals, key=lambda x:x["confidence"])
                 side = "BUY" if best["type"].startswith("BUY") else "SHORT"
-            
             entry = float(best['price'])
             sl = float(best['stop_loss'])
             risk = abs(entry - sl)
-            
-            # Определяем режим для умных вероятностей
-            market_regime = "NEUTRAL"
-            if use_enhancements:
-                enhancer = M7UltraEnhancer()
-                market_regime = enhancer.detect_market_regime(df)
-            
             if side == "BUY":
                 tp1,tp2,tp3 = entry + 1.5*risk, entry + 2.5*risk, entry + 4.0*risk
             else:
                 tp1,tp2,tp3 = entry - 1.5*risk, entry - 2.5*risk, entry - 4.0*risk
-            
             u1,u2,u3 = abs(tp1-entry)/atr14, abs(tp2-entry)/atr14, abs(tp3-entry)/atr14
             k=0.18
             b1,b2,b3 = ml_conf, max(0.50, ml_conf-0.08), max(0.45, ml_conf-0.16)
             p1=_clip01(b1*np.exp(-k*(u1-1.0))); p2=_clip01(b2*np.exp(-k*(u2-1.5))); p3=_clip01(b3*np.exp(-k*(u3-2.2)))
-            
-            # Умные вероятности если используются улучшения
-            if use_enhancements:
-                enhancer = M7UltraEnhancer()
-                probs = enhancer.calculate_smart_probabilities(entry, sl, tp1, tp2, tp3, df, market_regime, ml_conf)
-            else:
-                probs = _monotone_tp_probs({"tp1":p1,"tp2":p2,"tp3":p3})
-            
-            context_msg = f"ML {side} + уровни M7: {best['level']}"
-            if use_enhancements:
-                context_msg += f" | Режим: {market_regime}"
-            
+            probs=_monotone_tp_probs({"tp1":p1,"tp2":p2,"tp3":p3})
             return {"last_price": price, "recommendation": {"action": side, "confidence": ml_conf},
                     "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3}, "probs": probs,
-                    "context": [context_msg],
-                    "note_html": f"<div>M7 ML: {side} у {best['level_value']}" + 
-                                (f"<br>Режим: {market_regime}</div>" if use_enhancements else "</div>"),
+                    "context": [f"ML {side} + уровни M7: {best['level']}"], "note_html": f"<div>M7 ML: {side} у {best['level_value']}</div>",
                     "alt": "ML‑enhanced M7", "entry_kind":"limit", "entry_label": best["type"],
-                    "meta":{"source":"M7","ml_used":True,"ml_action":ml_action,"ml_conf_raw": ml_conf,
-                           "enhancements_used": use_enhancements, "market_regime": market_regime}}
+                    "meta":{"source":"M7","ml_used":True,"ml_action":ml_action,"ml_conf_raw": ml_conf}}
 
-    # NON-ML путь
-    strategy = M7TradingStrategy(use_enhancements=use_enhancements)
+    strategy = M7TradingStrategy()
     signals = strategy.generate_signals(df)
-    
     if not signals:
         res = {"last_price": price, "recommendation": {"action":"WAIT","confidence":0.5},
                "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
                "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0}, "context":["Нет сигналов по стратегии M7"],
                "note_html":"<div>M7: ожидание</div>", "alt":"Ожидание сигналов от уровней",
-               "entry_kind":"wait","entry_label":"WAIT", "meta":{"source":"M7","grey_zone":True,
-                               "enhancements_used": use_enhancements}}
+               "entry_kind":"wait","entry_label":"WAIT", "meta":{"source":"M7","grey_zone":True}}
         try:
             log_agent_performance(agent="M7", ticker=ticker, horizon=horizon, action="WAIT", confidence=0.50,
                                   levels=res["levels"], probs=res["probs"], meta={"probs_debug":{"u":[],"p":[]}},
@@ -955,65 +638,203 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False,
     sl = float(best['stop_loss'])
     risk = abs(entry - sl)
     vol = float(df['close'].pct_change().std() * np.sqrt(252))
-    
-    # Определяем режим для улучшенного расчета confidence
-    market_regime = "NEUTRAL"
-    if use_enhancements:
-        enhancer = M7UltraEnhancer()
-        market_regime = enhancer.detect_market_regime(df)
-        risk_params = enhancer.adaptive_risk_parameters(market_regime, vol)
-        regime_boost = risk_params["confidence_boost"]
-    else:
-        regime_boost = 0.0
-    
-    conf_base = 0.50 + 0.34*math.tanh((raw_conf - 0.65)/0.20) + regime_boost
+    conf_base = 0.50 + 0.34*math.tanh((raw_conf - 0.65)/0.20)
     penalty = (0.05 if vol > 0.35 else 0.0) + (0.04 if risk/atr14 < 0.8 else 0.0) + (0.03 if risk/atr14 > 3.5 else 0.0)
-    conf = float(max(0.52, min(0.85, conf_base*(1.0 - penalty))))
+    conf = float(max(0.52, min(0.82, conf_base*(1.0 - penalty))))
     conf = float(_m7_cal()["M7"](conf))
-    
     if best['type'].startswith('BUY'):
         tp1,tp2,tp3 = entry + 1.5*risk, entry + 2.5*risk, entry + 4.0*risk
         act="BUY"
     else:
         tp1,tp2,tp3 = entry - 1.5*risk, entry - 2.5*risk, entry - 4.0*risk
         act="SHORT"
-    
     u1,u2,u3 = abs(tp1-entry)/atr14, abs(tp2-entry)/atr14, abs(tp3-entry)/atr14
     k=0.18
     b1,b2,b3 = conf, max(0.50, conf-0.08), max(0.45, conf-0.16)
     p1=_clip01(b1*np.exp(-k*(u1-1.0))); p2=_clip01(b2*np.exp(-k*(u2-1.5))); p3=_clip01(b3*np.exp(-k*(u3-2.2)))
-    
-    # Умные вероятности если используются улучшения
-    if use_enhancements:
-        enhancer = M7UltraEnhancer()
-        probs = enhancer.calculate_smart_probabilities(entry, sl, tp1, tp2, tp3, df, market_regime, conf)
-    else:
-        probs = _monotone_tp_probs({"tp1":p1,"tp2":p2,"tp3":p3})
-    
-    context_msg = f"Сигнал от уровня {best['level']}"
-    if use_enhancements:
-        context_msg += f" | Режим: {market_regime}"
-    
+    probs=_monotone_tp_probs({"tp1":p1,"tp2":p2,"tp3":p3})
     try:
         log_agent_performance(agent="M7", ticker=ticker, horizon=horizon, action=act, confidence=float(conf),
                               levels={"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
                               probs={"tp1": float(probs["tp1"]), "tp2": float(probs["tp2"]), "tp3": float(probs["tp3"])},
                               meta={"probs_debug":{"u":[float(u1),float(u2),float(u3)],
-                                                   "p":[float(probs["tp1"]),float(probs["tp2"]),float(probs["tp3"])],
-                                                   "enhancements_used": use_enhancements,
-                                                   "market_regime": market_regime}},
+                                                   "p":[float(probs["tp1"]),float(probs["tp2"]),float(probs["tp3"])]}},
                               ts=pd.Timestamp.utcnow().isoformat())
     except Exception:
         pass
-    
     return {"last_price": price, "recommendation": {"action": act, "confidence": float(conf)},
             "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
-            "probs": probs, "context": [context_msg],
-            "note_html": f"<div>M7: {best['type']} на уровне {best['level_value']}" +
-                        (f"<br>Режим: {market_regime}</div>" if use_enhancements else "</div>"),
+            "probs": probs, "context": [f"Сигнал от уровня {best['level']}"],
+            "note_html": f"<div>M7: {best['type']} на уровне {best['level_value']}</div>",
             "alt": "Торговля по M7", "entry_kind": "limit", "entry_label": best['type'],
-            "meta":{"source":"M7","grey_zone": bool(0.48 <= conf <= 0.58),
-                   "enhancements_used": use_enhancements, "market_regime": market_regime}}
+            "meta":{"source":"M7","grey_zone": bool(0.48 <= conf <= 0.58)}}
+
+# -------------------- W7 --------------------
+def analyze_asset_w7(ticker: str, horizon: str):
+    cli = PolygonClient()
+    cfg = _horizon_cfg(horizon); hz = cfg["hz"]
+    days = max(90, cfg["look"] * 2)
+
+    # Загружаем дневные данные
+    df = cli.daily_ohlc(ticker, days=days)
+
+    # Приводим к DatetimeIndex для дальнейших weekly/daily агрегатов
+    if df is None or df.empty:
+        df = pd.DataFrame(columns=["open","high","low","close","volume","timestamp"])
+    else:
+        df = df.sort_values("timestamp")
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+        df = df.set_index("timestamp")
+
+    # Приоритет источников "текущей" цены:
+    # 1) last trade (live), 2) previous day bar close, 3) последний close из df, 4) 0.0 офлайн
+    price = None
+    try:
+        price = cli.last_trade_price(ticker)  # live-цена по последней сделке
+    except Exception:
+        price = None
+    if price is None:
+        try:
+            price = cli.prev_close(ticker)  # дневной бар предыдущего дня (OHLC)
+        except Exception:
+            price = None
+    if price is None and not df.empty:
+        try:
+            price = float(df["close"].iloc[-1])
+        except Exception:
+            price = None
+    if price is None:
+        price = 0.0
+    else:
+        try:
+            price = float(price)
+        except Exception:
+            price = 0.0
+
+    closes = df["close"] if "close" in df.columns else pd.Series(dtype=float)
+    tail = df.tail(cfg["look"]) if not df.empty else df
+    rng_low, rng_high = float(tail["low"].min()) if not tail.empty else 0.0, float(tail["high"].max()) if not tail.empty else 0.0
+    rng_w = max(1e-9, rng_high - rng_low); pos = (price - rng_low) / rng_w if rng_w > 0 else 0.0
+    slope = _linreg_slope(closes.tail(cfg["trend"]).values) if not closes.empty else 0.0
+    slope_norm = slope / max(1e-9, price if price else 1.0)
+
+    atr_d = float(_atr_like(df, n=cfg["atr"]).iloc[-1]) if not df.empty else 0.0
+    atr_w = _weekly_atr(df) if (not df.empty and cfg.get("use_weekly_atr")) else atr_d
+    vol_ratio = (atr_d / max(1e-9, float(_atr_like(df, n=cfg["atr"] * 2).iloc[-1]))) if not df.empty else 1.0
+
+    ha = _heikin_ashi(df) if not df.empty else pd.DataFrame(columns=["ha_close"])
+    ha_diff = ha["ha_close"].diff() if "ha_close" in ha.columns else pd.Series(dtype=float)
+    ha_up_run = _streak_by_sign(ha_diff, True) if not ha_diff.empty else 0
+    ha_down_run = _streak_by_sign(ha_diff, False) if not ha_diff.empty else 0
+
+    _, _, hist = _macd_hist(closes) if not closes.empty else (None,None,pd.Series(dtype=float))
+    macd_pos_run = _streak_by_sign(hist, True) if not hist.empty else 0
+    macd_neg_run = _streak_by_sign(hist, False) if not hist.empty else 0
+
+    last_row = df.iloc[-1] if not df.empty else pd.Series({"open":0,"high":0,"low":0,"close":price})
+    body, up_wick, dn_wick = _wick_profile(last_row)
+    long_upper = (up_wick > body * 1.3) and (up_wick > dn_wick * 1.1)
+    long_lower = (dn_wick > body * 1.3) and (dn_wick > up_wick * 1.1)
+
+    hlc = _last_period_hlc(df, cfg["pivot_rule"]) if not df.empty else None
+    if not hlc and not df.empty:
+        hlc = (float(df["high"].tail(60).max()), float(df["low"].tail(60).min()), float(df["close"].iloc[-1]))
+    elif not hlc:
+        hlc = (0.0, 0.0, price)
+    H, L, C = hlc
+    piv = _fib_pivots(H, L, C)
+    P, R1, R2, S1, S2 = piv["P"], piv["R1"], piv.get("R2"), piv["S1"], piv.get("S2")
+
+    tol_k = {"ST": 0.18, "MID": 0.22, "LT": 0.28}[hz]
+    step_d, step_w = atr_d, atr_w
+    buf = tol_k * (step_w if hz != "ST" else step_d)
+
+    def _near_from_below(level: float) -> bool: return (level is not None) and (0 <= level - price <= buf)
+    def _near_from_above(level: float) -> bool: return (level is not None) and (0 <= price - level <= buf)
+
+    thr_ha = {"ST": 4, "MID": 5, "LT": 6}[hz]; thr_macd = {"ST": 4, "MID": 6, "LT": 8}[hz]
+    long_up   = (ha_up_run >= thr_ha)  or (macd_pos_run >= thr_macd)
+    long_down = (ha_down_run >= thr_ha) or (macd_neg_run >= thr_macd)
+
+    if long_up and (_near_from_below(S1) or _near_from_below(R1) or _near_from_below(R2)):
+        action = "WAIT"
+    elif long_down and (_near_from_above(R1) or _near_from_above(S1) or _near_from_above(S2)):
+        action = "WAIT"
+    else:
+        band = _classify_band(price, piv, buf); very_high_pos = pos >= 0.80
+        if very_high_pos:
+            action = "BUY" if (R2 is not None and price > R2 + 0.6*buf and slope_norm > 0) else "SHORT"
+        else:
+            if band >= +2:
+                action = "BUY" if (R2 is not None and price > R2 + 0.6*buf and slope_norm > 0) else "SHORT"
+            elif band == +1:
+                action = "WAIT"
+            elif band == 0:
+                action = "BUY" if slope_norm >= 0 else "WAIT"
+            elif band == -1:
+                action = "BUY"
+            else:
+                action = "BUY" if band <= -2 else "WAIT"
+
+    base = 0.55 + 0.12*_clip01(abs(slope_norm)*1800) + 0.08*_clip01((vol_ratio - 0.9)/0.6)
+    if action == "WAIT": base -= 0.07
+    conf = float(max(0.55, min(0.90, base))); conf = float(CAL_CONF["W7"](conf))
+
+    if action == "BUY":
+        if price < P:  entry = max(price, S1 + 0.15*step_w); sl = S1 - 0.60*step_w
+        else:          entry = max(price, P  + 0.10*step_w); sl = P  - 0.60*step_w
+        tp1 = entry + 0.9*step_w; tp2 = entry + 1.6*step_w; tp3 = entry + 2.3*step_w
+        alt = "Если продавят ниже и не вернут — ждём возврата"
+    elif action == "SHORT":
+        if price >= R1: entry = min(price, R1 - 0.15*step_w); sl = R1 + 0.60*step_w
+        else:           entry = price + 0.10*step_d;          sl = price + 1.00*step_d
+        tp1 = entry - 0.9*step_w; tp2 = entry - 1.6*step_w; tp3 = entry - 2.3*step_w
+        alt = "Если протолкнут выше и удержат — без погони"
+    else:
+        entry, sl = price, price - 0.90*step_d
+        tp1, tp2, tp3 = entry + 0.7*step_d, entry + 1.4*step_d, entry + 2.1*step_d
+        alt = "Ждать пробоя/ретеста"
+
+    tp1, tp2, tp3 = _clamp_tp_by_trend(action, hz, tp1, tp2, tp3, piv, step_w, slope_norm, macd_pos_run, macd_neg_run)
+    atr_for_floor = step_w if hz != "ST" else step_d
+    tp1, tp2, tp3 = _apply_tp_floors(entry, sl, tp1, tp2, tp3, action, hz, price, atr_for_floor)
+    tp1, tp2, tp3 = _order_targets(entry, tp1, tp2, tp3, action)
+    sl,  tp1, tp2, tp3 = _sanity_levels(action, entry, sl, tp1, tp2, tp3, price, step_d, step_w, hz)
+
+    entry_kind = _entry_kind(action, entry, price, step_d)
+    entry_label = {"buy-stop":"Buy STOP","buy-limit":"Buy LIMIT","buy-now":"Buy NOW",
+                   "sell-stop":"Sell STOP","sell-limit":"Sell LIMIT","sell-now":"Sell NOW"}.get(entry_kind, "")
+
+    probs = {"tp1": float(_clip01(0.58 + 0.27*(conf - 0.55)/0.35)),
+             "tp2": float(_clip01(0.44 + 0.21*(conf - 0.55)/0.35)),
+             "tp3": float(_clip01(0.28 + 0.13*(conf - 0.55)/0.35))}
+    probs = _monotone_tp_probs(probs)
+
+    u_base = step_w if hz != "ST" else step_d
+    u1,u2,u3 = abs(tp1-entry)/u_base, abs(tp2-entry)/u_base, abs(tp3-entry)/u_base
+    meta_debug = {"atr_d": float(atr_d), "atr_w": float(atr_w),
+                  "slope_norm": float(slope_norm), "pos": float(pos),
+                  "u":[float(u1),float(u2),float(u3)],
+                  "p":[float(probs["tp1"]), float(probs["tp2"]), float(probs["tp3"])]}
+    try:
+        log_agent_performance(
+            agent="W7", ticker=ticker, horizon=horizon,
+            action=action, confidence=float(conf),
+            levels={"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3)},
+            probs={"tp1": float(probs["tp1"]), "tp2": float(probs["tp2"]), "tp3": float(probs["tp3"])},
+            meta={"probs_debug": meta_debug}, ts=pd.Timestamp.utcnow().isoformat()
+        )
+    except Exception as e:
+        logger.warning("perf log W7 failed: %s", e)
+
+    return {
+        "last_price": float(price),
+        "recommendation": {"action": action, "confidence": float(round(conf, 4))},
+        "levels": {"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3)},
+        "probs": probs, "context": [], "note_html": "<div>W7: контекст по волатильности и зонам</div>",
+        "alt": alt, "entry_kind": entry_kind, "entry_label": entry_label,
+        "meta":{"source":"W7","grey_zone": bool(0.48 <= conf <= 0.58), "probs_debug": meta_debug}
+    }
 
 # -------------------- AlphaPulse --------------------
 try:
