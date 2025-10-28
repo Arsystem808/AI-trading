@@ -110,13 +110,16 @@ def normalize_for_polygon(symbol: str) -> str:
        - C:PAIR для форекса (если введено явно),
        - без префикса — считаем тикером equity/ETF (AAPL, HQQ, SPY)."""
     s = (symbol or "").strip().upper().replace(" ", "")
+    # Явные префиксы: X:, C:, O:, I: — оставляем, чистим USDx
     if ":" in s:
         head, tail = s.split(":", 1)
         tail = tail.replace("USDT", "USD").replace("USDC", "USD")
         return f"{head}:{tail}"
+    # Крипто без префикса (пары к USD/USDT/USDC)
     if re.match(r"^[A-Z]{2,10}USD(T|C)?$", s or ""):
         s = s.replace("USDT", "USD").replace("USDC", "USD")
         return f"X:{s}"
+    # Иначе — акции/ETF/индексы без префикса
     return s
 
 def rr_line(levels: Dict[str, float]) -> str:
@@ -191,18 +194,18 @@ def get_available_models() -> List[str]:
     keys = list(reg.keys())
     return (["Octopus"] if "Octopus" in keys else []) + [k for k in sorted(keys) if k != "Octopus"]
 
-def run_model_by_name(ticker_norm: str, model_name: str, horizon: str) -> Dict[str, Any]:
+def run_model_by_name(ticker_norm: str, model_name: str) -> Dict[str, Any]:
     mod, err = _load_strategy_module()
     if not mod:
         raise RuntimeError("Не удалось импортировать core.strategy:\n" + (err or ""))
     if hasattr(mod, "analyze_asset"):
-        return mod.analyze_asset(ticker_norm, horizon, model_name)
+        return mod.analyze_asset(ticker_norm, "Краткосрочный", model_name)
     reg = getattr(mod, "STRATEGY_REGISTRY", {}) or {}
     if model_name in reg and callable(reg[model_name]):
-        return reg[model_name](ticker_norm, horizon)
+        return reg[model_name](ticker_norm, "Краткосрочный")
     fname = f"analyze_asset_{model_name.lower()}"
     if hasattr(mod, fname):
-        return getattr(mod, fname)(ticker_norm, horizon)
+        return getattr(mod, fname)(ticker_norm, "Краткосрочный")
     raise RuntimeError(f"Стратегия {model_name} недоступна.")
 
 # ===== Простой AI‑override (две строки + скобочная шкала, нормировано по overall) =====
@@ -244,26 +247,12 @@ ticker_input = st.text_input(
 ticker = ticker_input.strip().upper()
 symbol_for_engine = normalize_for_polygon(ticker)
 
-# --- Горизонт анализа ---
-horizon = st.radio(
-    "Горизонт",
-    options=["Краткосрочный", "Среднесрочный"],
-    index=0,
-    horizontal=True,
-    key="horizon_radio",
-)
-
-# Если стратегиям нужны коды, раскомментируй:
-# HORIZON_MAP = {"Краткосрочный": "short", "Среднесрочный": "mid"}
-# horizon_for_engine = HORIZON_MAP.get(horizon, "short")
-horizon_for_engine = horizon
-
 run = st.button("Проанализировать", type="primary", key="main_analyze")
-st.write(f"Mode: AI · Model: {model} · Horizon: {horizon}")
+st.write(f"Mode: AI · Model: {model}")
 
 if run and ticker:
     try:
-        out = run_model_by_name(symbol_for_engine, model, horizon_for_engine)
+        out = run_model_by_name(symbol_for_engine, model)
 
         rec = out.get("recommendation")
         if not rec and ("action" in out or "confidence" in out):
@@ -298,8 +287,8 @@ if run and ticker:
 
         mode_text, entry_title = entry_mode_labels(action, lv.get("entry", last_price), last_price, ENTRY_MARKET_EPS)
         header_text = "WAIT"
-        if action == "BUY": header_text = f"Long • {mode_text} • {horizon}"
-        elif action == "SHORT": header_text = f"Short • {mode_text} • {horizon}"
+        if action == "BUY": header_text = f"Long • {mode_text}"
+        elif action == "SHORT": header_text = f"Short • {mode_text}"
 
         st.markdown(f"""
         <div style="background:#c57b0a; padding:14px 16px; border-radius:16px; border:1px solid rgba(255,255,255,0.06); margin-bottom:10px;">
