@@ -4,7 +4,7 @@ import os
 import io
 import tarfile
 import logging
-import pathlib
+from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
@@ -18,21 +18,23 @@ def _is_valid_url(u: str) -> bool:
     except Exception:
         return False
 
-def _safe_extract_targz(bytes_ bytes, dest: pathlib.Path):
+def _safe_extract_targz(bytes_ bytes, dest: Path):
     dest.mkdir(parents=True, exist_ok=True)
-    # Безопасная распаковка: защита от path traversal
+    # Защита от path traversal
     with tarfile.open(fileobj=io.BytesIO(bytes_data), mode="r:*") as tar:
+        base = dest.resolve()
         for m in tar.getmembers():
-            target = dest / m.name
-            if not str(target.resolve()).startswith(str(dest.resolve())):
+            target = (dest / m.name).resolve()
+            if not str(target).startswith(str(base)):
                 raise RuntimeError(f"Unsafe path in tar: {m.name}")
         tar.extractall(dest)
     log.info("✓ Bundle extracted to %s", dest)
 
 def ensure_models():
-    dest = pathlib.Path(os.getenv("ARXORA_MODEL_DIR", "/tmp/models"))
+    dest = Path(os.getenv("ARXORA_MODEL_DIR", "/tmp/models"))
     dest.mkdir(parents=True, exist_ok=True)
 
+    # 1) Пытаемся скачать бандл из GitHub Releases
     bundle_url = (os.getenv("MODEL_BUNDLE_URL") or "").strip()
     if bundle_url and _is_valid_url(bundle_url):
         try:
@@ -44,7 +46,7 @@ def ensure_models():
         except Exception as e:
             log.warning("Bundle download failed: %s", e)
 
-    # Фолбэк: пофайловые ссылки, если заданы (можно удалить, если не нужно)
+    # 2) Фолбэк: пофайловые ссылки, если заданы (опционально)
     assets = {
         "alphapulse_AAPL.joblib": os.getenv("MODEL_AAPL_URL"),
         "alphapulse_ETHUSD.joblib": os.getenv("MODEL_ETH_URL"),
