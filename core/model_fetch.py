@@ -11,6 +11,7 @@ import requests
 
 log = logging.getLogger(__name__)
 
+# -------------------- Utils --------------------
 def _is_valid_url(u: str) -> bool:
     try:
         p = urlparse((u or "").strip())
@@ -18,9 +19,9 @@ def _is_valid_url(u: str) -> bool:
     except Exception:
         return False
 
-def _safe_extract_targz(bytes_ bytes, dest: Path):
+def _safe_extract_targz(bytes_ bytes, dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
-    # Защита от path traversal
+    # Безопасная распаковка (защита от path traversal)
     with tarfile.open(fileobj=io.BytesIO(bytes_data), mode="r:*") as tar:
         base = dest.resolve()
         for m in tar.getmembers():
@@ -30,11 +31,18 @@ def _safe_extract_targz(bytes_ bytes, dest: Path):
         tar.extractall(dest)
     log.info("✓ Bundle extracted to %s", dest)
 
-def ensure_models():
+# -------------------- Public API --------------------
+def ensure_models() -> None:
+    """
+    Подтягивает модели в ARXORA_MODEL_DIR (или /tmp/models).
+    1) Пытается скачать tar.gz‑бандл из MODEL_BUNDLE_URL и распаковать.
+    2) Если бандл не задан/невалиден — пробует пофайловые ссылки (опционально).
+    Любые ошибки логируются и не роняют приложение.
+    """
     dest = Path(os.getenv("ARXORA_MODEL_DIR", "/tmp/models"))
     dest.mkdir(parents=True, exist_ok=True)
 
-    # 1) Пытаемся скачать бандл из GitHub Releases
+    # 1) Bundle first
     bundle_url = (os.getenv("MODEL_BUNDLE_URL") or "").strip()
     if bundle_url and _is_valid_url(bundle_url):
         try:
@@ -45,8 +53,11 @@ def ensure_models():
             return
         except Exception as e:
             log.warning("Bundle download failed: %s", e)
+    else:
+        if bundle_url:
+            log.warning("Invalid bundle URL in env: %s", bundle_url)
 
-    # 2) Фолбэк: пофайловые ссылки, если заданы (опционально)
+    # 2) Fallback: per-file assets (optional)
     assets = {
         "alphapulse_AAPL.joblib": os.getenv("MODEL_AAPL_URL"),
         "alphapulse_ETHUSD.joblib": os.getenv("MODEL_ETH_URL"),
