@@ -1,4 +1,4 @@
-# core/model_fetch.py — bundle-first loader with filename+SHA marker
+# core/model_fetch.py — bundle-first loader with force refresh + filename+SHA marker
 
 import os
 import io
@@ -54,7 +54,8 @@ def ensure_models():
     """
     Скачивает и распаковывает бандл моделей в ARXORA_MODEL_DIR (по умолчанию /tmp/models).
     - Пропускает загрузку, если .bundle_version совпадает по имени файла и SHA256.
-    - MODEL_BUNDLE_SHA256 (опционально) усиливает проверку; при отсутствии вычисляется из скачанного архива.
+    - MODEL_BUNDLE_SHA256 (опционально) усиливает проверку; при отсутствии вычисляется.
+    - ARXORA_FORCE_REFRESH=1 — игнорировать маркер и принудительно скачать заново.
     - Фолбэк: пофайловые ссылки MODEL_AAPL_URL/MODEL_ETH_URL.
     """
     dest = Path(os.getenv("ARXORA_MODEL_DIR", "/tmp/models"))
@@ -62,6 +63,7 @@ def ensure_models():
 
     bundle_url = (os.getenv("MODEL_BUNDLE_URL") or "").strip()
     conf_sha = (os.getenv("MODEL_BUNDLE_SHA256") or "").strip()
+    force = os.getenv("ARXORA_FORCE_REFRESH") == "1"
     marker = dest / ".bundle_version"
 
     if bundle_url and _is_valid_url(bundle_url):
@@ -73,7 +75,7 @@ def ensure_models():
             any_item = next(dest.iterdir(), None)
         except Exception:
             any_item = None
-        if any_item and m_name == ver and (not conf_sha or (m_sha and m_sha.lower() == conf_sha.lower())):
+        if any_item and not force and m_name == ver and (not conf_sha or (m_sha and m_sha.lower() == conf_sha.lower())):
             log.info("Bundle already present (%s) — skipping download", ver)
             return
 
