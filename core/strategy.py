@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional, Callable
 
 import numpy as np
 import pandas as pd
+import time  # добавлено
 
 # -------------------- инфраструктура --------------------
 # Мягкие импорты, чтобы UI не падал при отсутствии зависимостей
@@ -29,6 +30,92 @@ except Exception:
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ===== Stable decision layer: 5m/15m bar-close + daily TTL + last-out cache (PROD) =====
+# Профили по рынкам
+TF_SEC_CRYPTO = 300     # 5m
+LAG_CRYPTO    = 15000   # 15s до клоуза
+TF_SEC_STOCKS = 900     # 15m
+LAG_STOCKS    = 20000   # 20s до клоуза
+
+def _is_crypto(t: str) -> bool:
+    t = (t or "").upper()
+    return t.endswith(("USD","USDT","USDC")) or (":" in t)
+
+def _tf_lag_for(t: str):
+    return (TF_SEC_CRYPTO, LAG_CRYPTO) if _is_crypto(t) else (TF_SEC_STOCKS, LAG_STOCKS)
+
+def _bucket(ts_ms: int, tf_sec: int) -> int:
+    size = tf_sec * 1000
+    return (ts_ms // size) * size
+
+# Флаг для разового «прогрева» без гейта (передай debug_force=True в Router/Octopus)
+def _should_decide_now_for(ticker: str, ts_ms: int, debug_force: bool = False) -> bool:
+    if debug_force:
+        return True
+    tf_sec, lag_ms = _tf_lag_for(ticker)
+    end_ms = _bucket(ts_ms, tf_sec) + tf_sec * 1000
+    return ts_ms >= (end_ms - lag_ms)
+
+# Дневной TTL на смену стороны (UTC)
+_state: Dict[tuple, Dict[str, str]] = {}  # {(symbol, model): {"last_action":"WAIT","last_day":"YYYYMMDD"}}
+
+def _day_key(ts_ms: int) -> str:
+    return time.strftime("%Y%m%d", time.gmtime(ts_ms / 1000))
+
+# Кэш последнего валидного ответа
+LAST_OUT: Dict[tuple, Dict[str, Any]] = {}
+
+def _price_fallback_for(ticker: str) -> float:
+    """
+    Цена для заглушки:
+      1) last trade (crypto/stocks/ETF),
+      2) последний daily close (fallback),
+      3) 0.0 в крайнем случае.
+    """
+    try:
+        cli = PolygonClient()
+        try:
+            p = cli.last_trade_price(ticker)
+            if p is not None:
+                return float(p)
+        except Exception:
+            pass
+        try:
+            df = cli.daily_ohlc(ticker, days=2)
+            if df is not None and not df.empty and "close" in df.columns:
+                return float(pd.to_numeric(df["close"]).iloc[-1])
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return 0.0
+
+def _last_ui_payload_for(symbol: str, model_name: str) -> Dict[str, Any]:
+    """
+    Между клоузами возвращает последний валидный результат (meta.gated=True).
+    Если кэша нет — отдаёт WAIT с реальной ценой из _price_fallback_for.
+    """
+    prev = LAST_OUT.get((symbol, model_name))
+    if prev:
+        out = dict(prev)
+        meta = dict(out.get("meta", {})); meta["gated"] = True
+        out["meta"] = meta
+        return out
+
+    price = _price_fallback_for(symbol)
+    tf_sec, _ = _tf_lag_for(symbol)
+    return {
+        "last_price": float(price),
+        "recommendation": {"action": "WAIT", "confidence": 0.50},
+        "levels": {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+        "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+        "context": [f"{model_name}: waiting for bar close ({tf_sec}s) or daily TTL"],
+        "note_html": "<div>WAIT</div>",
+        "alt": "WAIT", "entry_kind": "wait", "entry_label": "WAIT",
+        "meta": {"source": model_name, "grey_zone": True, "tf_sec": tf_sec, "gated": True}
+    }
+# ===== Stable decision layer (END) =====
 
 # -------------------- small utils --------------------
 def _clip01(x: float) -> float:
@@ -1063,20 +1150,15 @@ except Exception:
         except Exception as e:
             logger.warning("perf log AlphaPulse failed: %s", e)
         return res
+# -------------------- Оркестратор Octopus (FINAL + debug_force) --------------------
+OCTO_WEIGHTS: Dict[str, float] = {"Global": 0.25, "M7": 0.25, "W7": 0.25, "AlphaPulse": 0.25}
 
-# -------------------- Оркестратор Octopus --------------------
-OCTO_WEIGHTS: Dict[str, float] = {"Global": 0.10, "M7": 0.20, "W7": 0.20, "AlphaPulse": 0.50}  # как и было
+def analyze_asset_octopus(ticker: str, horizon: str, debug_force: bool = False) -> Dict[str, Any]:
+    now_ms = int(time.time() * 1000)
+    # B: бар-гейт с учётом типа инструмента + разовый обход при debug_force
+    if not _should_decide_now_for(ticker, now_ms, debug_force=debug_force):
+        return _last_ui_payload_for(ticker, "Octopus")
 
-def _act_to_num(a: str) -> int:  # без изменений
-    return 1 if a == "BUY" else (-1 if a == "SHORT" else 0)
-
-def _num_to_act(x: float) -> str:  # без изменений
-    if x > 0: return "BUY"
-    if x < 0: return "SHORT"
-    return "WAIT"
-
-def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
-    # 1) Собираем ответы агентов
     parts: Dict[str, Dict[str, Any]] = {}
     for name, fn in {
         "Global":     analyze_asset_global,
@@ -1090,18 +1172,10 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
             logger.warning("Agent %s failed: %s", name, e)
 
     if not parts:
-        return {
-            "last_price": 0.0,
-            "recommendation": {"action": "WAIT", "confidence": 0.50},
-            "levels": {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
-            "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
-            "context": ["Octopus: no agents responded"],
-            "note_html": "<div>Octopus: WAIT</div>",
-            "alt": "WAIT", "entry_kind": "wait", "entry_label": "WAIT",
-            "meta": {"source": "Octopus", "votes": [], "ratio": 0.0}
-        }
+        res = _last_ui_payload_for(ticker, "Octopus")
+        res["context"] = ["Octopus: no agents responded"]
+        return res
 
-    # 2) Строим активные голоса BUY/SHORT с весами и conf (как было)
     active = []
     for k, r in parts.items():
         a = str(r.get("recommendation", {}).get("action", "WAIT")).upper()
@@ -1118,7 +1192,6 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     delta = abs(score_long - score_short)
     ratio = delta / max(1e-6, total_side)
 
-    # 3) Правило выбора действия (без изменений)
     if count_long >= 3:
         final_action = "BUY"
     elif count_short >= 3:
@@ -1126,7 +1199,6 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     else:
         final_action = "WAIT" if ratio < 0.20 else ("BUY" if score_long > score_short else "SHORT")
 
-    # Утилита для медианных уровней по сторонникам выбранной стороны
     def _median_levels(direction: str):
         L = [r.get("levels", {}) for r in parts.values()
              if str(r.get("recommendation", {}).get("action", "")).upper() == direction]
@@ -1135,7 +1207,6 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         med = lambda k: float(np.median([x.get(k, 0.0) for x in L if isinstance(x.get(k, None), (int, float))]))
         return {"entry": med("entry"), "sl": med("sl"), "tp1": med("tp1"), "tp2": med("tp2"), "tp3": med("tp3")}
 
-    # 4) Уровни/пробы как было: медианы при слабой поляризации, иначе — от победителя
     if final_action in ("BUY", "SHORT"):
         cand = [t for t in active if t[1] == final_action]
         win_agent = (max(cand, key=lambda t: t[2] * t[3])[0] if cand
@@ -1143,8 +1214,6 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         levels_out = _median_levels(final_action) if ratio < 0.25 else parts[win_agent].get("levels", {})
         probs_out = _monotone_tp_probs(parts.get(win_agent, {}).get("probs", {}) or {})
 
-        # 5) Итоговый confidence (НОВОЕ): взвешенно по победившей стороне + мягкий штраф конфликта
-        # 5.1 Взвешенный conf по сторонникам финальной стороны
         side_items = []
         for k, r in parts.items():
             rec = r.get("recommendation", {})
@@ -1154,7 +1223,6 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
                 side_items.append((w, c))
         overall_conf = (sum(w * c for w, c in side_items) / max(1e-6, sum(w for w, _ in side_items))) if side_items else 0.50
 
-        # 5.2 Мягкий штраф за сильное несогласие противоположной стороны
         score_side = score_long if final_action == "BUY" else score_short
         score_opp  = score_short if final_action == "BUY" else score_long
         try:
@@ -1163,16 +1231,14 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         except Exception:
             beta = 0.35
         penalty = 1.0 - beta * (score_opp / max(1e-6, score_side))
-        penalty = max(0.70, min(1.00, penalty))  # клип фактора
+        penalty = max(0.70, min(1.00, penalty))
         overall_conf = float(CAL_CONF["Octopus"](_clip01(overall_conf * penalty)))
-
     else:
         levels_out = {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
         probs_out  = {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
         overall_conf = float(CAL_CONF["Octopus"](0.50))
 
-    # 6) Сбор ответа и логирование (как было)
-    last_price = float(next(iter(parts.values())).get("last_price", 0.0))
+    last_price = float(next(iter(parts.values())).get("last_price", _price_fallback_for(ticker)))
     votes_txt = [{"agent": k,
                   "action": str(r.get("recommendation", {}).get("action", "")),
                   "confidence": float(r.get("recommendation", {}).get("confidence", 0.0))}
@@ -1191,20 +1257,23 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         "meta": {"source": "Octopus", "votes": votes_txt, "ratio": float(ratio)}
     }
 
-    try:
-        log_agent_performance(
-            agent="Octopus", ticker=ticker, horizon=horizon,
-            action=final_action, confidence=float(overall_conf),
-            levels=levels_out, probs=probs_out,
-            meta={"votes": votes_txt, "ratio": float(ratio)},
-            ts=pd.Timestamp.utcnow().isoformat()
-        )
-    except Exception as e:
-        logger.warning("perf log Octopus failed: %s", e)
-
+    # C: дневной TTL + кэш (без изменений)
+    key = (ticker, "Octopus")
+    st = _state.get(key, {"last_action": "WAIT", "last_day": ""})
+    today = _day_key(now_ms)
+    new_action = str(res.get("recommendation", {}).get("action", "WAIT")).upper()
+    if st["last_day"] == today and st["last_action"] != "WAIT" and new_action != st["last_action"]:
+        prev = LAST_OUT.get(key)
+        if prev:
+            meta = dict(prev.get("meta", {})); meta.update({"gated": True})
+            out_prev = dict(prev); out_prev["meta"] = meta
+            return out_prev
+        return _last_ui_payload_for(ticker, "Octopus")
+    _state[key] = {"last_action": new_action, "last_day": today}
+    LAST_OUT[key] = res
     return res
 
-# -------------------- Strategy Router --------------------
+# -------------------- Strategy Router (FINAL + debug_force) --------------------
 STRATEGY_REGISTRY: Dict[str, Callable[[str, str], Dict[str, Any]]] = {
     "Octopus": analyze_asset_octopus,
     "Global": analyze_asset_global,
@@ -1213,18 +1282,34 @@ STRATEGY_REGISTRY: Dict[str, Callable[[str, str], Dict[str, Any]]] = {
     "AlphaPulse": analyze_asset_alphapulse,
 }
 
-def analyze_asset(ticker: str, horizon: str, strategy: str = "Octopus") -> Dict[str, Any]:
+def analyze_asset(ticker: str, horizon: str, strategy: str = "Octopus", debug_force: bool = False) -> Dict[str, Any]:
     fn = STRATEGY_REGISTRY.get(strategy)
     if not fn:
         raise ValueError(f"Unknown strategy: {strategy}")
-    return fn(ticker, horizon)
 
-# -------------------- Тестовый запуск --------------------
-if __name__ == "__main__":
-    for s in ["Global", "M7", "W7", "AlphaPulse", "Octopus"]:
-        try:
-            print(f"\n=== {s} ===")
-            out = analyze_asset("AAPL", "Краткосрочный", s)
-            print({k: out[k] for k in ["last_price","recommendation","levels","probs"]})
-        except Exception as e:
-            print(f"{s} error:", e)
+    now_ms = int(time.time() * 1000)
+    # B: бар-гейт с возможностью разового обхода для «прогрева»
+    if not _should_decide_now_for(ticker, now_ms, debug_force=debug_force):
+        return _last_ui_payload_for(ticker, strategy)
+
+    # Вызов целевой стратегии; debug_force прокидываем только для Octopus
+    if strategy == "Octopus":
+        out = analyze_asset_octopus(ticker, horizon, debug_force=debug_force)
+    else:
+        out = fn(ticker, horizon)
+
+    # C: дневной TTL + запись кэша (без изменений)
+    key = (ticker, strategy)
+    st = _state.get(key, {"last_action": "WAIT", "last_day": ""})
+    today = _day_key(now_ms)
+    new_action = str(out.get("recommendation", {}).get("action", "WAIT")).upper()
+    if st["last_day"] == today and st["last_action"] != "WAIT" and new_action != st["last_action"]:
+        prev = LAST_OUT.get(key)
+        if prev:
+            meta = dict(prev.get("meta", {})); meta.update({"gated": True})
+            out_prev = dict(prev); out_prev["meta"] = meta
+            return out_prev
+        return _last_ui_payload_for(ticker, strategy)
+    _state[key] = {"last_action": new_action, "last_day": today}
+    LAST_OUT[key] = out
+    return out
