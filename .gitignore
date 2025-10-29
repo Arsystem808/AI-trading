@@ -1,11 +1,14 @@
-# venv and caches
+# Python venv and build artifacts
 .venv/
 venv/
 __pycache__/
 *.pyc
 .pytest_cache/
+*.egg-info/
+build/
+dist/
 
-# models and data artifacts
+# Data science/model training artifacts
 models/
 data/
 *.pkl
@@ -13,7 +16,7 @@ data/
 *.parquet
 *.csv
 
-# Performance tracking data (explicitly exclude)
+# Performance tracking data (исключить из репо)
 performance_data/
 performance_summary.csv
 
@@ -22,12 +25,13 @@ performance_summary.csv
 .streamlit/cache/
 .streamlit/state.json
 
-# SQLite database and journals (critical)
+# SQLite database and journals (critical — не храним в git!)
 *.db
 *.db-journal
 *.db-wal
 *.db-shm
 trading_app.db
+.arxora/
 
 # OS / IDE
 .DS_Store
@@ -37,21 +41,23 @@ trading_app.db
 # Logs
 *.log
 
-# Environment variables
+# Environment variables (секреты)
 .env
 .env.local
 
-# Jupyter notebooks
+# Jupyter notebooks (meta and checkpoints)
 .ipynb_checkpoints/
 *.ipynb
 
-# Build artifacts
-build/
-dist/
-*.egg-info/
-
-# Node / frontend (если есть)
+# Node / JS (если есть фронтенд)
 node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Temporary files
+*~
+#*#
+*.tmp
+*.swp
+*.bak
