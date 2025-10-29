@@ -1,27 +1,26 @@
+import os
+from pathlib import Path
 import sqlite3
 from datetime import datetime
 import hashlib
 import secrets
 
+def _stable_db_path():
+    base = os.getenv("ARXORA_DATA_DIR", os.path.expanduser("~/.arxora"))
+    Path(base).mkdir(parents=True, exist_ok=True)
+    return str(Path(base) / "trading_app.db")
+
 class TradingDatabase:
-    def __init__(self, db_name='trading_app.db'):
-        self.db_name = db_name
+    def __init__(self, db_name=None):
+        self.db_name = db_name or _stable_db_path()
         self.init_database()
 
-    # ---------- Low-level connection ----------
     def _connect(self):
-        """
-        Унифицированное подключение:
-        - WAL для лучшей конкуренции чтение/запись
-        - isolation_level=None, чтобы вручную контролировать транзакции
-        - timeout=30, чтобы не падать мгновенно при попытке записи
-        """
         conn = sqlite3.connect(self.db_name, timeout=30, isolation_level=None)
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
         return conn
 
-    # ---------- Schema ----------
     def init_database(self):
         conn = self._connect()
         try:
@@ -35,6 +34,10 @@ class TradingDatabase:
                     current_capital REAL DEFAULT 10000,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
+            ''')
+            cur.execute('''
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_nc 
+                ON users(username COLLATE NOCASE)
             ''')
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS trades (
@@ -72,12 +75,13 @@ class TradingDatabase:
         finally:
             conn.close()
 
-    # ---------- Users ----------
     def register_user(self, username, password, initial_capital=10000):
         conn = self._connect()
         try:
             cur = conn.cursor()
             conn.execute("BEGIN IMMEDIATE;")
+            username = (username or "").strip()
+            password = (password or "").strip()
             user_id = secrets.token_urlsafe(16)
             password_hash = hashlib.sha256(password.encode()).hexdigest()
             cur.execute('''
@@ -96,10 +100,14 @@ class TradingDatabase:
         conn = self._connect()
         try:
             cur = conn.cursor()
+            username = (username or "").strip()
+            password = (password or "").strip()
+            password_hash = hashlib.sha256(password.encode()).hexdigest()
             cur.execute('''
                 SELECT user_id, username, initial_capital, current_capital
-                FROM users WHERE username = ? AND password_hash = ?
-            ''', (username, hashlib.sha256(password.encode()).hexdigest()))
+                FROM users 
+                WHERE username = ? COLLATE NOCASE AND password_hash = ?
+            ''', (username, password_hash))
             r = cur.fetchone()
             if not r:
                 return None
@@ -131,7 +139,6 @@ class TradingDatabase:
         finally:
             conn.close()
 
-    # ---------- Trades ----------
     def can_add_trade(self, user_id, ticker):
         conn = self._connect()
         try:
@@ -151,7 +158,6 @@ class TradingDatabase:
         try:
             cur = conn.cursor()
             conn.execute("BEGIN IMMEDIATE;")
-            # размер позиции
             cur.execute("SELECT current_capital FROM users WHERE user_id = ?", (user_id,))
             u = cur.fetchone()
             if not u:
@@ -159,7 +165,6 @@ class TradingDatabase:
                 raise ValueError("Пользователь не найден")
             current_capital = u[0] or 0.0
             position_size = (current_capital * position_percent) / 100.0
-
             cur.execute('''
                 INSERT INTO trades (
                     user_id, ticker, direction, entry_price, stop_loss,
@@ -222,10 +227,6 @@ class TradingDatabase:
             conn.close()
 
     def partial_close_trade(self, trade_id, close_price, tp_level):
-        """
-        Частичное закрытие: TP1 30% (+SL в безубыток), TP2 30%, TP3 40%.
-        ТЕ ЖЕ соединение и транзакция для trades и users.
-        """
         conn = self._connect()
         try:
             cur = conn.cursor()
@@ -249,7 +250,6 @@ class TradingDatabase:
             part_size = trade['position_size'] * percent_to_close / 100.0
             part_pnl_dollars = (part_size * pnl_percent) / 100.0
 
-            # Обновляем сделку
             cur.execute(f'''
                 UPDATE trades 
                 SET {tp_level}_closed = ?, 
@@ -261,7 +261,6 @@ class TradingDatabase:
             if tp_level == 'tp1':
                 cur.execute('UPDATE trades SET sl_breakeven = 1, stop_loss = entry_price WHERE trade_id = ?', (trade_id,))
 
-            # Обновляем капитал пользователя
             cur.execute("SELECT current_capital FROM users WHERE user_id = ?", (trade['user_id'],))
             r = cur.fetchone()
             if not r:
@@ -279,9 +278,6 @@ class TradingDatabase:
             conn.close()
 
     def full_close_trade(self, trade_id, close_price, close_reason):
-        """
-        Полное закрытие остатка позиции одной транзакцией.
-        """
         conn = self._connect()
         try:
             cur = conn.cursor()
@@ -331,7 +327,6 @@ class TradingDatabase:
         finally:
             conn.close()
 
-    # ---------- Stats ----------
     def get_statistics(self, user_id):
         conn = self._connect()
         try:
