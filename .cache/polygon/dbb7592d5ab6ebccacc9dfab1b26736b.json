@@ -1,0 +1,1 @@
+{"ticker": "QQQ", "queryCount": 1, "resultsCount": 1, "adjusted": true, "results": [{"T": "QQQ", "v": 67422576.0, "vw": 634.6385, "o": 635.59, "c": 635.77, "h": 637.01, "l": 630.25, "t": 1761768000000, "n": 1298978}], "status": "OK", "request_id": "abaab523f9209e6f83a6236ce41d15d7", "count": 1}
