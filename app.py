@@ -331,7 +331,7 @@ with tab_signals:
             header_text = "WAIT"
             if action == "BUY": header_text = f"Long • {mode_text}"
             elif action == "SHORT": header_text = f"Short • {mode_text}"
-            bg = "#2b2b2b"
+            bg = "#eb9414"
             txt = "#fff"
             border = "rgba(255,255,255,0.06)"
             if action == "BUY": bg = "linear-gradient(98deg, #16b397, #16b397)"
