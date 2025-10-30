@@ -282,7 +282,7 @@ def render_confidence_breakdown_inline(ticker: str, conf_pct: float):
     st.markdown(html, unsafe_allow_html=True)
 
 tab_signals, tab_portfolio, tab_active, tab_stats = st.tabs([
-    "AI Сигналы", "📋 Портфель", "💼 Активные сделки", "📈 Статистика"
+    "AI Сигналы", "�💼 Портфель", "📋 Активные сделки", "📈 Статистика"
 ])
 
 # === TAB 1: AI Сигналы ===
@@ -383,7 +383,7 @@ with tab_signals:
 
 # === TAB 2: Портфель ===
 with tab_portfolio:
-    st.header("📋 Добавить сигнал в портфель")
+    st.header("💼 Добавить сигнал в портфель")
     if "last_signal" in st.session_state:
         sig = st.session_state["last_signal"]
         ticker = sig["ticker"]
@@ -441,7 +441,7 @@ with tab_portfolio:
 
 # === TAB 3: Активные сделки ===
 with tab_active:
-    st.header("💼 Активные сделки")
+    st.header("📋 Активные сделки")
     active_trades = db.get_active_trades(st.session_state.user['user_id'])
     if not active_trades:
         st.info("У вас пока нет активных сделок. Добавьте сигнал во вкладке 'Портфель'!")
