@@ -334,8 +334,8 @@ with tab_signals:
             bg = "#2b2b2b"
             txt = "#fff"
             border = "rgba(255,255,255,0.06)"
-            if action == "BUY": bg = "linear-gradient(98deg, #0e7a4f, #16b397)"
-            elif action == "SHORT": bg = "linear-gradient(98deg, #b21f1f, #e5484d)"
+            if action == "BUY": bg = "linear-gradient(98deg, #16b397, #16b397)"
+            elif action == "SHORT": bg = "linear-gradient(98deg, #e5484d, #e5484d)"
             st.markdown(f"""
             <div style="background:{bg}; padding:14px 16px; border-radius:16px; border:1px solid {border}; margin-bottom:10px; color:{txt};">
               <div style="font-size:1.15rem; font-weight:700;">{header_text}</div>
