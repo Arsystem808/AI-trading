@@ -282,7 +282,7 @@ def render_confidence_breakdown_inline(ticker: str, conf_pct: float):
     st.markdown(html, unsafe_allow_html=True)
 
 tab_signals, tab_portfolio, tab_active, tab_stats = st.tabs([
-    "AI Сигналы", "�💼 Портфель", "📋 Активные сделки", "📈 Статистика"
+    "AI Сигналы", "💼 Портфель", "📋 Активные сделки", "📈 Статистика"
 ])
 
 # === TAB 1: AI Сигналы ===
