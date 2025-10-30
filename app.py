@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# app.py — Arxora UI (final EOD) + User Portfolio Integration
+# app.py — Arxora UI (final EOD) + User Portfolio Integration + DB Fixes
 
 # Безопасный импорт и вызов ensure_models
 try:
@@ -18,6 +18,7 @@ import re
 import sys
 import importlib
 import traceback
+import sqlite3
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, List
@@ -89,10 +90,37 @@ def render_arxora_header():
         </div>
         """, unsafe_allow_html=True)
 
-# ===== НОВОЕ: Аутентификация =====
+# ===== ФИКС ДБ: Диагностика наличия пользователя в текущей БД =====
+def _user_exists_in_current_db(username: str) -> bool:
+    name = (username or "").strip()
+    if not name:
+        return False
+    conn = None
+    try:
+        conn = sqlite3.connect(db.db_name, timeout=10)
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM users WHERE username = ? COLLATE NOCASE", (name,))
+        return cur.fetchone() is not None
+    except Exception:
+        return False
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+# ===== НОВОЕ: Аутентификация с фиксами ДБ =====
 def show_auth_page():
     render_arxora_header()
     st.title("🔐 Вход в систему")
+
+    # ФИКС ДБ: Показываем активный путь к БД для диагностики
+    try:
+        st.caption(f"DB path: {Path(db.db_name).resolve()}")
+    except Exception:
+        pass
+
     tab1, tab2 = st.tabs(["Вход", "Регистрация"])
     
     with tab1:
@@ -107,6 +135,18 @@ def show_auth_page():
                 st.rerun()
             else:
                 st.error("❌ Неверное имя пользователя или пароль")
+                # ФИКС ДБ: Повторно показываем путь к БД при ошибке
+                try:
+                    st.caption(f"DB: {Path(db.db_name).resolve()}")
+                except Exception:
+                    pass
+                if username:
+                    # ФИКС ДБ: Проверяем наличие пользователя в текущей БД
+                    exists = _user_exists_in_current_db(username)
+                    if not exists:
+                        st.info("В этой базе такого пользователя нет. Перейдите во вкладку «Регистрация» и создайте его здесь.")
+                    else:
+                        st.info("Пользователь существует. Проверьте пароль и раскладку/символы (пробелы).")
     
     with tab2:
         st.subheader("Создать аккаунт")
@@ -119,14 +159,21 @@ def show_auth_page():
             step=1000
         )
         if st.button("Зарегистрироваться", type="primary"):
-            if len(new_username) < 3:
+            if len((new_username or "").strip()) < 3:
                 st.error("❌ Имя пользователя должно быть минимум 3 символа")
-            elif len(new_password) < 6:
+            elif len((new_password or "").strip()) < 6:
                 st.error("❌ Пароль должен быть минимум 6 символов")
             else:
                 user_id = db.register_user(new_username, new_password, initial_capital)
                 if user_id:
-                    st.success("✅ Регистрация успешна! Теперь войдите в систему")
+                    # ФИКС ДБ: Автоматический вход сразу после регистрации в той же БД
+                    user = db.login_user(new_username, new_password)
+                    if user:
+                        st.session_state.user = user
+                        st.success("✅ Аккаунт создан и вход выполнен")
+                        st.rerun()
+                    else:
+                        st.success("✅ Регистрация успешна! Теперь войдите в систему")
                 else:
                     st.error("❌ Это имя пользователя уже занято")
 
@@ -144,7 +191,7 @@ st.sidebar.metric("Текущий капитал", f"${user_info['current_capita
 st.sidebar.metric("Начальный капитал", f"${user_info['initial_capital']:,.2f}")
 
 pnl_change = user_info['current_capital'] - user_info['initial_capital']
-pnl_percent = (pnl_change / user_info['initial_capital']) * 100
+pnl_percent = (pnl_change / max(1e-9, user_info['initial_capital'])) * 100  # ФИКС: Избегаем деления на 0
 st.sidebar.metric("Общий P&L", f"${pnl_change:,.2f}", f"{pnl_percent:.2f}%")
 
 st.sidebar.divider()
@@ -633,4 +680,3 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-
