@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime
 import hashlib
 import secrets
+from decimal import Decimal, ROUND_HALF_UP
 
 def _stable_db_path():
     base = os.getenv("ARXORA_DATA_DIR", os.path.expanduser("~/.arxora"))
@@ -14,12 +15,16 @@ class TradingDatabase:
     def __init__(self, db_name=None):
         self.db_name = db_name or _stable_db_path()
         self.init_database()
+        self.migrate_schema()
 
     def _connect(self):
         conn = sqlite3.connect(self.db_name, timeout=30, isolation_level=None)
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA foreign_keys=ON;")
         return conn
+
+    # ---------- SCHEMA ----------
 
     def init_database(self):
         conn = self._connect()
@@ -44,7 +49,7 @@ class TradingDatabase:
                     trade_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id TEXT NOT NULL,
                     ticker TEXT NOT NULL,
-                    direction TEXT NOT NULL,
+                    direction TEXT NOT NULL,                 -- LONG|SHORT
                     entry_price REAL NOT NULL,
                     stop_loss REAL NOT NULL,
                     take_profit_1 REAL,
@@ -69,11 +74,70 @@ class TradingDatabase:
                     close_date TEXT,
                     model_used TEXT,
                     confidence INTEGER,
+                    -- новые поля добавятся миграцией
                     FOREIGN KEY (user_id) REFERENCES users (user_id)
                 )
             ''')
         finally:
             conn.close()
+
+    def _col_missing(self, cur, table, col):
+        cur.execute(f"PRAGMA table_info({table})")
+        return all(r[1] != col for r in cur.fetchall())
+
+    def migrate_schema(self):
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            # Таблица orders
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS orders (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  trade_id INTEGER NOT NULL,
+                  broker_order_id TEXT UNIQUE,
+                  oco_group_id TEXT,
+                  type TEXT NOT NULL,                 -- LIMIT|MARKET|STOP_MARKET|TAKE_PROFIT_LIMIT ...
+                  reduce_only INTEGER DEFAULT 0,
+                  status TEXT NOT NULL DEFAULT 'NEW', -- NEW|PARTIALLY_FILLED|FILLED|CANCELED|REJECTED|EXPIRED
+                  qty REAL NOT NULL,
+                  price REAL,
+                  stop_price REAL,
+                  trigger_price_type TEXT,            -- LAST|MARK|BID|ASK
+                  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TEXT,
+                  FOREIGN KEY(trade_id) REFERENCES trades(trade_id) ON DELETE CASCADE
+                )
+            ''')
+            cur.execute('CREATE INDEX IF NOT EXISTS idx_orders_trade_status ON orders(trade_id, status)')
+            # Таблица idempotency
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS idempotency (
+                  key TEXT PRIMARY KEY,
+                  op TEXT NOT NULL,                   -- OPEN|PLACE_SL|PLACE_TP|CLOSE
+                  trade_id INTEGER,
+                  response TEXT,
+                  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            # Новые поля в trades
+            add_cols = [
+                ('broker_position_id','TEXT'),
+                ('sl_order_id','TEXT'),
+                ('tp1_order_id','TEXT'),
+                ('tp2_order_id','TEXT'),
+                ('tp3_order_id','TEXT'),
+                ('oco_group_id','TEXT'),
+                ('sl_triggered_at','TEXT'),
+                ('closed_by','TEXT')                  -- TP|SL|MANUAL
+            ]
+            for col, typ in add_cols:
+                if self._col_missing(cur, 'trades', col):
+                    cur.execute(f'ALTER TABLE trades ADD COLUMN {col} {typ}')
+            conn.commit()
+        finally:
+            conn.close()
+
+    # ---------- USERS ----------
 
     def register_user(self, username, password, initial_capital=10000):
         conn = self._connect()
@@ -139,6 +203,8 @@ class TradingDatabase:
         finally:
             conn.close()
 
+    # ---------- TRADES ----------
+
     def can_add_trade(self, user_id, ticker):
         conn = self._connect()
         try:
@@ -158,6 +224,7 @@ class TradingDatabase:
         try:
             cur = conn.cursor()
             conn.execute("BEGIN IMMEDIATE;")
+
             cur.execute("SELECT current_capital FROM users WHERE user_id = ?", (user_id,))
             u = cur.fetchone()
             if not u:
@@ -165,6 +232,7 @@ class TradingDatabase:
                 raise ValueError("Пользователь не найден")
             current_capital = u[0] or 0.0
             position_size = (current_capital * position_percent) / 100.0
+
             cur.execute('''
                 INSERT INTO trades (
                     user_id, ticker, direction, entry_price, stop_loss,
@@ -226,6 +294,73 @@ class TradingDatabase:
         finally:
             conn.close()
 
+    # ---------- ORDERS & IDEMPOTENCY HELPERS ----------
+
+    def record_order(self, trade_id, otype, qty, price=None, stop_price=None,
+                     reduce_only=False, trigger_price_type=None, oco_group_id=None):
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            conn.execute("BEGIN IMMEDIATE;")
+            cur.execute('''
+              INSERT INTO orders (trade_id, type, qty, price, stop_price, reduce_only, 
+                                  trigger_price_type, oco_group_id)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (trade_id, otype, float(qty), price, stop_price,
+                  1 if reduce_only else 0, trigger_price_type, oco_group_id))
+            oid = cur.lastrowid
+            conn.commit()
+            return oid
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def attach_broker_order(self, order_id, broker_order_id):
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            cur.execute('UPDATE orders SET broker_order_id = ?, updated_at = ? WHERE id = ?',
+                        (broker_order_id, datetime.now().isoformat(), order_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def update_order_status(self, broker_order_id, status):
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            cur.execute('UPDATE orders SET status = ?, updated_at = ? WHERE broker_order_id = ?',
+                        (status, datetime.now().isoformat(), broker_order_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def put_idempotency(self, key, op, trade_id=None, response=None):
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            cur.execute('INSERT OR IGNORE INTO idempotency (key, op, trade_id, response) VALUES (?, ?, ?, ?)',
+                        (key, op, trade_id, (response or "")))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def has_idempotency(self, key):
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            cur.execute('SELECT 1 FROM idempotency WHERE key = ?', (key,))
+            return cur.fetchone() is not None
+        finally:
+            conn.close()
+
+    # ---------- PARTIAL / FULL CLOSE ----------
+
+    def _dec(self, x):  # точные вычисления для процентов
+        return Decimal(str(x)).quantize(Decimal('0.00000001'), rounding=ROUND_HALF_UP)
+
     def partial_close_trade(self, trade_id, close_price, tp_level):
         conn = self._connect()
         try:
@@ -240,15 +375,17 @@ class TradingDatabase:
             cols = [d[0] for d in cur.description]
             trade = dict(zip(cols, row))
 
+            entry = self._dec(trade['entry_price'])
+            price = self._dec(close_price)
             if trade['direction'] == 'LONG':
-                pnl_percent = ((close_price - trade['entry_price']) / trade['entry_price']) * 100.0
+                pnl_percent = (price - entry) / entry * self._dec(100)
             else:
-                pnl_percent = ((trade['entry_price'] - close_price) / trade['entry_price']) * 100.0
+                pnl_percent = (entry - price) / entry * self._dec(100)
 
-            pct_map = {'tp1': 30.0, 'tp2': 30.0, 'tp3': 40.0}
+            pct_map = {'tp1': self._dec(30), 'tp2': self._dec(30), 'tp3': self._dec(40)}
             percent_to_close = pct_map[tp_level]
-            part_size = trade['position_size'] * percent_to_close / 100.0
-            part_pnl_dollars = (part_size * pnl_percent) / 100.0
+            part_size = self._dec(trade['position_size']) * percent_to_close / self._dec(100)
+            part_pnl_dollars = part_size * pnl_percent / self._dec(100)
 
             cur.execute(f'''
                 UPDATE trades 
@@ -256,7 +393,7 @@ class TradingDatabase:
                     remaining_percent = remaining_percent - ?,
                     total_pnl_dollars = total_pnl_dollars + ?
                 WHERE trade_id = ?
-            ''', (percent_to_close, percent_to_close, part_pnl_dollars, trade_id))
+            ''', (float(percent_to_close), float(percent_to_close), float(part_pnl_dollars), trade_id))
 
             if tp_level == 'tp1':
                 cur.execute('UPDATE trades SET sl_breakeven = 1, stop_loss = entry_price WHERE trade_id = ?', (trade_id,))
@@ -266,11 +403,11 @@ class TradingDatabase:
             if not r:
                 conn.rollback()
                 raise ValueError("Пользователь не найден")
-            new_capital = (r[0] or 0.0) + part_pnl_dollars
+            new_capital = (r[0] or 0.0) + float(part_pnl_dollars)
             cur.execute("UPDATE users SET current_capital = ? WHERE user_id = ?", (new_capital, trade['user_id']))
 
             conn.commit()
-            return part_pnl_dollars
+            return float(part_pnl_dollars)
         except Exception:
             conn.rollback()
             raise
@@ -293,13 +430,15 @@ class TradingDatabase:
 
             remaining_percent = trade['remaining_percent']
             if remaining_percent > 0:
+                entry = self._dec(trade['entry_price'])
+                price = self._dec(close_price)
                 if trade['direction'] == 'LONG':
-                    pnl_percent = ((close_price - trade['entry_price']) / trade['entry_price']) * 100.0
+                    pnl_percent = (price - entry) / entry * self._dec(100)
                 else:
-                    pnl_percent = ((trade['entry_price'] - close_price) / trade['entry_price']) * 100.0
+                    pnl_percent = (entry - price) / entry * self._dec(100)
 
-                remaining_size = trade['position_size'] * remaining_percent / 100.0
-                remaining_pnl = (remaining_size * pnl_percent) / 100.0
+                remaining_size = self._dec(trade['position_size']) * self._dec(remaining_percent) / self._dec(100)
+                remaining_pnl = remaining_size * pnl_percent / self._dec(100)
 
                 cur.execute('''
                     UPDATE trades 
@@ -308,16 +447,18 @@ class TradingDatabase:
                         close_price = ?,
                         total_pnl_percent = ?,
                         total_pnl_dollars = total_pnl_dollars + ?,
-                        close_date = ?
+                        close_date = ?,
+                        closed_by = ?
                     WHERE trade_id = ?
-                ''', (close_reason, close_price, pnl_percent, remaining_pnl, datetime.now().isoformat(), trade_id))
+                ''', (close_reason, float(price), float(pnl_percent), float(remaining_pnl),
+                      datetime.now().isoformat(), close_reason, trade_id))
 
                 cur.execute("SELECT current_capital FROM users WHERE user_id = ?", (trade['user_id'],))
                 r = cur.fetchone()
                 if not r:
                     conn.rollback()
                     raise ValueError("Пользователь не найден")
-                new_capital = (r[0] or 0.0) + remaining_pnl
+                new_capital = (r[0] or 0.0) + float(remaining_pnl)
                 cur.execute("UPDATE users SET current_capital = ? WHERE user_id = ?", (new_capital, trade['user_id']))
 
             conn.commit()
@@ -326,6 +467,8 @@ class TradingDatabase:
             raise
         finally:
             conn.close()
+
+    # ---------- STATS ----------
 
     def get_statistics(self, user_id):
         conn = self._connect()
