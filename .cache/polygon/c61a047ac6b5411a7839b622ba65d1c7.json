@@ -1,0 +1,1 @@
+{"ticker": "TLT", "queryCount": 1, "resultsCount": 1, "adjusted": true, "results": [{"T": "TLT", "v": 42649215.0, "vw": 90.608, "o": 90.39, "c": 90.56, "h": 90.97, "l": 90.3544, "t": 1761854400000, "n": 149083}], "status": "OK", "request_id": "b9eec4e39a1a568bed8e3b21f922c550", "count": 1}
