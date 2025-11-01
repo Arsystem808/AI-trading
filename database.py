@@ -6,6 +6,11 @@ import hashlib
 import secrets
 from decimal import Decimal, ROUND_HALF_UP
 
+# ----- string constants to avoid NameError -----
+TP = "TP"
+SL = "SL"
+MANUAL = "MANUAL"
+
 def _stable_db_path():
     base = os.getenv("ARXORA_DATA_DIR", os.path.expanduser("~/.arxora"))
     Path(base).mkdir(parents=True, exist_ok=True)
@@ -73,9 +78,8 @@ class TradingDatabase:
                     signal_date TEXT DEFAULT CURRENT_TIMESTAMP,
                     close_date TEXT,
                     model_used TEXT,
-                    confidence INTEGER,
+                    confidence INTEGER
                     -- новые поля добавятся миграцией
-                    FOREIGN KEY (user_id) REFERENCES users (user_id)
                 )
             ''')
         finally:
@@ -89,7 +93,7 @@ class TradingDatabase:
         conn = self._connect()
         try:
             cur = conn.cursor()
-            # Таблица orders
+            # orders
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS orders (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,7 +113,7 @@ class TradingDatabase:
                 )
             ''')
             cur.execute('CREATE INDEX IF NOT EXISTS idx_orders_trade_status ON orders(trade_id, status)')
-            # Таблица idempotency
+            # idempotency
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS idempotency (
                   key TEXT PRIMARY KEY,
@@ -119,7 +123,7 @@ class TradingDatabase:
                   created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
-            # Новые поля в trades
+            # extra columns in trades
             add_cols = [
                 ('broker_position_id','TEXT'),
                 ('sl_order_id','TEXT'),
@@ -168,7 +172,7 @@ class TradingDatabase:
             password = (password or "").strip()
             password_hash = hashlib.sha256(password.encode()).hexdigest()
             cur.execute('''
-                SELECT user_id, username, initial_capital, current_capital
+                SELECT rowid, user_id, username, initial_capital, current_capital
                 FROM users 
                 WHERE username = ? COLLATE NOCASE AND password_hash = ?
             ''', (username, password_hash))
@@ -176,10 +180,10 @@ class TradingDatabase:
             if not r:
                 return None
             return {
-                'user_id': r[0],
-                'username': r[1],
-                'initial_capital': r[2],
-                'current_capital': r[3]
+                'user_id': r[1],
+                'username': r[2],
+                'initial_capital': r[3],
+                'current_capital': r[4]
             }
         finally:
             conn.close()
@@ -358,7 +362,7 @@ class TradingDatabase:
 
     # ---------- PARTIAL / FULL CLOSE ----------
 
-    def _dec(self, x):  # точные вычисления для процентов
+    def _dec(self, x):
         return Decimal(str(x)).quantize(Decimal('0.00000001'), rounding=ROUND_HALF_UP)
 
     def partial_close_trade(self, trade_id, close_price, tp_level):
@@ -415,6 +419,9 @@ class TradingDatabase:
             conn.close()
 
     def full_close_trade(self, trade_id, close_price, close_reason):
+        # close_reason должен быть одной из строк: TP, SL, MANUAL
+        if close_reason not in (TP, SL, MANUAL):
+            close_reason = MANUAL
         conn = self._connect()
         try:
             cur = conn.cursor()
