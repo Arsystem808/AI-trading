@@ -132,7 +132,7 @@ class TradingDatabase:
                 ('tp3_order_id','TEXT'),
                 ('oco_group_id','TEXT'),
                 ('sl_triggered_at','TEXT'),
-                ('closed_by','TEXT')                  -- TP|SL|MANUAL
+                ('closed_by','TEXT')  # TP | SL | MANUAL
             ]
             for col, typ in add_cols:
                 if self._col_missing(cur, 'trades', col):
