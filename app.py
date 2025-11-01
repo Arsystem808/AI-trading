@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# app.py — Arxora UI (production, Saxo-inspired dark theme, стабильная БД, сохранены все фразы)
+# app.py — Arxora Trading Platform (Professional Clean Design)
 
 import os
 import re
@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional, List
 
 import streamlit as st
 
-# ========= Опциональная подгрузка моделей (не ломает UI при ошибках) =========
+# ========= Model Loading =========
 try:
     from core.model_fetch import ensure_models
     try:
@@ -25,12 +25,12 @@ except Exception as _e:
     import logging as _lg
     _lg.warning("model_fetch import skipped: %s", _e)
 
-# ========= БД / Портфель =========
+# ========= Database =========
 try:
     from database import TradingDatabase
     db = TradingDatabase()
 except Exception as e:
-    st.error(f"⚠️ Не удалось загрузить database.py: {e}")
+    st.error(f"Database initialization failed: {e}")
     st.stop()
 
 try:
@@ -43,103 +43,780 @@ try:
 except Exception:
     requests = None
 
-# ========= Окружение =========
+# ========= Environment =========
 MODEL_DIR = Path(os.getenv("ARXORA_MODEL_DIR", "/tmp/models"))
 ARXORA_DEBUG = os.getenv("ARXORA_DEBUG", "0") == "1"
+ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))
+MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT",  "0.0010"))
 
-# ========= Конфиг страницы =========
-st.set_page_config(page_title="Arxora — трейд‑ИИ (MVP)", page_icon="assets/arxora_favicon_512.png", layout="centered")
+# ========= Page Config =========
+st.set_page_config(
+    page_title="Arxora",
+    page_icon="assets/arxora_favicon_512.png",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
-# ========= Загрузка кастомной темы / CSS =========
-def _inject_theme_css():
-    css_fallback = """
-    /* Arxora — Saxo-inspired premium dark theme (fallback) */
-    :root{
-      --bg:#070708; --panel:#0f1316; --muted:#9aa0a6; --accent:#16b397; --accent-2:#5B5BF7;
-      --danger:#ff4c4c; --glass: rgba(255,255,255,0.03); --card-border: rgba(255,255,255,0.04);
-      --glass-2: rgba(255,255,255,0.02);
+# ========= Professional Theme (Based on Screenshots) =========
+def inject_professional_theme():
+    """Professional trading platform theme - clean, minimal, no emojis"""
+    
+    css = """
+    <style>
+    /* ==================== PROFESSIONAL TRADING PLATFORM ==================== */
+    
+    :root {
+        --bg-primary: #000000;
+        --bg-secondary: #0a0a0a;
+        --bg-tertiary: #141414;
+        --surface: #1a1a1a;
+        --surface-elevated: #202020;
+        --surface-hover: #252525;
+        
+        --accent-primary: #16c784;
+        --accent-secondary: #00d4ff;
+        --accent-blue: #5B7FF9;
+        
+        --success: #16c784;
+        --danger: #ea3943;
+        --warning: #ffa94d;
+        
+        --text-primary: #ffffff;
+        --text-secondary: #a0a0a0;
+        --text-tertiary: #707070;
+        --text-disabled: #404040;
+        
+        --border: rgba(255, 255, 255, 0.1);
+        --border-light: rgba(255, 255, 255, 0.05);
+        
+        --sidebar-width: 300px;
     }
-    html, body, .stApp, [data-testid="stAppViewContainer"]{
-      background: linear-gradient(180deg, rgba(7,7,8,1) 0%, rgba(12,12,13,1) 100%) !important;
-      color: #e6eef3;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+    
+    * {
+        font-feature-settings: "tnum" 1;
+        -webkit-font-smoothing: antialiased;
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
     }
-    .block-container{ max-width:1180px; padding-top:0.6rem; }
-    .arxora-hero {
-      width:100%; background: linear-gradient(90deg, rgba(11,10,20,1), rgba(18,16,40,1));
-      border-radius: 12px; padding: 18px;
-      box-shadow: 0 6px 28px rgba(5,6,8,0.6), inset 0 1px 0 rgba(255,255,255,0.02);
-      margin-bottom: 14px;
+    
+    html, body, .stApp {
+        background: var(--bg-primary) !important;
+        color: var(--text-primary);
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+        font-size: 15px;
     }
-    .arxora-logo { font-size:28px; font-weight:800; letter-spacing:0.4px; color: #ffffff; display:inline-block; }
-    .arxora-sub { color: var(--muted); margin-top:4px; font-size:13px; display:block; }
-    .panel {
-      background: linear-gradient(180deg, rgba(16,18,20,0.6), rgba(8,9,11,0.6));
-      border-radius:12px; padding:12px; border:1px solid var(--card-border); box-shadow: 0 8px 24px rgba(3,4,6,0.6); margin-bottom:12px;
+    
+    /* Hide Streamlit UI */
+    #MainMenu, footer, header {visibility: hidden;}
+    .stDeployButton {display: none;}
+    
+    /* Scrollbar */
+    ::-webkit-scrollbar {width: 6px; height: 6px;}
+    ::-webkit-scrollbar-track {background: var(--bg-secondary);}
+    ::-webkit-scrollbar-thumb {background: var(--text-disabled); border-radius: 3px;}
+    ::-webkit-scrollbar-thumb:hover {background: var(--text-tertiary);}
+    
+    /* ==================== SIDEBAR ==================== */
+    
+    .account-sidebar {
+        position: fixed;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: var(--sidebar-width);
+        background: var(--bg-secondary);
+        border-right: 1px solid var(--border);
+        padding: 2rem 1.5rem;
+        overflow-y: auto;
+        z-index: 1000;
     }
-    .panel-compact { padding:8px; border-radius:10px; }
-    .signal-header { display:flex; align-items:center; gap:12px; padding:12px; border-radius:10px;
-      background: linear-gradient(90deg, rgba(10,20,16,0.5), rgba(18,14,30,0.4));
-      border:1px solid rgba(255,255,255,0.03);
+    
+    .sidebar-header {
+        margin-bottom: 2rem;
     }
+    
+    .sidebar-logo {
+        font-size: 24px;
+        font-weight: 700;
+        color: var(--text-primary);
+        margin-bottom: 0.5rem;
+        letter-spacing: -0.5px;
+    }
+    
+    .sidebar-subtitle {
+        font-size: 11px;
+        color: var(--text-tertiary);
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        font-weight: 600;
+    }
+    
+    .account-info {
+        background: var(--surface);
+        border-radius: 12px;
+        padding: 1.5rem;
+        margin-bottom: 1.5rem;
+        border: 1px solid var(--border-light);
+    }
+    
+    .account-label {
+        font-size: 11px;
+        color: var(--text-tertiary);
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        font-weight: 600;
+        margin-bottom: 0.75rem;
+    }
+    
+    .account-value {
+        font-size: 32px;
+        font-weight: 700;
+        color: var(--text-primary);
+        margin-bottom: 0.5rem;
+        letter-spacing: -1px;
+    }
+    
+    .account-change {
+        font-size: 14px;
+        font-weight: 600;
+    }
+    
+    .account-change.positive {color: var(--success);}
+    .account-change.negative {color: var(--danger);}
+    
+    .stats-container {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 1rem;
+        margin-bottom: 1.5rem;
+    }
+    
+    .stat-item {
+        background: var(--surface);
+        border-radius: 8px;
+        padding: 1rem;
+        border: 1px solid var(--border-light);
+    }
+    
+    .stat-label {
+        font-size: 10px;
+        color: var(--text-tertiary);
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        font-weight: 600;
+        margin-bottom: 0.5rem;
+    }
+    
+    .stat-value {
+        font-size: 20px;
+        font-weight: 700;
+        color: var(--text-primary);
+    }
+    
+    .sidebar-section {
+        margin: 2rem 0;
+        padding-top: 2rem;
+        border-top: 1px solid var(--border-light);
+    }
+    
+    .section-title {
+        font-size: 11px;
+        color: var(--text-tertiary);
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        font-weight: 600;
+        margin-bottom: 1rem;
+    }
+    
+    .sidebar-button {
+        width: 100%;
+        padding: 0.875rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--text-secondary);
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+        text-align: center;
+        margin-top: 0.75rem;
+    }
+    
+    .sidebar-button:hover {
+        background: var(--surface-hover);
+        border-color: var(--border);
+    }
+    
+    /* ==================== MAIN CONTENT ==================== */
+    
+    .main-content {
+        margin-left: var(--sidebar-width);
+        padding: 2rem 3rem;
+        min-height: 100vh;
+    }
+    
+    @media (max-width: 1024px) {
+        .main-content {
+            margin-left: 0;
+            padding: 1.5rem;
+        }
+        .account-sidebar {
+            transform: translateX(-100%);
+        }
+    }
+    
+    /* ==================== HEADER ==================== */
+    
+    .page-header {
+        margin-bottom: 2rem;
+    }
+    
+    .page-title {
+        font-size: 32px;
+        font-weight: 700;
+        color: var(--text-primary);
+        margin-bottom: 0.5rem;
+        letter-spacing: -0.5px;
+    }
+    
+    .page-nav {
+        display: flex;
+        gap: 2rem;
+        margin-top: 1rem;
+    }
+    
+    .nav-link {
+        color: var(--text-tertiary);
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: color 0.2s;
+    }
+    
+    .nav-link:hover {
+        color: var(--text-secondary);
+    }
+    
+    .nav-link.active {
+        color: var(--text-primary);
+        border-bottom: 2px solid var(--accent-primary);
+        padding-bottom: 0.5rem;
+    }
+    
+    /* ==================== CARDS ==================== */
+    
+    .content-card {
+        background: var(--surface);
+        border-radius: 16px;
+        border: 1px solid var(--border);
+        padding: 2rem;
+        margin-bottom: 1.5rem;
+    }
+    
+    .card-title {
+        font-size: 20px;
+        font-weight: 700;
+        color: var(--text-primary);
+        margin-bottom: 1.5rem;
+    }
+    
+    /* ==================== SIGNAL DISPLAY ==================== */
+    
+    .signal-card {
+        background: var(--bg-secondary);
+        border-radius: 16px;
+        padding: 2rem;
+        margin: 1.5rem 0;
+        border: 1px solid var(--border);
+    }
+    
+    .signal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 1.25rem 1.5rem;
+        background: var(--success);
+        background: linear-gradient(90deg, rgba(22, 199, 132, 0.2), rgba(22, 199, 132, 0.05));
+        border-radius: 12px;
+        margin-bottom: 2rem;
+        border: 1px solid rgba(22, 199, 132, 0.3);
+    }
+    
+    .signal-header.short {
+        background: linear-gradient(90deg, rgba(234, 57, 67, 0.2), rgba(234, 57, 67, 0.05));
+        border-color: rgba(234, 57, 67, 0.3);
+    }
+    
+    .signal-header.wait {
+        background: linear-gradient(90deg, rgba(112, 112, 112, 0.2), rgba(112, 112, 112, 0.05));
+        border-color: rgba(112, 112, 112, 0.3);
+    }
+    
+    .signal-title {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+    }
+    
     .signal-badge {
-      padding:8px 12px; border-radius:8px; font-weight:700;
-      background: linear-gradient(90deg, rgba(20,200,150,0.12), rgba(20,200,150,0.08));
-      color: var(--accent); min-width:72px; text-align:center;
+        padding: 0.5rem 1rem;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 1px;
     }
-    .signal-title { font-weight:800; font-size:18px; }
-    .stat-grid { display:flex; gap:10px; align-items:stretch; }
-    .stat-card { flex:1; padding:10px; border-radius:10px; background:var(--glass); border:1px solid var(--card-border); }
-    .primary-btn {
-      background: linear-gradient(90deg, var(--accent-2), #4a6df0);
-      color:white; padding:10px 14px; border-radius:10px; font-weight:700; border:none;
-      box-shadow: 0 6px 18px rgba(75,90,200,0.12);
+    
+    .signal-badge.long {
+        background: var(--success);
+        color: #000;
     }
-    .ghost-btn {
-      background: transparent; border:1px solid rgba(255,255,255,0.06);
-      color:var(--muted); padding:9px 12px; border-radius:10px; font-weight:600;
+    
+    .signal-badge.short {
+        background: var(--danger);
+        color: #fff;
     }
-    .muted { color:var(--muted); font-size:13px; }
-    .kv { font-weight:700; font-size:1.05rem; }
-    .footer { color: #8d98a6; font-size:12px; margin-top:18px; }
-    h1,h2,h3{ letter-spacing:.2px }
-    /* Inputs: делаем «редактируемые» поля контрастнее */
-    input[type="text"], input[type="number"], .stNumberInput input, .stTextInput input {
-      background:#14171a; color:#ffb000; border:1px solid #2a323d; border-radius:10px;
+    
+    .signal-badge.wait {
+        background: var(--text-disabled);
+        color: var(--text-secondary);
     }
-    /* DataFrame плотный стиль */
-    .stDataFrame table{ background:transparent; color:#e6eef3; border-collapse:collapse; }
-    .stDataFrame th, .stDataFrame td{ padding:8px 10px; border-bottom:1px solid rgba(255,255,255,0.03); }
-    /* Buttons weight */
-    .stButton > button { font-weight:700; border-radius:10px; }
+    
+    .signal-name {
+        font-size: 18px;
+        font-weight: 600;
+        color: var(--text-primary);
+    }
+    
+    .signal-confidence {
+        font-size: 16px;
+        font-weight: 600;
+        color: var(--text-secondary);
+    }
+    
+    .asset-display {
+        text-align: center;
+        margin: 2rem 0;
+    }
+    
+    .asset-name {
+        font-size: 18px;
+        font-weight: 600;
+        color: var(--text-secondary);
+        margin-bottom: 1rem;
+    }
+    
+    .asset-price {
+        font-size: 56px;
+        font-weight: 700;
+        color: var(--text-primary);
+        letter-spacing: -2px;
+    }
+    
+    /* ==================== LEVELS GRID ==================== */
+    
+    .levels-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 1.25rem;
+        margin: 2rem 0;
+    }
+    
+    .level-card {
+        background: var(--surface);
+        border-radius: 12px;
+        padding: 1.5rem;
+        border: 1px solid var(--border);
+        transition: all 0.2s;
+    }
+    
+    .level-card:hover {
+        border-color: rgba(255, 255, 255, 0.15);
+        transform: translateY(-2px);
+    }
+    
+    .level-card.entry {
+        border-color: var(--success);
+        background: linear-gradient(135deg, rgba(22, 199, 132, 0.1), rgba(22, 199, 132, 0.02));
+    }
+    
+    .level-card.stoploss {
+        border-color: var(--danger);
+        background: linear-gradient(135deg, rgba(234, 57, 67, 0.1), rgba(234, 57, 67, 0.02));
+    }
+    
+    .level-label {
+        font-size: 11px;
+        color: var(--text-tertiary);
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        font-weight: 600;
+        margin-bottom: 0.875rem;
+    }
+    
+    .level-value {
+        font-size: 28px;
+        font-weight: 700;
+        color: var(--text-primary);
+        margin-bottom: 0.5rem;
+    }
+    
+    .level-detail {
+        font-size: 13px;
+        color: var(--text-secondary);
+    }
+    
+    /* ==================== CONFIDENCE METER ==================== */
+    
+    .confidence-meter {
+        background: var(--bg-tertiary);
+        border-radius: 12px;
+        padding: 1.5rem;
+        margin: 2rem 0;
+        border: 1px solid var(--border-light);
+    }
+    
+    .confidence-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+    }
+    
+    .confidence-label {
+        font-size: 13px;
+        color: var(--text-tertiary);
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+    }
+    
+    .confidence-value {
+        font-size: 24px;
+        font-weight: 700;
+        color: var(--text-primary);
+    }
+    
+    .confidence-bar {
+        height: 8px;
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 4px;
+        overflow: hidden;
+        margin-bottom: 1rem;
+    }
+    
+    .confidence-fill {
+        height: 100%;
+        background: var(--success);
+        transition: width 0.6s ease;
+    }
+    
+    .confidence-info {
+        font-size: 12px;
+        color: var(--text-tertiary);
+        font-family: "SF Mono", monospace;
+    }
+    
+    /* ==================== CHART ==================== */
+    
+    .chart-card {
+        background: var(--surface);
+        border-radius: 12px;
+        padding: 1.5rem;
+        border: 1px solid var(--border);
+        margin: 1.5rem 0;
+    }
+    
+    .chart-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1.5rem;
+    }
+    
+    .chart-title {
+        font-size: 16px;
+        font-weight: 600;
+        color: var(--text-primary);
+    }
+    
+    .chart-timeframes {
+        display: flex;
+        gap: 0.5rem;
+    }
+    
+    .timeframe-btn {
+        padding: 0.375rem 0.875rem;
+        background: transparent;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text-tertiary);
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+    
+    .timeframe-btn:hover {
+        border-color: var(--text-secondary);
+        color: var(--text-secondary);
+    }
+    
+    .timeframe-btn.active {
+        background: var(--accent-primary);
+        border-color: var(--accent-primary);
+        color: #000;
+    }
+    
+    /* ==================== INPUTS ==================== */
+    
+    .stTextInput input, .stNumberInput input {
+        background: var(--surface) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: 8px !important;
+        color: var(--text-primary) !important;
+        font-size: 15px !important;
+        padding: 0.875rem !important;
+    }
+    
+    .stTextInput input:focus, .stNumberInput input:focus {
+        border-color: var(--accent-primary) !important;
+        outline: none !important;
+    }
+    
+    .stTextInput label, .stNumberInput label {
+        color: var(--text-secondary) !important;
+        font-weight: 600 !important;
+        font-size: 13px !important;
+        text-transform: uppercase !important;
+        letter-spacing: 1px !important;
+        margin-bottom: 0.5rem !important;
+    }
+    
+    /* ==================== BUTTONS ==================== */
+    
+    .stButton > button {
+        width: 100%;
+        padding: 1rem 2rem !important;
+        background: var(--accent-primary) !important;
+        color: #000 !important;
+        border: none !important;
+        border-radius: 8px !important;
+        font-weight: 700 !important;
+        font-size: 15px !important;
+        text-transform: uppercase !important;
+        letter-spacing: 1px !important;
+        transition: all 0.2s !important;
+    }
+    
+    .stButton > button:hover {
+        background: #14b578 !important;
+        transform: translateY(-1px);
+    }
+    
+    .stButton > button[kind="primary"] {
+        background: var(--accent-blue) !important;
+        color: #fff !important;
+    }
+    
+    .stButton > button[kind="primary"]:hover {
+        background: #4a6df0 !important;
+    }
+    
+    /* ==================== RADIO BUTTONS ==================== */
+    
+    .stRadio > div {
+        display: flex;
+        gap: 1rem;
+        flex-wrap: wrap;
+    }
+    
+    .stRadio > div > label {
+        background: var(--surface) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: 8px !important;
+        padding: 0.875rem 1.5rem !important;
+        color: var(--text-secondary) !important;
+        font-weight: 600 !important;
+        cursor: pointer !important;
+        transition: all 0.2s !important;
+    }
+    
+    .stRadio > div > label:hover {
+        border-color: var(--text-secondary) !important;
+    }
+    
+    .stRadio > div > label[data-checked="true"] {
+        background: var(--accent-primary) !important;
+        border-color: var(--accent-primary) !important;
+        color: #000 !important;
+    }
+    
+    /* ==================== TABS ==================== */
+    
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 1rem;
+        background: transparent;
+        border-bottom: 1px solid var(--border);
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        background: transparent;
+        color: var(--text-tertiary);
+        font-weight: 600;
+        font-size: 14px;
+        padding: 1rem 0;
+        border: none;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+    }
+    
+    .stTabs [data-baseweb="tab"]:hover {
+        color: var(--text-secondary);
+    }
+    
+    .stTabs [aria-selected="true"] {
+        color: var(--text-primary) !important;
+        border-bottom: 2px solid var(--accent-primary) !important;
+    }
+    
+    /* ==================== ALERTS ==================== */
+    
+    .stAlert {
+        background: var(--surface) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: 8px !important;
+        padding: 1rem !important;
+        border-left-width: 3px !important;
+    }
+    
+    .stInfo {
+        border-left-color: var(--accent-blue) !important;
+    }
+    
+    .stWarning {
+        border-left-color: var(--warning) !important;
+    }
+    
+    .stError {
+        border-left-color: var(--danger) !important;
+    }
+    
+    .stSuccess {
+        border-left-color: var(--success) !important;
+    }
+    
+    /* ==================== METRICS ==================== */
+    
+    [data-testid="stMetric"] {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 1.25rem;
+    }
+    
+    [data-testid="stMetric"] label {
+        font-size: 11px !important;
+        color: var(--text-tertiary) !important;
+        font-weight: 600 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 1px !important;
+    }
+    
+    [data-testid="stMetric"] [data-testid="stMetricValue"] {
+        font-size: 28px !important;
+        font-weight: 700 !important;
+        color: var(--text-primary) !important;
+    }
+    
+    /* ==================== DATAFRAMES ==================== */
+    
+    .stDataFrame {
+        border-radius: 12px;
+        overflow: hidden;
+        border: 1px solid var(--border);
+    }
+    
+    .stDataFrame table {
+        background: var(--surface) !important;
+    }
+    
+    .stDataFrame thead tr th {
+        background: var(--bg-tertiary) !important;
+        color: var(--text-tertiary) !important;
+        font-weight: 600 !important;
+        font-size: 11px !important;
+        text-transform: uppercase !important;
+        letter-spacing: 1px !important;
+        padding: 1rem !important;
+        border-bottom: 1px solid var(--border) !important;
+    }
+    
+    .stDataFrame tbody tr td {
+        padding: 1rem !important;
+        color: var(--text-primary) !important;
+        border-bottom: 1px solid var(--border-light) !important;
+    }
+    
+    .stDataFrame tbody tr:hover {
+        background: var(--surface-hover) !important;
+    }
+    
+    /* ==================== EXPANDER ==================== */
+    
+    .streamlit-expanderHeader {
+        background: var(--surface) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: 8px !important;
+        color: var(--text-primary) !important;
+        font-weight: 600 !important;
+        padding: 1rem !important;
+    }
+    
+    .streamlit-expanderHeader:hover {
+        background: var(--surface-hover) !important;
+    }
+    
+    .streamlit-expanderContent {
+        background: var(--surface) !important;
+        border: 1px solid var(--border) !important;
+        border-top: none !important;
+        border-radius: 0 0 8px 8px !important;
+        padding: 1.25rem !important;
+    }
+    
+    /* ==================== RESPONSIVE ==================== */
+    
     @media (max-width: 768px) {
-      .signal-title { font-size:16px; }
-      .arxora-logo { font-size:20px; }
+        .levels-grid {
+            grid-template-columns: 1fr;
+        }
+        
+        .stats-container {
+            grid-template-columns: 1fr;
+        }
+        
+        .asset-price {
+            font-size: 40px;
+        }
+        
+        .signal-header {
+            flex-direction: column;
+            gap: 1rem;
+        }
     }
+    
+    </style>
     """
-    css_path = Path("style.css")
-    try:
-        if css_path.exists():
-            st.markdown(f"<style>{css_path.read_text(encoding='utf-8')}</style>", unsafe_allow_html=True)
-        else:
-            st.markdown(f"<style>{css_fallback}</style>", unsafe_allow_html=True)
-    except Exception:
-        st.markdown(f"<style>{css_fallback}</style>", unsafe_allow_html=True)
+    
+    st.markdown(css, unsafe_allow_html=True)
 
-_inject_theme_css()
+# Inject theme
+inject_professional_theme()
 
-# ========= Брендинговая шапка =========
-def render_arxora_header():
-    hero_path = "assets/arxora_logo_hero.png"
-    st.markdown('<div class="arxora-hero">', unsafe_allow_html=True)
-    if os.path.exists(hero_path):
-        st.image(hero_path, width="stretch")
-        st.markdown('<span class="arxora-sub">trade smarter.</span>', unsafe_allow_html=True)
-    else:
-        st.markdown('<span class="arxora-logo">Arxora</span><br><span class="arxora-sub">trade smarter.</span>', unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-# ========= Вспомогательная проверка пользователя в активной БД =========
+# ========= Helper Functions =========
 def _user_exists_in_current_db(username: str) -> bool:
     name = (username or "").strip()
     if not name:
@@ -153,110 +830,12 @@ def _user_exists_in_current_db(username: str) -> bool:
     except Exception:
         return False
     finally:
-        try:
-            if conn:
+        if conn:
+            try:
                 conn.close()
-        except Exception:
-            pass
+            except Exception:
+                pass
 
-# ========= Аутентификация =========
-def show_auth_page():
-    render_arxora_header()
-    st.markdown("<h2 style='margin: 10px 0 16px 0; font-weight: 800;'>🔐 Вход в систему</h2>", unsafe_allow_html=True)
-
-    if ARXORA_DEBUG:
-        try:
-            st.caption(f"DB path: {Path(db.db_name).resolve()}")
-        except Exception:
-            pass
-
-    tab1, tab2 = st.tabs(["Вход", "Регистрация"])
-
-    with tab1:
-        st.markdown('<div class="panel">', unsafe_allow_html=True)
-        st.subheader("Войти в аккаунт")
-        username = st.text_input("Имя пользователя", key="login_username")
-        password = st.text_input("Пароль", type="password", key="login_password")
-        if st.button("Войти", type="primary"):
-            user = db.login_user(username, password)
-            if user:
-                st.session_state.user = user
-                st.success("✅ Успешный вход!")
-                st.rerun()
-            else:
-                st.error("❌ Неверное имя пользователя или пароль")
-                if username:
-                    exists = _user_exists_in_current_db(username)
-                    if not exists:
-                        st.info("В этой базе такого пользователя нет. Перейдите во вкладку «Регистрация» и создайте его здесь.")
-                    else:
-                        st.info("Пользователь существует. Проверьте пароль и раскладку/символы (пробелы).")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    with tab2:
-        st.markdown('<div class="panel">', unsafe_allow_html=True)
-        st.subheader("Создать аккаунт")
-        new_username = st.text_input("Имя пользователя", key="reg_username")
-        new_password = st.text_input("Пароль", type="password", key="reg_password")
-        initial_capital = st.number_input("Начальный капитал (виртуальный)", min_value=1000, value=10000, step=1000)
-        if st.button("Зарегистрироваться", type="primary"):
-            if len((new_username or "").strip()) < 3:
-                st.error("❌ Имя пользователя должно быть минимум 3 символа")
-            elif len((new_password or "").strip()) < 6:
-                st.error("❌ Пароль должен быть минимум 6 символов")
-            else:
-                user_id = db.register_user(new_username, new_password, initial_capital)
-                if user_id:
-                    user = db.login_user(new_username, new_password)
-                    if user:
-                        st.session_state.user = user
-                        st.success("✅ Аккаунт создан и вход выполнен")
-                        st.rerun()
-                    else:
-                        st.success("✅ Регистрация успешна! Теперь войдите в систему")
-                else:
-                    st.error("❌ Это имя пользователя уже занято")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-# ——— Требуем авторизацию
-if 'user' not in st.session_state:
-    show_auth_page()
-    st.stop()
-
-# ========= Сайдбар пользователя =========
-user_info = db.get_user_info(st.session_state.user['user_id'])
-stats = db.get_statistics(st.session_state.user['user_id'])
-
-st.sidebar.title(f"👤 {user_info['username']}")
-st.sidebar.metric("Текущий капитал", f"${user_info['current_capital']:,.2f}")
-st.sidebar.metric("Начальный капитал", f"${user_info['initial_capital']:,.2f}")
-
-pnl_change = user_info['current_capital'] - user_info['initial_capital']
-pnl_percent = (pnl_change / max(1e-9, user_info['initial_capital'])) * 100
-st.sidebar.metric("Общий P&L", f"${pnl_change:,.2f}", f"{pnl_percent:.2f}%")
-
-st.sidebar.divider()
-if st.sidebar.button("🚪 Выйти"):
-    del st.session_state.user
-    st.rerun()
-
-min_confidence_filter = st.sidebar.slider("Мин. Confidence для добавления", 0, 100, 60)
-
-# ========= Header =========
-render_arxora_header()
-
-# ========= Performance hooks =========
-try:
-    from core.performance_tracker import log_agent_performance, get_agent_performance
-except Exception:
-    def log_agent_performance(*args, **kwargs): pass
-    def get_agent_performance(*args, **kwargs): return None
-
-# ========= Доменные константы =========
-ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))
-MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT",  "0.0010"))
-
-# ========= Хелперы =========
 def _fmt(x: Any) -> str:
     try:
         return f"{float(x):.2f}"
@@ -267,19 +846,27 @@ def sanitize_targets(action: str, entry: float, tp1: float, tp2: float, tp3: flo
     step = max(MIN_TP_STEP_PCT * max(1.0, abs(entry)), 1e-6 * max(1.0, abs(entry)))
     if action == "BUY":
         a = sorted([tp1, tp2, tp3])
-        a[0]=max(a[0], entry+step); a[1]=max(a[1], a[0]+step); a[2]=max(a[2], a[1]+step)
-        return a[0],a[1],a[2]
+        a[0] = max(a[0], entry + step)
+        a[1] = max(a[1], a[0] + step)
+        a[2] = max(a[2], a[1] + step)
+        return a[0], a[1], a[2]
     if action == "SHORT":
         a = sorted([tp1, tp2, tp3], reverse=True)
-        a[0]=min(a[0], entry-step); a[1]=min(a[1], a[0]-step); a[2]=min(a[2], a[1]-step)
-        return a[0],a[1],a[2]
+        a[0] = min(a[0], entry - step)
+        a[1] = min(a[1], a[0] - step)
+        a[2] = min(a[2], a[1] - step)
+        return a[0], a[1], a[2]
     return tp1, tp2, tp3
 
 def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
-    if action not in ("BUY", "SHORT"): return "WAIT", "Entry"
-    if abs(entry - last_price) <= eps * max(1.0, abs(last_price)): return "Market price", "Entry (Market)"
-    if action == "BUY":  return ("Buy Stop","Entry (Buy Stop)") if entry > last_price else ("Buy Limit","Entry (Buy Limit)")
-    else:                return ("Sell Stop","Entry (Sell Stop)") if entry < last_price else ("Sell Limit","Entry (Sell Limit)")
+    if action not in ("BUY", "SHORT"):
+        return "WAIT", "Entry"
+    if abs(entry - last_price) <= eps * max(1.0, abs(last_price)):
+        return "Market", "Entry (Market)"
+    if action == "BUY":
+        return ("Buy Stop", "Entry (Buy Stop)") if entry > last_price else ("Buy Limit", "Entry (Buy Limit)")
+    else:
+        return ("Sell Stop", "Entry (Sell Stop)") if entry < last_price else ("Sell Limit", "Entry (Sell Limit)")
 
 def normalize_for_polygon(symbol: str) -> str:
     s = (symbol or "").strip().upper().replace(" ", "")
@@ -294,23 +881,12 @@ def normalize_for_polygon(symbol: str) -> str:
 
 def rr_line(levels: Dict[str, float]) -> str:
     risk = abs(levels["entry"] - levels["sl"])
-    if risk <= 1e-9: return ""
+    if risk <= 1e-9:
+        return ""
     rr1 = abs(levels["tp1"] - levels["entry"]) / risk
     rr2 = abs(levels["tp2"] - levels["entry"]) / risk
     rr3 = abs(levels["tp3"] - levels["entry"]) / risk
-    return f"RR ≈ 1:{rr1:.1f} (TP1) · 1:{rr2:.1f} (TP2) · 1:{rr3:.1f} (TP3)"
-
-def card_html(title: str, value: str, sub: Optional[str]=None, color: Optional[str]=None) -> str:
-    bg = "#141a20"
-    if color == "green": bg = "#0e7a4f"
-    elif color == "red": bg = "#a31d1d"
-    return f"""
-        <div class="panel-compact" style="background:{bg}; padding:12px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.06); margin:6px 0;">
-            <div style="font-size:0.9rem; opacity:0.85;">{title}</div>
-            <div style="font-size:1.4rem; font-weight:700; margin-top:4px;">{value}</div>
-            {f"<div style='font-size:0.8rem; opacity:0.7; margin-top:2px;'>{sub}</div>" if sub else ""}
-        </div>
-    """
+    return f"1:{rr1:.1f} (TP1) · 1:{rr2:.1f} (TP2) · 1:{rr3:.1f} (TP3)"
 
 @st.cache_data(show_spinner=False, ttl=86400)
 def resolve_asset_title_polygon(raw_symbol: str, normalized: str) -> str:
@@ -320,7 +896,11 @@ def resolve_asset_title_polygon(raw_symbol: str, normalized: str) -> str:
     if not api or requests is None:
         return s
     try:
-        r = requests.get(f"https://api.polygon.io/v3/reference/tickers/{t}", params={"apiKey": api}, timeout=2.5)
+        r = requests.get(
+            f"https://api.polygon.io/v3/reference/tickers/{t}",
+            params={"apiKey": api},
+            timeout=2.5
+        )
         if r.ok:
             data = r.json() or {}
             name = ((data.get("results") or {}).get("name") or "").strip()
@@ -330,7 +910,7 @@ def resolve_asset_title_polygon(raw_symbol: str, normalized: str) -> str:
         pass
     return s
 
-# Совместимость: services.data может лежать в другом месте
+# ========= Strategy Loading =========
 try:
     import services.data  # noqa
 except Exception:
@@ -362,7 +942,7 @@ def get_available_models() -> List[str]:
 def run_model_by_name(ticker_norm: str, model_name: str) -> Dict[str, Any]:
     mod, err = _load_strategy_module()
     if not mod:
-        raise RuntimeError("Не удалось импортировать core.strategy:\n" + (err or ""))
+        raise RuntimeError("Failed to import core.strategy:\n" + (err or ""))
     if hasattr(mod, "analyze_asset"):
         return mod.analyze_asset(ticker_norm, "Краткосрочный", model_name)
     reg = getattr(mod, "STRATEGY_REGISTRY", {}) or {}
@@ -371,197 +951,397 @@ def run_model_by_name(ticker_norm: str, model_name: str) -> Dict[str, Any]:
     fname = f"analyze_asset_{model_name.lower()}"
     if hasattr(mod, fname):
         return getattr(mod, fname)(ticker_norm, "Краткосрочный")
-    raise RuntimeError(f"Стратегия {model_name} недоступна.")
+    raise RuntimeError(f"Strategy {model_name} is not available.")
 
-def render_confidence_breakdown_inline(ticker: str, conf_pct: float):
-    try:
-        overall = float(conf_pct or 0.0)
-    except Exception:
-        overall = 0.0
-    st.session_state["last_overall_conf_pct"] = overall
-    rules_pct = float(st.session_state.get("last_rules_pct", 44.0))
-    ai_delta = overall - rules_pct
-    ai_pct = max(0.0, min(overall, ai_delta))
-    sign = "−" if ai_delta < 0 else ""
-    WIDTH = 28
-    filled = int(round(WIDTH * (overall / 100.0))) if overall > 0 else 0
-    ai_chars = int(round(filled * (ai_pct / overall))) if overall > 0 else 0
-    rules_chars = max(0, filled - ai_chars)
-    empty_chars = max(0, WIDTH - filled)
-    bar = "[" + ("░" * rules_chars) + ("█" * ai_chars) + ("·" * empty_chars) + "]"
-    html = f"""
-    <div style="background:#1a1f26;color:#fff;border-radius:12px;padding:10px 12px;
-                font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;">
-      <div>Общая уверенность: {overall:.0f}%</div>
-      <div>└ AI override: {sign}{ai_pct:.0f}% {bar}</div>
-    </div>
-    """
-    st.markdown(html, unsafe_allow_html=True)
+# ========= Performance Tracking =========
+try:
+    from core.performance_tracker import log_agent_performance, get_agent_performance
+except Exception:
+    def log_agent_performance(*args, **kwargs): pass
+    def get_agent_performance(*args, **kwargs): return None
 
-# ========= Вкладки =========
-tab_signals, tab_portfolio, tab_active, tab_stats = st.tabs([
-    "AI Сигналы", "💼 Портфель", "📋 Активные сделки", "📈 Статистика"
-])
-
-# === TAB 1: AI Сигналы ===
-with tab_signals:
-    st.subheader("AI agents")
-    st.markdown('<div class="panel">', unsafe_allow_html=True)
-
-    models = get_available_models()
-    model = st.radio("Выберите модель", options=models, index=0, horizontal=False, key="agent_radio")
-
-    ticker_input = st.text_input("Тикер", placeholder="Примеры ввода: AAPL • SPY • BTCUSD • C:EURUSD")
-    ticker = ticker_input.strip().upper()
-    symbol_for_engine = normalize_for_polygon(ticker)
-
-    run = st.button("Проанализировать", type="primary", key="main_analyze")
-    st.write(f"Mode: AI · Model: {model}")
-
-    if run and ticker:
-        try:
-            out = run_model_by_name(symbol_for_engine, model)
-
-            rec = out.get("recommendation")
-            if not rec and ("action" in out or "confidence" in out):
-                rec = {"action": out.get("action","WAIT"), "confidence": float(out.get("confidence",0.0))}
-            if not rec: rec = {"action":"WAIT","confidence":0.0}
-
-            action = str(rec.get("action","WAIT"))
-            conf_val = float(rec.get("confidence",0.0))
-            conf_pct_val = conf_val*100.0 if conf_val <= 1.0 else conf_val
-
-            st.session_state["last_overall_conf_pct"] = conf_pct_val
-            st.session_state["last_signal"] = {
-                "ticker": ticker,
-                "symbol_for_engine": symbol_for_engine,
-                "action": action,
-                "confidence": conf_pct_val,
-                "model": model,
-                "output": out
-            }
-
-            last_price = float(out.get("last_price", 0.0) or 0.0)
-
-            asset_title = resolve_asset_title_polygon(ticker, symbol_for_engine)
-            st.markdown(f"<div style='text-align:center; font-weight:800; letter-spacing:.2px; font-size:clamp(20px,3.6vw,34px); margin-top:4px;'>{asset_title}</div>", unsafe_allow_html=True)
-            st.markdown(f"<div style='font-size:3rem; font-weight:800; text-align:center; margin:6px 0 14px 0;'>${last_price:.2f}</div>", unsafe_allow_html=True)
-
-            lv = {k: float(out.get("levels", {}).get(k, 0.0)) for k in ("entry","sl","tp1","tp2","tp3")}
-            if action in ("BUY", "SHORT"):
-                tp1, tp2, tp3 = lv["tp1"], lv["tp2"], lv["tp3"]
-                t1, t2, t3 = sanitize_targets(action, lv["entry"], tp1, tp2, tp3)
-                lv["tp1"], lv["tp2"], lv["tp3"] = float(t1), float(t2), float(t3)
-
-            mode_text, entry_title = entry_mode_labels(action, lv.get("entry", last_price), last_price, ENTRY_MARKET_EPS)
-            header_text = "WAIT"
-            if action == "BUY": header_text = f"Long • {mode_text}"
-            elif action == "SHORT": header_text = f"Short • {mode_text}"
-
-            # Цветная шапка по направлению
-            bg = "linear-gradient(98deg, #1d2127, #1a1f26)"   # WAIT
-            if action == "BUY":   bg = "linear-gradient(98deg, #0e7a4f, #16b397)"
-            if action == "SHORT": bg = "linear-gradient(98deg, #b21f1f, #e5484d)"
-
-            st.markdown(f"""
-            <div class="signal-header" style="background:{bg};">
-              <div class="signal-badge">{'Long' if action=='BUY' else ('Short' if action=='SHORT' else 'Wait')}</div>
-              <div class="signal-title">{header_text}</div>
-              <div class="muted" style="margin-left:auto;">{int(round(conf_pct_val))}% confidence</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            now_utc = datetime.now(timezone.utc)
-            eod_utc = now_utc.replace(hour=23, minute=59, second=59, microsecond=0)
-            st.caption(f"As‑of: {now_utc.strftime('%Y-%m-%dT%H:%M:%SZ')} UTC • Valid until: {eod_utc.strftime('%Y-%m-%dT%H:%M:%SZ')} • Model: {model}")
-
-            render_confidence_breakdown_inline(ticker, conf_pct_val)
-
-            if action in ("BUY", "SHORT"):
-                c1, c2, c3 = st.columns(3)
-                with c1: st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
-                with c2: st.markdown(card_html("Stop Loss", f"{lv['sl']:.2f}", color="red"), unsafe_allow_html=True)
-                with c3: st.markdown(card_html("TP 1", f"{lv['tp1']:.2f}", sub=f"Probability {int(round(out.get('probs', {}).get('tp1', 0)*100))}%"), unsafe_allow_html=True)
-                c4, c5 = st.columns(2)
-                with c4: st.markdown(card_html("TP 2", f"{lv['tp2']:.2f}", sub=f"Probability {int(round(out.get('probs', {}).get('tp2', 0)*100))}%"), unsafe_allow_html=True)
-                with c5: st.markdown(card_html("TP 3", f"{lv['tp3']:.2f}", sub=f"Probability {int(round(out.get('probs', {}).get('tp3', 0)*100))}%"), unsafe_allow_html=True)
-                rr = rr_line(lv)
-                if rr:
-                    st.markdown(f"<div style='margin-top:6px; color:#FFA94D; font-weight:600;'>{rr}</div>", unsafe_allow_html=True)
-
-            # Фразы / дисклеймер
-            CUSTOM_PHRASES = {
-                "CONTEXT": {
-                    "support":["Цена у уровня покупательской активности. Оптимально — вход по ордеру из AI‑анализа с акцентом на рост; важен контроль риска и пересмотр плана при закреплении ниже зоны."],
-                    "resistance":["Риск коррекции повышен. Оптимально — короткий сценарий по ордеру из AI‑анализа; при прорыве и закреплении выше зоны — план пересмотреть."],
-                    "neutral":["Баланс. Действовать только по подтверждённому сигналу."]
-                },
-                "STOPLINE":["Стоп‑лосс: {sl}. Потенциальный риск ~{risk_pct}% от входа."],
-                "DISCLAIMER":"AI‑анализ носит информационный характер, не является инвестрекомендацией; рынок меняется быстро, прошлые результаты не гарантируют будущие."
-            }
-            ctx_key = "support" if action == "BUY" else ("resistance" if action == "SHORT" else "neutral")
-            st.markdown(f"<div class='panel' style='padding:10px;'>{CUSTOM_PHRASES['CONTEXT'][ctx_key][0]}</div>", unsafe_allow_html=True)
-            if action in ("BUY", "SHORT"):
-                stopline = CUSTOM_PHRASES["STOPLINE"][0].format(sl=_fmt(lv["sl"]), risk_pct=f"{abs(lv['entry']-lv['sl'])/max(1e-9,abs(lv['entry']))*100.0:.1f}")
-                st.markdown(f"<div class='panel-compact' style='padding:10px;'>{stopline}</div>", unsafe_allow_html=True)
-            st.caption(CUSTOM_PHRASES["DISCLAIMER"])
-
-            try:
-                log_agent_performance(model, ticker, datetime.today(), 0.0)
-            except Exception:
-                pass
-
-        except Exception as e:
-            st.error(f"Ошибка анализа: {e}")
-            st.exception(e)
-    else:
-        st.info("Введите тикер и нажмите «Проанализировать». Примеры формата показаны в поле ввода.")
-
+# ========= Authentication =========
+def show_auth_page():
+    st.markdown('<div class="main-content" style="max-width: 480px; margin: 0 auto;">', unsafe_allow_html=True)
+    
+    st.markdown('''
+        <div class="sidebar-header" style="text-align: center; margin-bottom: 3rem;">
+            <div class="sidebar-logo" style="font-size: 36px;">Arxora</div>
+            <div class="sidebar-subtitle">AI-Powered Trading Intelligence</div>
+        </div>
+    ''', unsafe_allow_html=True)
+    
+    tab1, tab2 = st.tabs(["Login", "Register"])
+    
+    with tab1:
+        st.markdown('<div class="content-card">', unsafe_allow_html=True)
+        st.markdown('<div class="card-title">Sign In</div>', unsafe_allow_html=True)
+        
+        username = st.text_input("Username", key="login_username")
+        password = st.text_input("Password", type="password", key="login_password")
+        
+        if st.button("Sign In", type="primary"):
+            user = db.login_user(username, password)
+            if user:
+                st.session_state.user = user
+                st.success("Login successful")
+                st.rerun()
+            else:
+                st.error("Invalid credentials")
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with tab2:
+        st.markdown('<div class="content-card">', unsafe_allow_html=True)
+        st.markdown('<div class="card-title">Create Account</div>', unsafe_allow_html=True)
+        
+        new_username = st.text_input("Username", key="reg_username")
+        new_password = st.text_input("Password", type="password", key="reg_password")
+        initial_capital = st.number_input("Initial Capital", min_value=1000, value=10000, step=1000)
+        
+        if st.button("Create Account", type="primary"):
+            if len((new_username or "").strip()) < 3:
+                st.error("Username must be at least 3 characters")
+            elif len((new_password or "").strip()) < 6:
+                st.error("Password must be at least 6 characters")
+            else:
+                user_id = db.register_user(new_username, new_password, initial_capital)
+                if user_id:
+                    user = db.login_user(new_username, new_password)
+                    if user:
+                        st.session_state.user = user
+                        st.success("Account created")
+                        st.rerun()
+                else:
+                    st.error("Username already taken")
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+    
     st.markdown('</div>', unsafe_allow_html=True)
 
-# === TAB 2: Портфель ===
-with tab_portfolio:
-    st.header("💼 Добавить сигнал в портфель")
-    st.markdown('<div class="panel">', unsafe_allow_html=True)
+# Require auth
+if 'user' not in st.session_state:
+    show_auth_page()
+    st.stop()
 
+# ========= Sidebar =========
+def render_sidebar():
+    user_info = db.get_user_info(st.session_state.user['user_id'])
+    stats = db.get_statistics(st.session_state.user['user_id'])
+    
+    pnl_change = user_info['current_capital'] - user_info['initial_capital']
+    pnl_percent = (pnl_change / max(1e-9, user_info['initial_capital'])) * 100
+    pnl_class = "positive" if pnl_change >= 0 else "negative"
+    pnl_sign = "+" if pnl_change >= 0 else ""
+    
+    sidebar_html = f'''
+    <div class="account-sidebar">
+        <div class="sidebar-header">
+            <div class="sidebar-logo">Arxora</div>
+            <div class="sidebar-subtitle">Trading Intelligence</div>
+        </div>
+        
+        <div class="account-info">
+            <div class="account-label">Current Capital</div>
+            <div class="account-value">${user_info['current_capital']:,.2f}</div>
+            <div class="account-change {pnl_class}">
+                {pnl_sign}${abs(pnl_change):,.2f} ({pnl_sign}{pnl_percent:.2f}%)
+            </div>
+        </div>
+        
+        <div class="stats-container">
+            <div class="stat-item">
+                <div class="stat-label">Total Trades</div>
+                <div class="stat-value">{stats['total_trades']}</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Win Rate</div>
+                <div class="stat-value">{stats['win_rate']:.1f}%</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Closed</div>
+                <div class="stat-value">{stats['closed_trades']}</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Avg P&L</div>
+                <div class="stat-value">{stats['avg_pnl']:.2f}%</div>
+            </div>
+        </div>
+        
+        <div class="sidebar-section">
+            <div class="section-title">Settings</div>
+            <div style="background: var(--surface); padding: 1rem; border-radius: 8px; border: 1px solid var(--border-light);">
+                <div style="font-size: 11px; color: var(--text-tertiary); margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 1px; font-weight: 600;">Min. Confidence</div>
+                <div style="font-size: 20px; font-weight: 700; color: var(--text-primary);">{st.session_state.get('min_confidence_filter', 60)}%</div>
+            </div>
+        </div>
+    </div>
+    '''
+    
+    st.markdown(sidebar_html, unsafe_allow_html=True)
+
+if 'min_confidence_filter' not in st.session_state:
+    st.session_state['min_confidence_filter'] = 60
+
+render_sidebar()
+
+# ========= Main Content =========
+st.markdown('<div class="main-content">', unsafe_allow_html=True)
+
+st.markdown('''
+    <div class="page-header">
+        <div class="page-title">Arxora</div>
+    </div>
+''', unsafe_allow_html=True)
+
+# Tabs
+tab_signals, tab_portfolio, tab_active, tab_stats = st.tabs([
+    "AI Signals",
+    "Portfolio",
+    "Active Trades",
+    "Statistics"
+])
+
+# TAB 1: AI Signals
+with tab_signals:
+    st.markdown('<div class="content-card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">Trading Agent Analysis</div>', unsafe_allow_html=True)
+    
+    models = get_available_models()
+    model = st.radio("Select AI Model", options=models, index=0, horizontal=True)
+    
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        ticker_input = st.text_input("Asset Symbol", placeholder="AAPL, SPY, BTCUSD, C:EURUSD")
+    with col2:
+        min_conf = st.number_input("Min. Confidence %", min_value=0, max_value=100, value=60, step=5)
+        st.session_state['min_confidence_filter'] = min_conf
+    
+    ticker = ticker_input.strip().upper()
+    symbol_for_engine = normalize_for_polygon(ticker)
+    
+    if st.button("Analyze Asset", type="primary"):
+        if not ticker:
+            st.warning("Please enter an asset symbol")
+        else:
+            with st.spinner(f"Analyzing {ticker}..."):
+                try:
+                    output = run_model_by_name(symbol_for_engine, model)
+                    
+                    rec = output.get("recommendation")
+                    if not rec and ("action" in output or "confidence" in output):
+                        rec = {"action": output.get("action", "WAIT"), "confidence": float(output.get("confidence", 0.0))}
+                    if not rec:
+                        rec = {"action": "WAIT", "confidence": 0.0}
+                    
+                    action = str(rec.get("action", "WAIT"))
+                    conf_val = float(rec.get("confidence", 0.0))
+                    conf_pct_val = conf_val * 100.0 if conf_val <= 1.0 else conf_val
+                    
+                    last_price = float(output.get("last_price", 0.0) or 0.0)
+                    
+                    lv = {k: float(output.get("levels", {}).get(k, 0.0)) for k in ("entry", "sl", "tp1", "tp2", "tp3")}
+                    
+                    if action in ("BUY", "SHORT"):
+                        tp1, tp2, tp3 = sanitize_targets(action, lv["entry"], lv["tp1"], lv["tp2"], lv["tp3"])
+                        lv["tp1"], lv["tp2"], lv["tp3"] = float(tp1), float(tp2), float(tp3)
+                    
+                    st.session_state["last_signal"] = {
+                        "ticker": ticker,
+                        "symbol_for_engine": symbol_for_engine,
+                        "action": action,
+                        "confidence": conf_pct_val,
+                        "model": model,
+                        "output": output,
+                        "last_price": last_price,
+                        "levels": lv
+                    }
+                    
+                    asset_title = resolve_asset_title_polygon(ticker, symbol_for_engine)
+                    direction_class = "long" if action == "BUY" else ("short" if action == "SHORT" else "wait")
+                    
+                    st.markdown('<div class="signal-card">', unsafe_allow_html=True)
+                    
+                    mode_text, entry_title = entry_mode_labels(action, lv.get("entry", last_price), last_price, ENTRY_MARKET_EPS)
+                    direction_text = f"{'LONG' if action == 'BUY' else ('SHORT' if action == 'SHORT' else 'WAIT')} — {mode_text}"
+                    
+                    st.markdown(f'''
+                        <div class="signal-header {direction_class}">
+                            <div class="signal-title">
+                                <div class="signal-badge {direction_class}">
+                                    {"BUY" if action == "BUY" else ("SELL" if action == "SHORT" else "WAIT")}
+                                </div>
+                                <div class="signal-name">{direction_text}</div>
+                            </div>
+                            <div class="signal-confidence">Confidence: {int(round(conf_pct_val))}%</div>
+                        </div>
+                    ''', unsafe_allow_html=True)
+                    
+                    st.markdown(f'''
+                        <div class="asset-display">
+                            <div class="asset-name">{asset_title}</div>
+                            <div class="asset-price">${last_price:.2f}</div>
+                        </div>
+                    ''', unsafe_allow_html=True)
+                    
+                    now_utc = datetime.now(timezone.utc)
+                    eod_utc = now_utc.replace(hour=23, minute=59, second=59, microsecond=0)
+                    st.caption(
+                        f"Analysis: {now_utc.strftime('%Y-%m-%d %H:%M UTC')} · "
+                        f"Valid until: {eod_utc.strftime('%H:%M UTC')} · "
+                        f"Model: {model}"
+                    )
+                    
+                    ai_delta = conf_pct_val - float(st.session_state.get("last_rules_pct", 44.0))
+                    st.markdown(f'''
+                        <div class="confidence-meter">
+                            <div class="confidence-header">
+                                <div class="confidence-label">Confidence Level</div>
+                                <div class="confidence-value">{conf_pct_val:.0f}%</div>
+                            </div>
+                            <div class="confidence-bar">
+                                <div class="confidence-fill" style="width: {conf_pct_val}%"></div>
+                            </div>
+                            <div class="confidence-info">
+                                AI Override: {ai_delta:+.0f}% · Combined algorithmic and machine learning analysis
+                            </div>
+                        </div>
+                    ''', unsafe_allow_html=True)
+                    
+                    if action in ("BUY", "SHORT"):
+                        probs = output.get('probs', {})
+                        
+                        st.markdown('<div class="levels-grid">', unsafe_allow_html=True)
+                        
+                        st.markdown(f'''
+                            <div class="level-card entry">
+                                <div class="level-label">{entry_title}</div>
+                                <div class="level-value">${lv["entry"]:.2f}</div>
+                            </div>
+                        ''', unsafe_allow_html=True)
+                        
+                        st.markdown(f'''
+                            <div class="level-card stoploss">
+                                <div class="level-label">Stop Loss</div>
+                                <div class="level-value">${lv["sl"]:.2f}</div>
+                                <div class="level-detail">Risk protection</div>
+                            </div>
+                        ''', unsafe_allow_html=True)
+                        
+                        st.markdown(f'''
+                            <div class="level-card">
+                                <div class="level-label">Take Profit 1</div>
+                                <div class="level-value">${lv["tp1"]:.2f}</div>
+                                <div class="level-detail">30% close · {int(round(probs.get('tp1', 0)*100))}% probability</div>
+                            </div>
+                        ''', unsafe_allow_html=True)
+                        
+                        st.markdown(f'''
+                            <div class="level-card">
+                                <div class="level-label">Take Profit 2</div>
+                                <div class="level-value">${lv["tp2"]:.2f}</div>
+                                <div class="level-detail">30% close · {int(round(probs.get('tp2', 0)*100))}% probability</div>
+                            </div>
+                        ''', unsafe_allow_html=True)
+                        
+                        st.markdown(f'''
+                            <div class="level-card">
+                                <div class="level-label">Take Profit 3</div>
+                                <div class="level-value">${lv["tp3"]:.2f}</div>
+                                <div class="level-detail">40% close · {int(round(probs.get('tp3', 0)*100))}% probability</div>
+                            </div>
+                        ''', unsafe_allow_html=True)
+                        
+                        st.markdown('</div>', unsafe_allow_html=True)
+                        
+                        rr = rr_line(lv)
+                        if rr:
+                            st.markdown(f'''
+                                <div style="text-align: center; padding: 1rem; background: rgba(22, 199, 132, 0.1); border-radius: 8px; margin: 1.5rem 0; border: 1px solid rgba(22, 199, 132, 0.2);">
+                                    <div style="font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 1px; font-weight: 600; margin-bottom: 0.5rem;">Risk/Reward Ratio</div>
+                                    <div style="font-size: 16px; font-weight: 700; color: var(--success);">{rr}</div>
+                                </div>
+                            ''', unsafe_allow_html=True)
+                    
+                    ctx_phrases = {
+                        "BUY": "Support zone detected. Optimal for long positions with defined risk management.",
+                        "SHORT": "Resistance zone identified. Favorable for short positions.",
+                        "WAIT": "Neutral market conditions. Await clear directional signal before entering position."
+                    }
+                    
+                    st.info(ctx_phrases.get(action, ctx_phrases["WAIT"]))
+                    
+                    st.caption(
+                        "AI analysis is for informational purposes only and does not constitute investment advice. "
+                        "Markets are dynamic; past performance does not guarantee future results."
+                    )
+                    
+                    st.markdown('</div>', unsafe_allow_html=True)
+                    
+                    try:
+                        log_agent_performance(model, ticker, datetime.today(), 0.0)
+                    except Exception:
+                        pass
+                
+                except Exception as e:
+                    st.error(f"Analysis failed: {str(e)}")
+                    if ARXORA_DEBUG:
+                        st.exception(e)
+    else:
+        st.info("Enter an asset symbol and click Analyze to generate AI-powered trading signals.")
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# TAB 2: Portfolio
+with tab_portfolio:
+    st.markdown('<div class="content-card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">Add Signal to Portfolio</div>', unsafe_allow_html=True)
+    
     if "last_signal" in st.session_state:
         sig = st.session_state["last_signal"]
         ticker = sig["ticker"]
         action = sig["action"]
         conf = sig["confidence"]
-        out = sig["output"]
-
+        lv = sig["levels"]
+        
         if action not in ("BUY", "SHORT"):
-            st.warning("⚠️ Последний сигнал — WAIT. Добавление в портфель недоступно.")
+            st.warning("Last signal was WAIT. Cannot add to portfolio.")
         elif not db.can_add_trade(st.session_state.user['user_id'], ticker):
-            st.warning(f"⚠️ По {ticker} уже есть активная сделка! Закройте её перед добавлением новой.")
+            st.warning(f"Active trade already exists for {ticker}.")
         else:
-            st.success(f"✅ Сигнал: **{ticker}** — **{action}** (Confidence: {conf:.0f}%)")
-
-            lv = {k: float(out.get("levels", {}).get(k, 0.0)) for k in ("entry","sl","tp1","tp2","tp3")}
-
-            st.write("**Параметры сделки:**")
-            st.write(f"- Entry: ${lv['entry']:.2f}")
-            st.write(f"- Stop Loss: ${lv['sl']:.2f}")
-            st.write(f"- TP1: ${lv['tp1']:.2f} (30% закрытие + SL в безубыток)")
-            st.write(f"- TP2: ${lv['tp2']:.2f} (ещё 30%)")
-            st.write(f"- TP3: ${lv['tp3']:.2f} (остаток 40%)")
-
-            position_percent = st.slider("% от капитала", min_value=5, max_value=50, value=10, step=5)
+            st.success(f"Signal Ready: {ticker} — {action} ({conf:.0f}% confidence)")
+            
+            st.markdown("### Trade Parameters")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Entry", f"${lv['entry']:.2f}")
+            with col2:
+                st.metric("Stop Loss", f"${lv['sl']:.2f}")
+            with col3:
+                risk_pct = abs(lv['entry'] - lv['sl']) / max(1e-9, abs(lv['entry'])) * 100
+                st.metric("Risk %", f"{risk_pct:.2f}%")
+            
+            st.markdown("### Position Sizing")
+            user_info = db.get_user_info(st.session_state.user['user_id'])
+            position_percent = st.slider("Portfolio Allocation (%)", min_value=5, max_value=50, value=10, step=5)
+            
             position_size = (user_info['current_capital'] * position_percent) / 100
-            st.info(f"Размер позиции: **${position_size:,.2f}** ({position_percent}% от капитала)")
-
+            st.info(f"Position Size: ${position_size:,.2f} ({position_percent}% of capital)")
+            
+            st.markdown("### Profit/Loss Projections")
             potential_profit = position_size * abs(lv['tp1'] - lv['entry']) / max(1e-9, abs(lv['entry']))
             potential_loss = position_size * abs(lv['entry'] - lv['sl']) / max(1e-9, abs(lv['entry']))
-
+            
             col1, col2 = st.columns(2)
-            col1.success(f"Потенциальная прибыль (TP1): **${potential_profit:.2f}**")
-            col2.error(f"Потенциальный убыток (SL): **${potential_loss:.2f}**")
-
-            if conf < min_confidence_filter:
-                st.warning(f"⚠️ Confidence ({conf:.0f}%) ниже фильтра ({min_confidence_filter}%). Рекомендуется не добавлять.")
-
-            if st.button("✅ ДОБАВИТЬ В ПОРТФЕЛЬ", type="primary", use_container_width=True):
+            with col1:
+                st.success(f"Potential Profit (TP1): ${potential_profit:.2f}")
+            with col2:
+                st.error(f"Potential Loss (SL): ${potential_loss:.2f}")
+            
+            if conf < st.session_state['min_confidence_filter']:
+                st.warning(f"Signal confidence ({conf:.0f}%) is below threshold ({st.session_state['min_confidence_filter']}%).")
+            
+            if st.button("Add to Portfolio", type="primary"):
                 try:
                     signal_data = {
                         'ticker': ticker,
@@ -571,154 +1351,187 @@ with tab_portfolio:
                         'tp1': lv['tp1'],
                         'tp2': lv['tp2'],
                         'tp3': lv['tp3'],
-                        'tp1_prob': float(out.get('probs', {}).get('tp1', 0) * 100),
-                        'tp2_prob': float(out.get('probs', {}).get('tp2', 0) * 100),
-                        'tp3_prob': float(out.get('probs', {}).get('tp3', 0) * 100),
+                        'tp1_prob': float(sig['output'].get('probs', {}).get('tp1', 0) * 100),
+                        'tp2_prob': float(sig['output'].get('probs', {}).get('tp2', 0) * 100),
+                        'tp3_prob': float(sig['output'].get('probs', {}).get('tp3', 0) * 100),
                         'confidence': int(conf),
                         'model': sig['model']
                     }
                     trade_id = db.add_trade(st.session_state.user['user_id'], signal_data, position_percent)
-                    st.success(f"🎉 Сделка добавлена в портфель! Trade ID: #{trade_id}")
-                    st.balloons()
+                    st.success(f"Trade successfully added! Trade ID: #{trade_id}")
                     del st.session_state["last_signal"]
                     st.rerun()
                 except ValueError as e:
                     st.error(str(e))
     else:
-        st.info("📊 Сначала проанализируйте тикер во вкладке 'AI Сигналы', затем добавьте сигнал в портфель здесь.")
-
+        st.info("No signal available. Analyze an asset in the AI Signals tab first.")
+    
     st.markdown('</div>', unsafe_allow_html=True)
 
-# === TAB 3: Активные сделки ===
+# TAB 3: Active Trades
 with tab_active:
-    st.header("📋 Активные сделки")
-    st.markdown('<div class="panel">', unsafe_allow_html=True)
-
+    st.markdown('<div class="content-card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">Active Trades Management</div>', unsafe_allow_html=True)
+    
     active_trades = db.get_active_trades(st.session_state.user['user_id'])
+    
     if not active_trades:
-        st.info("У вас пока нет активных сделок. Добавьте сигнал во вкладке 'Портфель'!")
+        st.info("No active trades. Add a signal from the Portfolio tab.")
     else:
         for trade in active_trades:
-            sl_status = "Безубыток" if trade['sl_breakeven'] else f"${trade['stop_loss']:.2f}"
-            with st.expander(f"🔹 {trade['ticker']} — {trade['direction']} | Остаток: {trade['remaining_percent']:.0f}% | SL: {sl_status}"):
-                col1, col2, col3 = st.columns(3)
+            sl_status = "Breakeven" if trade['sl_breakeven'] else f"${trade['stop_loss']:.2f}"
+            
+            with st.expander(f"{trade['ticker']} — {trade['direction']} | {trade['remaining_percent']:.0f}% remaining | SL: {sl_status}"):
+                col1, col2, col3, col4 = st.columns(4)
                 with col1:
                     st.metric("Entry", f"${trade['entry_price']:.2f}")
-                    st.metric("Position", f"${trade['position_size']:.2f}")
                 with col2:
-                    st.metric("Model", trade['model_used'])
-                    st.metric("Confidence", f"{trade['confidence']}%")
+                    st.metric("Position", f"${trade['position_size']:.2f}")
                 with col3:
-                    st.write("**Progress:**")
-                    st.write(f"TP1: {'✅' if trade['tp1_closed'] else '⏳'} (30%)")
-                    st.write(f"TP2: {'✅' if trade['tp2_closed'] else '⏳'} (30%)")
-                    st.write(f"TP3: {'✅' if trade['tp3_closed'] else '⏳'} (40%)")
-
-                st.divider()
-
-                current_price = st.number_input(
-                    "Текущая цена (для симуляции закрытия)",
-                    value=float(trade['entry_price']),
-                    key=f"price_{trade['trade_id']}"
-                )
-
+                    st.metric("Model", trade['model_used'])
+                with col4:
+                    st.metric("Confidence", f"{trade['confidence']}%")
+                
+                st.markdown("### Take Profit Progress")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    status = "✓" if trade['tp1_closed'] else "○"
+                    st.markdown(f"**{status} TP1** (30%)")
+                with col2:
+                    status = "✓" if trade['tp2_closed'] else "○"
+                    st.markdown(f"**{status} TP2** (30%)")
+                with col3:
+                    status = "✓" if trade['tp3_closed'] else "○"
+                    st.markdown(f"**{status} TP3** (40%)")
+                
+                st.markdown("---")
+                
+                st.markdown("### Trade Management")
+                current_price = st.number_input("Current Price", value=float(trade['entry_price']), key=f"price_{trade['trade_id']}")
+                
                 if trade['direction'] == 'LONG':
                     if not trade['tp1_closed'] and current_price >= trade['take_profit_1']:
-                        st.success("🎯 TP1 достигнут! Закрыть 30% + перенести SL в безубыток?")
-                        if st.button("Закрыть TP1", key=f"tp1_{trade['trade_id']}"):
-                            db.partial_close_trade(trade['trade_id'], current_price, 'tp1'); st.rerun()
+                        st.success("TP1 Hit! Close 30% and move SL to breakeven?")
+                        if st.button("Close TP1", key=f"tp1_{trade['trade_id']}"):
+                            db.partial_close_trade(trade['trade_id'], current_price, 'tp1')
+                            st.rerun()
                     elif trade['tp1_closed'] and not trade['tp2_closed'] and current_price >= trade['take_profit_2']:
-                        st.success("🎯 TP2 достигнут! Закрыть ещё 30%?")
-                        if st.button("Закрыть TP2", key=f"tp2_{trade['trade_id']}"):
-                            db.partial_close_trade(trade['trade_id'], current_price, 'tp2'); st.rerun()
+                        st.success("TP2 Hit! Close another 30%?")
+                        if st.button("Close TP2", key=f"tp2_{trade['trade_id']}"):
+                            db.partial_close_trade(trade['trade_id'], current_price, 'tp2')
+                            st.rerun()
                     elif trade['tp2_closed'] and not trade['tp3_closed'] and current_price >= trade['take_profit_3']:
-                        st.success("🎯 TP3 достигнут! Закрыть остаток (40%)?")
-                        if st.button("Закрыть TP3", key=f"tp3_{trade['trade_id']}"):
-                            db.partial_close_trade(trade['trade_id'], current_price, 'tp3'); st.rerun()
+                        st.success("TP3 Hit! Close remaining 40%?")
+                        if st.button("Close TP3", key=f"tp3_{trade['trade_id']}"):
+                            db.partial_close_trade(trade['trade_id'], current_price, 'tp3')
+                            st.rerun()
                     elif (trade['sl_breakeven'] and current_price <= trade['entry_price']) or (not trade['sl_breakeven'] and current_price <= trade['stop_loss']):
-                        st.error("⚠️ Stop Loss сработал!")
-                        if st.button("Закрыть по SL", key=f"sl_{trade['trade_id']}"):
-                            db.full_close_trade(trade['trade_id'], current_price, "SL_HIT"); st.rerun()
-                elif trade['direction'] == 'SHORT':
+                        st.error("Stop Loss Triggered!")
+                        if st.button("Close at SL", key=f"sl_{trade['trade_id']}"):
+                            db.full_close_trade(trade['trade_id'], current_price, "SL_HIT")
+                            st.rerun()
+                else:
                     if not trade['tp1_closed'] and current_price <= trade['take_profit_1']:
-                        st.success("🎯 TP1 достигнут! Закрыть 30% + перенести SL в безубыток?")
-                        if st.button("Закрыть TP1", key=f"tp1_{trade['trade_id']}"):
-                            db.partial_close_trade(trade['trade_id'], current_price, 'tp1'); st.rerun()
+                        st.success("TP1 Hit! Close 30% and move SL to breakeven?")
+                        if st.button("Close TP1", key=f"tp1_{trade['trade_id']}"):
+                            db.partial_close_trade(trade['trade_id'], current_price, 'tp1')
+                            st.rerun()
                     elif trade['tp1_closed'] and not trade['tp2_closed'] and current_price <= trade['take_profit_2']:
-                        st.success("🎯 TP2 достигнут! Закрыть ещё 30%?")
-                        if st.button("Закрыть TP2", key=f"tp2_{trade['trade_id']}"):
-                            db.partial_close_trade(trade['trade_id'], current_price, 'tp2'); st.rerun()
+                        st.success("TP2 Hit! Close another 30%?")
+                        if st.button("Close TP2", key=f"tp2_{trade['trade_id']}"):
+                            db.partial_close_trade(trade['trade_id'], current_price, 'tp2')
+                            st.rerun()
                     elif trade['tp2_closed'] and not trade['tp3_closed'] and current_price <= trade['take_profit_3']:
-                        st.success("🎯 TP3 достигнут! Закрыть остаток (40%)?")
-                        if st.button("Закрыть TP3", key=f"tp3_{trade['trade_id']}"):
-                            db.partial_close_trade(trade['trade_id'], current_price, 'tp3'); st.rerun()
+                        st.success("TP3 Hit! Close remaining 40%?")
+                        if st.button("Close TP3", key=f"tp3_{trade['trade_id']}"):
+                            db.partial_close_trade(trade['trade_id'], current_price, 'tp3')
+                            st.rerun()
                     elif (trade['sl_breakeven'] and current_price >= trade['entry_price']) or (not trade['sl_breakeven'] and current_price >= trade['stop_loss']):
-                        st.error("⚠️ Stop Loss сработал!")
-                        if st.button("Закрыть по SL", key=f"sl_{trade['trade_id']}"):
-                            db.full_close_trade(trade['trade_id'], current_price, "SL_HIT"); st.rerun()
-
-                if st.button("🔴 Закрыть всю позицию вручную", key=f"manual_{trade['trade_id']}"):
-                    db.full_close_trade(trade['trade_id'], current_price, "MANUAL"); st.rerun()
-
+                        st.error("Stop Loss Triggered!")
+                        if st.button("Close at SL", key=f"sl_{trade['trade_id']}"):
+                            db.full_close_trade(trade['trade_id'], current_price, "SL_HIT")
+                            st.rerun()
+                
+                st.markdown("---")
+                if st.button("Close Entire Position", key=f"manual_{trade['trade_id']}"):
+                    db.full_close_trade(trade['trade_id'], current_price, "MANUAL")
+                    st.rerun()
+    
     st.markdown('</div>', unsafe_allow_html=True)
 
-# === TAB 4: Статистика ===
+# TAB 4: Statistics
 with tab_stats:
-    st.header("📈 Статистика портфеля")
-    st.markdown('<div class="panel">', unsafe_allow_html=True)
-
+    st.markdown('<div class="content-card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">Performance Analytics</div>', unsafe_allow_html=True)
+    
+    user_info = db.get_user_info(st.session_state.user['user_id'])
+    stats = db.get_statistics(st.session_state.user['user_id'])
+    
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Всего сделок", stats['total_trades'])
-    col2.metric("Win Rate", f"{stats['win_rate']:.1f}%")
-    col3.metric("Закрыто", stats['closed_trades'])
-    col4.metric("Средний P&L", f"{stats['avg_pnl']:.2f}%")
-
+    with col1:
+        st.metric("Total Trades", stats['total_trades'])
+    with col2:
+        st.metric("Win Rate", f"{stats['win_rate']:.1f}%")
+    with col3:
+        st.metric("Closed Trades", stats['closed_trades'])
+    with col4:
+        st.metric("Avg P&L", f"{stats['avg_pnl']:.2f}%")
+    
+    st.markdown("---")
+    
     closed_trades = db.get_closed_trades(st.session_state.user['user_id'])
+    
     if closed_trades and pd:
         df = pd.DataFrame(closed_trades)
         df['cumulative_pnl'] = df['total_pnl_dollars'].cumsum()
         df['equity'] = user_info['initial_capital'] + df['cumulative_pnl']
-
-        st.subheader("Equity Curve")
+        
+        st.markdown("### Equity Curve")
+        st.markdown('<div class="chart-card">', unsafe_allow_html=True)
         try:
             st.line_chart(df.set_index('close_date')['equity'])
         except Exception:
             st.line_chart(df['equity'])
-
-        st.subheader("История сделок")
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        st.markdown("### Trade History")
+        display_cols = ['ticker', 'direction', 'entry_price', 'close_price', 'close_reason', 'total_pnl_percent', 'total_pnl_dollars', 'close_date']
+        
         try:
-            st.dataframe(
-                df[[
-                    'ticker', 'direction', 'entry_price', 'close_price',
-                    'close_reason', 'total_pnl_percent', 'total_pnl_dollars', 'close_date'
-                ]].style.format({
-                    'entry_price': '${:.2f}',
-                    'close_price': '${:.2f}',
-                    'total_pnl_percent': '{:.2f}%',
-                    'total_pnl_dollars': '${:.2f}'
-                })
-            )
+            styled_df = df[display_cols].style.format({
+                'entry_price': '${:.2f}',
+                'close_price': '${:.2f}',
+                'total_pnl_percent': '{:.2f}%',
+                'total_pnl_dollars': '${:.2f}'
+            })
+            st.dataframe(styled_df, use_container_width=True)
         except Exception:
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(df[display_cols], use_container_width=True)
     else:
-        st.info("История сделок пуста. Закройте хотя бы одну сделку для отображения статистики.")
-
+        st.info("No closed trades yet.")
+    
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ========= Footer / About =========
-st.markdown("---")
-st.markdown(
-    """
-    <div class="panel">
-        <h4 style="font-weight: 600; margin: 0 0 8px 0;">О проекте</h4>
-        <p class="muted" style="margin:0;">
-        Arxora — современное решение, которое помогает трейдерам принимать точные и обоснованные решения
-        с помощью ансамбля моделей и калибровки уверенности. Система автоматизирует анализ, повышает качество входов
-        и помогает управлять рисками. Несколько ИИ-агентов с разными подходами: трендовые и контртрендовые стратегии. 
-        Octopus-оркестратор взвешивает мнения всех агентов и выдает единый план сделки. 
-        AI Override — это встроенный механизм, который позволяет искусственному интеллекту вмешиваться в работу базовых алгоритмов и принимать более точные решения в моменты, когда рынок ведёт себя нестандартно.
-        </p>
+st.markdown('</div>', unsafe_allow_html=True)
+
+# Footer
+st.markdown('''
+    <div class="content-card" style="margin-top: 2rem;">
+        <div style="font-size: 14px; font-weight: 600; color: var(--text-primary); margin-bottom: 0.75rem;">About Arxora</div>
+        <div style="font-size: 13px; color: var(--text-secondary); line-height: 1.7;">
+            Professional AI-powered trading platform combining algorithmic strategies with machine learning.
+            Features ensemble analysis, confidence calibration, and comprehensive risk management.
+        </div>
     </div>
-    """,
+''', unsafe_allow_html=True)
+
+st.markdown(
+    '<div style="text-align: center; color: var(--text-tertiary); font-size: 11px; margin: 2rem 0 1rem 0; text-transform: uppercase; letter-spacing: 1px; font-weight: 600;">'
+    'Arxora · Professional Trading Intelligence · 2025'
+    '</div>',
     unsafe_allow_html=True
 )
+
+if st.button("Logout"):
+    del st.session_state.user
+    st.rerun()
