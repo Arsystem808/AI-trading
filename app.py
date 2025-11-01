@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# app.py — Arxora Trading Platform (Professional Clean Design)
+# app.py — Arxora Trading Platform (Fixed HTML Rendering)
 
 import os
 import re
@@ -52,769 +52,659 @@ MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT",  "0.0010"))
 # ========= Page Config =========
 st.set_page_config(
     page_title="Arxora",
-    page_icon="assets/arxora_favicon_512.png",
+    page_icon="📊",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# ========= Professional Theme (Based on Screenshots) =========
-def inject_professional_theme():
-    """Professional trading platform theme - clean, minimal, no emojis"""
-    
-    css = """
-    <style>
-    /* ==================== PROFESSIONAL TRADING PLATFORM ==================== */
-    
-    :root {
-        --bg-primary: #000000;
-        --bg-secondary: #0a0a0a;
-        --bg-tertiary: #141414;
-        --surface: #1a1a1a;
-        --surface-elevated: #202020;
-        --surface-hover: #252525;
-        
-        --accent-primary: #16c784;
-        --accent-secondary: #00d4ff;
-        --accent-blue: #5B7FF9;
-        
-        --success: #16c784;
-        --danger: #ea3943;
-        --warning: #ffa94d;
-        
-        --text-primary: #ffffff;
-        --text-secondary: #a0a0a0;
-        --text-tertiary: #707070;
-        --text-disabled: #404040;
-        
-        --border: rgba(255, 255, 255, 0.1);
-        --border-light: rgba(255, 255, 255, 0.05);
-        
-        --sidebar-width: 300px;
-    }
-    
-    * {
-        font-feature-settings: "tnum" 1;
-        -webkit-font-smoothing: antialiased;
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
-    }
-    
-    html, body, .stApp {
-        background: var(--bg-primary) !important;
-        color: var(--text-primary);
-        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
-        font-size: 15px;
-    }
-    
-    /* Hide Streamlit UI */
-    #MainMenu, footer, header {visibility: hidden;}
-    .stDeployButton {display: none;}
-    
-    /* Scrollbar */
-    ::-webkit-scrollbar {width: 6px; height: 6px;}
-    ::-webkit-scrollbar-track {background: var(--bg-secondary);}
-    ::-webkit-scrollbar-thumb {background: var(--text-disabled); border-radius: 3px;}
-    ::-webkit-scrollbar-thumb:hover {background: var(--text-tertiary);}
-    
-    /* ==================== SIDEBAR ==================== */
-    
-    .account-sidebar {
-        position: fixed;
-        left: 0;
-        top: 0;
-        bottom: 0;
-        width: var(--sidebar-width);
-        background: var(--bg-secondary);
-        border-right: 1px solid var(--border);
-        padding: 2rem 1.5rem;
-        overflow-y: auto;
-        z-index: 1000;
-    }
-    
-    .sidebar-header {
-        margin-bottom: 2rem;
-    }
-    
-    .sidebar-logo {
-        font-size: 24px;
-        font-weight: 700;
-        color: var(--text-primary);
-        margin-bottom: 0.5rem;
-        letter-spacing: -0.5px;
-    }
-    
-    .sidebar-subtitle {
-        font-size: 11px;
-        color: var(--text-tertiary);
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        font-weight: 600;
-    }
-    
-    .account-info {
-        background: var(--surface);
-        border-radius: 12px;
-        padding: 1.5rem;
-        margin-bottom: 1.5rem;
-        border: 1px solid var(--border-light);
-    }
-    
-    .account-label {
-        font-size: 11px;
-        color: var(--text-tertiary);
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        font-weight: 600;
-        margin-bottom: 0.75rem;
-    }
-    
-    .account-value {
-        font-size: 32px;
-        font-weight: 700;
-        color: var(--text-primary);
-        margin-bottom: 0.5rem;
-        letter-spacing: -1px;
-    }
-    
-    .account-change {
-        font-size: 14px;
-        font-weight: 600;
-    }
-    
-    .account-change.positive {color: var(--success);}
-    .account-change.negative {color: var(--danger);}
-    
-    .stats-container {
-        display: grid;
-        grid-template-columns: repeat(2, 1fr);
-        gap: 1rem;
-        margin-bottom: 1.5rem;
-    }
-    
-    .stat-item {
-        background: var(--surface);
-        border-radius: 8px;
-        padding: 1rem;
-        border: 1px solid var(--border-light);
-    }
-    
-    .stat-label {
-        font-size: 10px;
-        color: var(--text-tertiary);
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        font-weight: 600;
-        margin-bottom: 0.5rem;
-    }
-    
-    .stat-value {
-        font-size: 20px;
-        font-weight: 700;
-        color: var(--text-primary);
-    }
-    
-    .sidebar-section {
-        margin: 2rem 0;
-        padding-top: 2rem;
-        border-top: 1px solid var(--border-light);
-    }
-    
-    .section-title {
-        font-size: 11px;
-        color: var(--text-tertiary);
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        font-weight: 600;
-        margin-bottom: 1rem;
-    }
-    
-    .sidebar-button {
-        width: 100%;
-        padding: 0.875rem;
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        color: var(--text-secondary);
-        font-size: 14px;
-        font-weight: 600;
-        cursor: pointer;
-        transition: all 0.2s;
-        text-align: center;
-        margin-top: 0.75rem;
-    }
-    
-    .sidebar-button:hover {
-        background: var(--surface-hover);
-        border-color: var(--border);
-    }
-    
-    /* ==================== MAIN CONTENT ==================== */
-    
-    .main-content {
-        margin-left: var(--sidebar-width);
-        padding: 2rem 3rem;
-        min-height: 100vh;
-    }
-    
-    @media (max-width: 1024px) {
-        .main-content {
-            margin-left: 0;
-            padding: 1.5rem;
-        }
-        .account-sidebar {
-            transform: translateX(-100%);
-        }
-    }
-    
-    /* ==================== HEADER ==================== */
-    
-    .page-header {
-        margin-bottom: 2rem;
-    }
-    
-    .page-title {
-        font-size: 32px;
-        font-weight: 700;
-        color: var(--text-primary);
-        margin-bottom: 0.5rem;
-        letter-spacing: -0.5px;
-    }
-    
-    .page-nav {
-        display: flex;
-        gap: 2rem;
-        margin-top: 1rem;
-    }
-    
-    .nav-link {
-        color: var(--text-tertiary);
-        font-size: 14px;
-        font-weight: 600;
-        cursor: pointer;
-        transition: color 0.2s;
-    }
-    
-    .nav-link:hover {
-        color: var(--text-secondary);
-    }
-    
-    .nav-link.active {
-        color: var(--text-primary);
-        border-bottom: 2px solid var(--accent-primary);
-        padding-bottom: 0.5rem;
-    }
-    
-    /* ==================== CARDS ==================== */
-    
-    .content-card {
-        background: var(--surface);
-        border-radius: 16px;
-        border: 1px solid var(--border);
-        padding: 2rem;
-        margin-bottom: 1.5rem;
-    }
-    
-    .card-title {
-        font-size: 20px;
-        font-weight: 700;
-        color: var(--text-primary);
-        margin-bottom: 1.5rem;
-    }
-    
-    /* ==================== SIGNAL DISPLAY ==================== */
-    
-    .signal-card {
-        background: var(--bg-secondary);
-        border-radius: 16px;
-        padding: 2rem;
-        margin: 1.5rem 0;
-        border: 1px solid var(--border);
-    }
-    
-    .signal-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 1.25rem 1.5rem;
-        background: var(--success);
-        background: linear-gradient(90deg, rgba(22, 199, 132, 0.2), rgba(22, 199, 132, 0.05));
-        border-radius: 12px;
-        margin-bottom: 2rem;
-        border: 1px solid rgba(22, 199, 132, 0.3);
-    }
-    
-    .signal-header.short {
-        background: linear-gradient(90deg, rgba(234, 57, 67, 0.2), rgba(234, 57, 67, 0.05));
-        border-color: rgba(234, 57, 67, 0.3);
-    }
-    
-    .signal-header.wait {
-        background: linear-gradient(90deg, rgba(112, 112, 112, 0.2), rgba(112, 112, 112, 0.05));
-        border-color: rgba(112, 112, 112, 0.3);
-    }
-    
-    .signal-title {
-        display: flex;
-        align-items: center;
-        gap: 1rem;
-    }
-    
-    .signal-badge {
-        padding: 0.5rem 1rem;
-        border-radius: 6px;
-        font-size: 13px;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-    }
-    
-    .signal-badge.long {
-        background: var(--success);
-        color: #000;
-    }
-    
-    .signal-badge.short {
-        background: var(--danger);
-        color: #fff;
-    }
-    
-    .signal-badge.wait {
-        background: var(--text-disabled);
-        color: var(--text-secondary);
-    }
-    
-    .signal-name {
-        font-size: 18px;
-        font-weight: 600;
-        color: var(--text-primary);
-    }
-    
-    .signal-confidence {
-        font-size: 16px;
-        font-weight: 600;
-        color: var(--text-secondary);
-    }
-    
-    .asset-display {
-        text-align: center;
-        margin: 2rem 0;
-    }
-    
-    .asset-name {
-        font-size: 18px;
-        font-weight: 600;
-        color: var(--text-secondary);
-        margin-bottom: 1rem;
-    }
-    
-    .asset-price {
-        font-size: 56px;
-        font-weight: 700;
-        color: var(--text-primary);
-        letter-spacing: -2px;
-    }
-    
-    /* ==================== LEVELS GRID ==================== */
-    
-    .levels-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-        gap: 1.25rem;
-        margin: 2rem 0;
-    }
-    
-    .level-card {
-        background: var(--surface);
-        border-radius: 12px;
-        padding: 1.5rem;
-        border: 1px solid var(--border);
-        transition: all 0.2s;
-    }
-    
-    .level-card:hover {
-        border-color: rgba(255, 255, 255, 0.15);
-        transform: translateY(-2px);
-    }
-    
-    .level-card.entry {
-        border-color: var(--success);
-        background: linear-gradient(135deg, rgba(22, 199, 132, 0.1), rgba(22, 199, 132, 0.02));
-    }
-    
-    .level-card.stoploss {
-        border-color: var(--danger);
-        background: linear-gradient(135deg, rgba(234, 57, 67, 0.1), rgba(234, 57, 67, 0.02));
-    }
-    
-    .level-label {
-        font-size: 11px;
-        color: var(--text-tertiary);
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        font-weight: 600;
-        margin-bottom: 0.875rem;
-    }
-    
-    .level-value {
-        font-size: 28px;
-        font-weight: 700;
-        color: var(--text-primary);
-        margin-bottom: 0.5rem;
-    }
-    
-    .level-detail {
-        font-size: 13px;
-        color: var(--text-secondary);
-    }
-    
-    /* ==================== CONFIDENCE METER ==================== */
-    
-    .confidence-meter {
-        background: var(--bg-tertiary);
-        border-radius: 12px;
-        padding: 1.5rem;
-        margin: 2rem 0;
-        border: 1px solid var(--border-light);
-    }
-    
-    .confidence-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 1rem;
-    }
-    
-    .confidence-label {
-        font-size: 13px;
-        color: var(--text-tertiary);
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-    }
-    
-    .confidence-value {
-        font-size: 24px;
-        font-weight: 700;
-        color: var(--text-primary);
-    }
-    
-    .confidence-bar {
-        height: 8px;
-        background: rgba(255, 255, 255, 0.05);
-        border-radius: 4px;
-        overflow: hidden;
-        margin-bottom: 1rem;
-    }
-    
-    .confidence-fill {
-        height: 100%;
-        background: var(--success);
-        transition: width 0.6s ease;
-    }
-    
-    .confidence-info {
-        font-size: 12px;
-        color: var(--text-tertiary);
-        font-family: "SF Mono", monospace;
-    }
-    
-    /* ==================== CHART ==================== */
-    
-    .chart-card {
-        background: var(--surface);
-        border-radius: 12px;
-        padding: 1.5rem;
-        border: 1px solid var(--border);
-        margin: 1.5rem 0;
-    }
-    
-    .chart-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 1.5rem;
-    }
-    
-    .chart-title {
-        font-size: 16px;
-        font-weight: 600;
-        color: var(--text-primary);
-    }
-    
-    .chart-timeframes {
-        display: flex;
-        gap: 0.5rem;
-    }
-    
-    .timeframe-btn {
-        padding: 0.375rem 0.875rem;
-        background: transparent;
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        color: var(--text-tertiary);
-        font-size: 12px;
-        font-weight: 600;
-        cursor: pointer;
-        transition: all 0.2s;
-    }
-    
-    .timeframe-btn:hover {
-        border-color: var(--text-secondary);
-        color: var(--text-secondary);
-    }
-    
-    .timeframe-btn.active {
-        background: var(--accent-primary);
-        border-color: var(--accent-primary);
-        color: #000;
-    }
-    
-    /* ==================== INPUTS ==================== */
-    
-    .stTextInput input, .stNumberInput input {
-        background: var(--surface) !important;
-        border: 1px solid var(--border) !important;
-        border-radius: 8px !important;
-        color: var(--text-primary) !important;
-        font-size: 15px !important;
-        padding: 0.875rem !important;
-    }
-    
-    .stTextInput input:focus, .stNumberInput input:focus {
-        border-color: var(--accent-primary) !important;
-        outline: none !important;
-    }
-    
-    .stTextInput label, .stNumberInput label {
-        color: var(--text-secondary) !important;
-        font-weight: 600 !important;
-        font-size: 13px !important;
-        text-transform: uppercase !important;
-        letter-spacing: 1px !important;
-        margin-bottom: 0.5rem !important;
-    }
-    
-    /* ==================== BUTTONS ==================== */
-    
-    .stButton > button {
-        width: 100%;
-        padding: 1rem 2rem !important;
-        background: var(--accent-primary) !important;
-        color: #000 !important;
-        border: none !important;
-        border-radius: 8px !important;
-        font-weight: 700 !important;
-        font-size: 15px !important;
-        text-transform: uppercase !important;
-        letter-spacing: 1px !important;
-        transition: all 0.2s !important;
-    }
-    
-    .stButton > button:hover {
-        background: #14b578 !important;
-        transform: translateY(-1px);
-    }
-    
-    .stButton > button[kind="primary"] {
-        background: var(--accent-blue) !important;
-        color: #fff !important;
-    }
-    
-    .stButton > button[kind="primary"]:hover {
-        background: #4a6df0 !important;
-    }
-    
-    /* ==================== RADIO BUTTONS ==================== */
-    
-    .stRadio > div {
-        display: flex;
-        gap: 1rem;
-        flex-wrap: wrap;
-    }
-    
-    .stRadio > div > label {
-        background: var(--surface) !important;
-        border: 1px solid var(--border) !important;
-        border-radius: 8px !important;
-        padding: 0.875rem 1.5rem !important;
-        color: var(--text-secondary) !important;
-        font-weight: 600 !important;
-        cursor: pointer !important;
-        transition: all 0.2s !important;
-    }
-    
-    .stRadio > div > label:hover {
-        border-color: var(--text-secondary) !important;
-    }
-    
-    .stRadio > div > label[data-checked="true"] {
-        background: var(--accent-primary) !important;
-        border-color: var(--accent-primary) !important;
-        color: #000 !important;
-    }
-    
-    /* ==================== TABS ==================== */
-    
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 1rem;
-        background: transparent;
-        border-bottom: 1px solid var(--border);
-    }
-    
-    .stTabs [data-baseweb="tab"] {
-        background: transparent;
-        color: var(--text-tertiary);
-        font-weight: 600;
-        font-size: 14px;
-        padding: 1rem 0;
-        border: none;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-    }
-    
-    .stTabs [data-baseweb="tab"]:hover {
-        color: var(--text-secondary);
-    }
-    
-    .stTabs [aria-selected="true"] {
-        color: var(--text-primary) !important;
-        border-bottom: 2px solid var(--accent-primary) !important;
-    }
-    
-    /* ==================== ALERTS ==================== */
-    
-    .stAlert {
-        background: var(--surface) !important;
-        border: 1px solid var(--border) !important;
-        border-radius: 8px !important;
-        padding: 1rem !important;
-        border-left-width: 3px !important;
-    }
-    
-    .stInfo {
-        border-left-color: var(--accent-blue) !important;
-    }
-    
-    .stWarning {
-        border-left-color: var(--warning) !important;
-    }
-    
-    .stError {
-        border-left-color: var(--danger) !important;
-    }
-    
-    .stSuccess {
-        border-left-color: var(--success) !important;
-    }
-    
-    /* ==================== METRICS ==================== */
-    
-    [data-testid="stMetric"] {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 1.25rem;
-    }
-    
-    [data-testid="stMetric"] label {
-        font-size: 11px !important;
-        color: var(--text-tertiary) !important;
-        font-weight: 600 !important;
-        text-transform: uppercase !important;
-        letter-spacing: 1px !important;
-    }
-    
-    [data-testid="stMetric"] [data-testid="stMetricValue"] {
-        font-size: 28px !important;
-        font-weight: 700 !important;
-        color: var(--text-primary) !important;
-    }
-    
-    /* ==================== DATAFRAMES ==================== */
-    
-    .stDataFrame {
-        border-radius: 12px;
-        overflow: hidden;
-        border: 1px solid var(--border);
-    }
-    
-    .stDataFrame table {
-        background: var(--surface) !important;
-    }
-    
-    .stDataFrame thead tr th {
-        background: var(--bg-tertiary) !important;
-        color: var(--text-tertiary) !important;
-        font-weight: 600 !important;
-        font-size: 11px !important;
-        text-transform: uppercase !important;
-        letter-spacing: 1px !important;
-        padding: 1rem !important;
-        border-bottom: 1px solid var(--border) !important;
-    }
-    
-    .stDataFrame tbody tr td {
-        padding: 1rem !important;
-        color: var(--text-primary) !important;
-        border-bottom: 1px solid var(--border-light) !important;
-    }
-    
-    .stDataFrame tbody tr:hover {
-        background: var(--surface-hover) !important;
-    }
-    
-    /* ==================== EXPANDER ==================== */
-    
-    .streamlit-expanderHeader {
-        background: var(--surface) !important;
-        border: 1px solid var(--border) !important;
-        border-radius: 8px !important;
-        color: var(--text-primary) !important;
-        font-weight: 600 !important;
-        padding: 1rem !important;
-    }
-    
-    .streamlit-expanderHeader:hover {
-        background: var(--surface-hover) !important;
-    }
-    
-    .streamlit-expanderContent {
-        background: var(--surface) !important;
-        border: 1px solid var(--border) !important;
-        border-top: none !important;
-        border-radius: 0 0 8px 8px !important;
-        padding: 1.25rem !important;
-    }
-    
-    /* ==================== RESPONSIVE ==================== */
-    
-    @media (max-width: 768px) {
-        .levels-grid {
-            grid-template-columns: 1fr;
-        }
-        
-        .stats-container {
-            grid-template-columns: 1fr;
-        }
-        
-        .asset-price {
-            font-size: 40px;
-        }
-        
-        .signal-header {
-            flex-direction: column;
-            gap: 1rem;
-        }
-    }
-    
-    </style>
-    """
-    
-    st.markdown(css, unsafe_allow_html=True)
+# ========= Professional Theme =========
+st.markdown("""
+<style>
+/* ==================== PROFESSIONAL TRADING PLATFORM ==================== */
 
-# Inject theme
-inject_professional_theme()
+:root {
+    --bg-primary: #000000;
+    --bg-secondary: #0a0a0a;
+    --bg-tertiary: #141414;
+    --surface: #1a1a1a;
+    --surface-elevated: #202020;
+    --surface-hover: #252525;
+    
+    --accent-primary: #16c784;
+    --accent-secondary: #00d4ff;
+    --accent-blue: #5B7FF9;
+    
+    --success: #16c784;
+    --danger: #ea3943;
+    --warning: #ffa94d;
+    
+    --text-primary: #ffffff;
+    --text-secondary: #a0a0a0;
+    --text-tertiary: #707070;
+    --text-disabled: #404040;
+    
+    --border: rgba(255, 255, 255, 0.1);
+    --border-light: rgba(255, 255, 255, 0.05);
+    
+    --sidebar-width: 300px;
+}
+
+* {
+    font-feature-settings: "tnum" 1;
+    -webkit-font-smoothing: antialiased;
+}
+
+html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
+    background: var(--bg-primary) !important;
+    color: var(--text-primary) !important;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif !important;
+}
+
+/* Hide Streamlit UI */
+#MainMenu, footer, header, [data-testid="stHeader"] {visibility: hidden !important; display: none !important;}
+.stDeployButton {display: none !important;}
+
+/* Remove default padding */
+.block-container {
+    padding-top: 0 !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    max-width: 100% !important;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {width: 6px; height: 6px;}
+::-webkit-scrollbar-track {background: var(--bg-secondary);}
+::-webkit-scrollbar-thumb {background: var(--text-disabled); border-radius: 3px;}
+::-webkit-scrollbar-thumb:hover {background: var(--text-tertiary);}
+
+/* ==================== LAYOUT ==================== */
+
+.main-wrapper {
+    display: flex;
+    min-height: 100vh;
+    background: var(--bg-primary);
+}
+
+.account-sidebar {
+    width: var(--sidebar-width);
+    background: var(--bg-secondary);
+    border-right: 1px solid var(--border);
+    padding: 2rem 1.5rem;
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    overflow-y: auto;
+    z-index: 1000;
+}
+
+.main-content {
+    margin-left: var(--sidebar-width);
+    width: calc(100% - var(--sidebar-width));
+    padding: 2rem 3rem;
+    min-height: 100vh;
+}
+
+@media (max-width: 1024px) {
+    .account-sidebar {
+        transform: translateX(-100%);
+    }
+    .main-content {
+        margin-left: 0;
+        width: 100%;
+        padding: 1.5rem;
+    }
+}
+
+/* ==================== SIDEBAR ==================== */
+
+.sidebar-header {
+    margin-bottom: 2rem;
+}
+
+.sidebar-logo {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 0.5rem;
+    letter-spacing: -0.5px;
+}
+
+.sidebar-subtitle {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-weight: 600;
+}
+
+.account-info {
+    background: var(--surface);
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+    border: 1px solid var(--border-light);
+}
+
+.account-label {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-weight: 600;
+    margin-bottom: 0.75rem;
+}
+
+.account-value {
+    font-size: 32px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 0.5rem;
+    letter-spacing: -1px;
+}
+
+.account-change {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.account-change.positive {color: var(--success);}
+.account-change.negative {color: var(--danger);}
+
+.stats-container {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.stat-item {
+    background: var(--surface);
+    border-radius: 8px;
+    padding: 1rem;
+    border: 1px solid var(--border-light);
+}
+
+.stat-label {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+}
+
+.stat-value {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.sidebar-section {
+    margin: 2rem 0;
+    padding-top: 2rem;
+    border-top: 1px solid var(--border-light);
+}
+
+.section-title {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-weight: 600;
+    margin-bottom: 1rem;
+}
+
+/* ==================== HEADER ==================== */
+
+.page-header {
+    margin-bottom: 2rem;
+}
+
+.page-title {
+    font-size: 32px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 0.5rem;
+    letter-spacing: -0.5px;
+}
+
+/* ==================== CARDS ==================== */
+
+.content-card {
+    background: var(--surface);
+    border-radius: 16px;
+    border: 1px solid var(--border);
+    padding: 2rem;
+    margin-bottom: 1.5rem;
+}
+
+.card-title {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 1.5rem;
+}
+
+/* ==================== SIGNAL DISPLAY ==================== */
+
+.signal-card {
+    background: var(--bg-secondary);
+    border-radius: 16px;
+    padding: 2rem;
+    margin: 1.5rem 0;
+    border: 1px solid var(--border);
+}
+
+.signal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1.25rem 1.5rem;
+    background: linear-gradient(90deg, rgba(22, 199, 132, 0.2), rgba(22, 199, 132, 0.05));
+    border-radius: 12px;
+    margin-bottom: 2rem;
+    border: 1px solid rgba(22, 199, 132, 0.3);
+}
+
+.signal-header.short {
+    background: linear-gradient(90deg, rgba(234, 57, 67, 0.2), rgba(234, 57, 67, 0.05));
+    border-color: rgba(234, 57, 67, 0.3);
+}
+
+.signal-header.wait {
+    background: linear-gradient(90deg, rgba(112, 112, 112, 0.2), rgba(112, 112, 112, 0.05));
+    border-color: rgba(112, 112, 112, 0.3);
+}
+
+.signal-title {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.signal-badge {
+    padding: 0.5rem 1rem;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.signal-badge.long {
+    background: var(--success);
+    color: #000;
+}
+
+.signal-badge.short {
+    background: var(--danger);
+    color: #fff;
+}
+
+.signal-badge.wait {
+    background: var(--text-disabled);
+    color: var(--text-secondary);
+}
+
+.signal-name {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.signal-confidence {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.asset-display {
+    text-align: center;
+    margin: 2rem 0;
+}
+
+.asset-name {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 1rem;
+}
+
+.asset-price {
+    font-size: 56px;
+    font-weight: 700;
+    color: var(--text-primary);
+    letter-spacing: -2px;
+}
+
+/* ==================== LEVELS GRID ==================== */
+
+.levels-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 1.25rem;
+    margin: 2rem 0;
+}
+
+.level-card {
+    background: var(--surface);
+    border-radius: 12px;
+    padding: 1.5rem;
+    border: 1px solid var(--border);
+    transition: all 0.2s;
+}
+
+.level-card:hover {
+    border-color: rgba(255, 255, 255, 0.15);
+    transform: translateY(-2px);
+}
+
+.level-card.entry {
+    border-color: var(--success);
+    background: linear-gradient(135deg, rgba(22, 199, 132, 0.1), rgba(22, 199, 132, 0.02));
+}
+
+.level-card.stoploss {
+    border-color: var(--danger);
+    background: linear-gradient(135deg, rgba(234, 57, 67, 0.1), rgba(234, 57, 67, 0.02));
+}
+
+.level-label {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-weight: 600;
+    margin-bottom: 0.875rem;
+}
+
+.level-value {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 0.5rem;
+}
+
+.level-detail {
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+/* ==================== CONFIDENCE METER ==================== */
+
+.confidence-meter {
+    background: var(--bg-tertiary);
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin: 2rem 0;
+    border: 1px solid var(--border-light);
+}
+
+.confidence-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+
+.confidence-label {
+    font-size: 13px;
+    color: var(--text-tertiary);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.confidence-value {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.confidence-bar {
+    height: 8px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 1rem;
+}
+
+.confidence-fill {
+    height: 100%;
+    background: var(--success);
+    transition: width 0.6s ease;
+}
+
+.confidence-info {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    font-family: "SF Mono", monospace;
+}
+
+/* ==================== INPUTS ==================== */
+
+.stTextInput input, .stNumberInput input {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 8px !important;
+    color: var(--text-primary) !important;
+    font-size: 15px !important;
+    padding: 0.875rem !important;
+}
+
+.stTextInput input:focus, .stNumberInput input:focus {
+    border-color: var(--accent-primary) !important;
+    outline: none !important;
+}
+
+.stTextInput label, .stNumberInput label {
+    color: var(--text-secondary) !important;
+    font-weight: 600 !important;
+    font-size: 13px !important;
+    text-transform: uppercase !important;
+    letter-spacing: 1px !important;
+}
+
+/* ==================== BUTTONS ==================== */
+
+.stButton > button {
+    width: 100%;
+    padding: 1rem 2rem !important;
+    background: var(--accent-primary) !important;
+    color: #000 !important;
+    border: none !important;
+    border-radius: 8px !important;
+    font-weight: 700 !important;
+    font-size: 15px !important;
+    text-transform: uppercase !important;
+    letter-spacing: 1px !important;
+    transition: all 0.2s !important;
+}
+
+.stButton > button:hover {
+    background: #14b578 !important;
+    transform: translateY(-1px);
+}
+
+.stButton > button[kind="primary"] {
+    background: var(--accent-blue) !important;
+    color: #fff !important;
+}
+
+/* ==================== RADIO BUTTONS ==================== */
+
+.stRadio > div {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.stRadio > div > label {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 8px !important;
+    padding: 0.875rem 1.5rem !important;
+    color: var(--text-secondary) !important;
+    font-weight: 600 !important;
+    cursor: pointer !important;
+    transition: all 0.2s !important;
+}
+
+.stRadio > div > label:hover {
+    border-color: var(--text-secondary) !important;
+}
+
+.stRadio > div > label[data-checked="true"] {
+    background: var(--accent-primary) !important;
+    border-color: var(--accent-primary) !important;
+    color: #000 !important;
+}
+
+/* ==================== TABS ==================== */
+
+.stTabs [data-baseweb="tab-list"] {
+    gap: 1rem;
+    background: transparent;
+    border-bottom: 1px solid var(--border);
+}
+
+.stTabs [data-baseweb="tab"] {
+    background: transparent;
+    color: var(--text-tertiary);
+    font-weight: 600;
+    font-size: 14px;
+    padding: 1rem 0;
+    border: none;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.stTabs [data-baseweb="tab"]:hover {
+    color: var(--text-secondary);
+}
+
+.stTabs [aria-selected="true"] {
+    color: var(--text-primary) !important;
+    border-bottom: 2px solid var(--accent-primary) !important;
+}
+
+/* ==================== ALERTS ==================== */
+
+.stAlert {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 8px !important;
+    padding: 1rem !important;
+    border-left-width: 3px !important;
+    color: var(--text-primary) !important;
+}
+
+.stInfo {border-left-color: var(--accent-blue) !important;}
+.stWarning {border-left-color: var(--warning) !important;}
+.stError {border-left-color: var(--danger) !important;}
+.stSuccess {border-left-color: var(--success) !important;}
+
+/* ==================== METRICS ==================== */
+
+[data-testid="stMetric"] {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+}
+
+[data-testid="stMetric"] label {
+    font-size: 11px !important;
+    color: var(--text-tertiary) !important;
+    font-weight: 600 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 1px !important;
+}
+
+[data-testid="stMetric"] [data-testid="stMetricValue"] {
+    font-size: 28px !important;
+    font-weight: 700 !important;
+    color: var(--text-primary) !important;
+}
+
+/* ==================== DATAFRAMES ==================== */
+
+.stDataFrame {
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+}
+
+.stDataFrame table {
+    background: var(--surface) !important;
+}
+
+.stDataFrame thead tr th {
+    background: var(--bg-tertiary) !important;
+    color: var(--text-tertiary) !important;
+    font-weight: 600 !important;
+    font-size: 11px !important;
+    text-transform: uppercase !important;
+    letter-spacing: 1px !important;
+    padding: 1rem !important;
+    border-bottom: 1px solid var(--border) !important;
+}
+
+.stDataFrame tbody tr td {
+    padding: 1rem !important;
+    color: var(--text-primary) !important;
+    border-bottom: 1px solid var(--border-light) !important;
+}
+
+.stDataFrame tbody tr:hover {
+    background: var(--surface-hover) !important;
+}
+
+/* ==================== EXPANDER ==================== */
+
+.streamlit-expanderHeader {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 8px !important;
+    color: var(--text-primary) !important;
+    font-weight: 600 !important;
+    padding: 1rem !important;
+}
+
+.streamlit-expanderHeader:hover {
+    background: var(--surface-hover) !important;
+}
+
+.streamlit-expanderContent {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    border-top: none !important;
+    border-radius: 0 0 8px 8px !important;
+    padding: 1.25rem !important;
+}
+
+/* ==================== RESPONSIVE ==================== */
+
+@media (max-width: 768px) {
+    .levels-grid {
+        grid-template-columns: 1fr;
+    }
+    .stats-container {
+        grid-template-columns: 1fr;
+    }
+    .asset-price {
+        font-size: 40px;
+    }
+    .signal-header {
+        flex-direction: column;
+        gap: 1rem;
+    }
+}
+
+</style>
+""", unsafe_allow_html=True)
 
 # ========= Helper Functions =========
 def _user_exists_in_current_db(username: str) -> bool:
@@ -962,12 +852,12 @@ except Exception:
 
 # ========= Authentication =========
 def show_auth_page():
-    st.markdown('<div class="main-content" style="max-width: 480px; margin: 0 auto;">', unsafe_allow_html=True)
+    st.markdown('<div style="max-width: 480px; margin: 0 auto; padding: 3rem 1.5rem;">', unsafe_allow_html=True)
     
     st.markdown('''
-        <div class="sidebar-header" style="text-align: center; margin-bottom: 3rem;">
-            <div class="sidebar-logo" style="font-size: 36px;">Arxora</div>
-            <div class="sidebar-subtitle">AI-Powered Trading Intelligence</div>
+        <div style="text-align: center; margin-bottom: 3rem;">
+            <div style="font-size: 36px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem; letter-spacing: -0.5px;">Arxora</div>
+            <div style="font-size: 11px; color: #707070; text-transform: uppercase; letter-spacing: 1px; font-weight: 600;">AI-Powered Trading Intelligence</div>
         </div>
     ''', unsafe_allow_html=True)
     
@@ -1025,65 +915,62 @@ if 'user' not in st.session_state:
     st.stop()
 
 # ========= Sidebar =========
-def render_sidebar():
-    user_info = db.get_user_info(st.session_state.user['user_id'])
-    stats = db.get_statistics(st.session_state.user['user_id'])
-    
-    pnl_change = user_info['current_capital'] - user_info['initial_capital']
-    pnl_percent = (pnl_change / max(1e-9, user_info['initial_capital'])) * 100
-    pnl_class = "positive" if pnl_change >= 0 else "negative"
-    pnl_sign = "+" if pnl_change >= 0 else ""
-    
-    sidebar_html = f'''
-    <div class="account-sidebar">
-        <div class="sidebar-header">
-            <div class="sidebar-logo">Arxora</div>
-            <div class="sidebar-subtitle">Trading Intelligence</div>
-        </div>
-        
-        <div class="account-info">
-            <div class="account-label">Current Capital</div>
-            <div class="account-value">${user_info['current_capital']:,.2f}</div>
-            <div class="account-change {pnl_class}">
-                {pnl_sign}${abs(pnl_change):,.2f} ({pnl_sign}{pnl_percent:.2f}%)
-            </div>
-        </div>
-        
-        <div class="stats-container">
-            <div class="stat-item">
-                <div class="stat-label">Total Trades</div>
-                <div class="stat-value">{stats['total_trades']}</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">Win Rate</div>
-                <div class="stat-value">{stats['win_rate']:.1f}%</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">Closed</div>
-                <div class="stat-value">{stats['closed_trades']}</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">Avg P&L</div>
-                <div class="stat-value">{stats['avg_pnl']:.2f}%</div>
-            </div>
-        </div>
-        
-        <div class="sidebar-section">
-            <div class="section-title">Settings</div>
-            <div style="background: var(--surface); padding: 1rem; border-radius: 8px; border: 1px solid var(--border-light);">
-                <div style="font-size: 11px; color: var(--text-tertiary); margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 1px; font-weight: 600;">Min. Confidence</div>
-                <div style="font-size: 20px; font-weight: 700; color: var(--text-primary);">{st.session_state.get('min_confidence_filter', 60)}%</div>
-            </div>
-        </div>
-    </div>
-    '''
-    
-    st.markdown(sidebar_html, unsafe_allow_html=True)
-
 if 'min_confidence_filter' not in st.session_state:
     st.session_state['min_confidence_filter'] = 60
 
-render_sidebar()
+user_info = db.get_user_info(st.session_state.user['user_id'])
+stats = db.get_statistics(st.session_state.user['user_id'])
+
+pnl_change = user_info['current_capital'] - user_info['initial_capital']
+pnl_percent = (pnl_change / max(1e-9, user_info['initial_capital'])) * 100
+pnl_class = "positive" if pnl_change >= 0 else "negative"
+pnl_sign = "+" if pnl_change >= 0 else ""
+
+sidebar_html = f'''
+<div class="account-sidebar">
+    <div class="sidebar-header">
+        <div class="sidebar-logo">Arxora</div>
+        <div class="sidebar-subtitle">Trading Intelligence</div>
+    </div>
+    
+    <div class="account-info">
+        <div class="account-label">Current Capital</div>
+        <div class="account-value">${user_info['current_capital']:,.2f}</div>
+        <div class="account-change {pnl_class}">
+            {pnl_sign}${abs(pnl_change):,.2f} ({pnl_sign}{pnl_percent:.2f}%)
+        </div>
+    </div>
+    
+    <div class="stats-container">
+        <div class="stat-item">
+            <div class="stat-label">Total Trades</div>
+            <div class="stat-value">{stats['total_trades']}</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-label">Win Rate</div>
+            <div class="stat-value">{stats['win_rate']:.1f}%</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-label">Closed</div>
+            <div class="stat-value">{stats['closed_trades']}</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-label">Avg P&L</div>
+            <div class="stat-value">{stats['avg_pnl']:.2f}%</div>
+        </div>
+    </div>
+    
+    <div class="sidebar-section">
+        <div class="section-title">Settings</div>
+        <div style="background: var(--surface); padding: 1rem; border-radius: 8px; border: 1px solid var(--border-light);">
+            <div style="font-size: 11px; color: var(--text-tertiary); margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 1px; font-weight: 600;">Min. Confidence</div>
+            <div style="font-size: 20px; font-weight: 700; color: var(--text-primary);">{st.session_state.get('min_confidence_filter', 60)}%</div>
+        </div>
+    </div>
+</div>
+'''
+
+st.markdown(sidebar_html, unsafe_allow_html=True)
 
 # ========= Main Content =========
 st.markdown('<div class="main-content">', unsafe_allow_html=True)
@@ -1322,7 +1209,6 @@ with tab_portfolio:
                 st.metric("Risk %", f"{risk_pct:.2f}%")
             
             st.markdown("### Position Sizing")
-            user_info = db.get_user_info(st.session_state.user['user_id'])
             position_percent = st.slider("Portfolio Allocation (%)", min_value=5, max_value=50, value=10, step=5)
             
             position_size = (user_info['current_capital'] * position_percent) / 100
@@ -1392,36 +1278,36 @@ with tab_active:
                 with col4:
                     st.metric("Confidence", f"{trade['confidence']}%")
                 
-                st.markdown("### Take Profit Progress")
+                st.markdown("**Take Profit Progress**")
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     status = "✓" if trade['tp1_closed'] else "○"
-                    st.markdown(f"**{status} TP1** (30%)")
+                    st.markdown(f"{status} TP1 (30%)")
                 with col2:
                     status = "✓" if trade['tp2_closed'] else "○"
-                    st.markdown(f"**{status} TP2** (30%)")
+                    st.markdown(f"{status} TP2 (30%)")
                 with col3:
                     status = "✓" if trade['tp3_closed'] else "○"
-                    st.markdown(f"**{status} TP3** (40%)")
+                    st.markdown(f"{status} TP3 (40%)")
                 
                 st.markdown("---")
                 
-                st.markdown("### Trade Management")
+                st.markdown("**Trade Management**")
                 current_price = st.number_input("Current Price", value=float(trade['entry_price']), key=f"price_{trade['trade_id']}")
                 
                 if trade['direction'] == 'LONG':
                     if not trade['tp1_closed'] and current_price >= trade['take_profit_1']:
-                        st.success("TP1 Hit! Close 30% and move SL to breakeven?")
+                        st.success("TP1 Hit!")
                         if st.button("Close TP1", key=f"tp1_{trade['trade_id']}"):
                             db.partial_close_trade(trade['trade_id'], current_price, 'tp1')
                             st.rerun()
                     elif trade['tp1_closed'] and not trade['tp2_closed'] and current_price >= trade['take_profit_2']:
-                        st.success("TP2 Hit! Close another 30%?")
+                        st.success("TP2 Hit!")
                         if st.button("Close TP2", key=f"tp2_{trade['trade_id']}"):
                             db.partial_close_trade(trade['trade_id'], current_price, 'tp2')
                             st.rerun()
                     elif trade['tp2_closed'] and not trade['tp3_closed'] and current_price >= trade['take_profit_3']:
-                        st.success("TP3 Hit! Close remaining 40%?")
+                        st.success("TP3 Hit!")
                         if st.button("Close TP3", key=f"tp3_{trade['trade_id']}"):
                             db.partial_close_trade(trade['trade_id'], current_price, 'tp3')
                             st.rerun()
@@ -1432,17 +1318,17 @@ with tab_active:
                             st.rerun()
                 else:
                     if not trade['tp1_closed'] and current_price <= trade['take_profit_1']:
-                        st.success("TP1 Hit! Close 30% and move SL to breakeven?")
+                        st.success("TP1 Hit!")
                         if st.button("Close TP1", key=f"tp1_{trade['trade_id']}"):
                             db.partial_close_trade(trade['trade_id'], current_price, 'tp1')
                             st.rerun()
                     elif trade['tp1_closed'] and not trade['tp2_closed'] and current_price <= trade['take_profit_2']:
-                        st.success("TP2 Hit! Close another 30%?")
+                        st.success("TP2 Hit!")
                         if st.button("Close TP2", key=f"tp2_{trade['trade_id']}"):
                             db.partial_close_trade(trade['trade_id'], current_price, 'tp2')
                             st.rerun()
                     elif trade['tp2_closed'] and not trade['tp3_closed'] and current_price <= trade['take_profit_3']:
-                        st.success("TP3 Hit! Close remaining 40%?")
+                        st.success("TP3 Hit!")
                         if st.button("Close TP3", key=f"tp3_{trade['trade_id']}"):
                             db.partial_close_trade(trade['trade_id'], current_price, 'tp3')
                             st.rerun()
@@ -1464,9 +1350,6 @@ with tab_stats:
     st.markdown('<div class="content-card">', unsafe_allow_html=True)
     st.markdown('<div class="card-title">Performance Analytics</div>', unsafe_allow_html=True)
     
-    user_info = db.get_user_info(st.session_state.user['user_id'])
-    stats = db.get_statistics(st.session_state.user['user_id'])
-    
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("Total Trades", stats['total_trades'])
@@ -1487,12 +1370,10 @@ with tab_stats:
         df['equity'] = user_info['initial_capital'] + df['cumulative_pnl']
         
         st.markdown("### Equity Curve")
-        st.markdown('<div class="chart-card">', unsafe_allow_html=True)
         try:
             st.line_chart(df.set_index('close_date')['equity'])
         except Exception:
             st.line_chart(df['equity'])
-        st.markdown('</div>', unsafe_allow_html=True)
         
         st.markdown("### Trade History")
         display_cols = ['ticker', 'direction', 'entry_price', 'close_price', 'close_reason', 'total_pnl_percent', 'total_pnl_dollars', 'close_date']
