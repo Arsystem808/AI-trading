@@ -1,3 +1,14 @@
+# --- Load custom CSS (Arxora Saxo-like theme) ---
+from pathlib import Path
+_css_path = Path("style.css")
+if _css_path.exists():
+    try:
+        st.markdown(f"<style>{_css_path.read_text(encoding='utf-8')}</style>", unsafe_allow_html=True)
+    except Exception:
+        pass
+# small helper classes available for inline HTML
+
+
 # -*- coding: utf-8 -*-
 # app.py — Arxora UI (финальный, стабильный, все фразы)
 
