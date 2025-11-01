@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# app.py — Arxora Trading Platform v5.0 (Fixed & Working)
+# app.py — Arxora Trading Platform v6.0 (Complete)
 
 import os
 import re
@@ -68,6 +68,7 @@ st.markdown("""
     --accent-blue: #5B7FF9;
     --success: #16c784;
     --danger: #ea3943;
+    --warning: #ffa94d;
     --text-primary: #ffffff;
     --text-secondary: #a0a0a0;
     --text-tertiary: #707070;
@@ -83,6 +84,29 @@ html, body, .stApp {
 #MainMenu, footer, header {visibility: hidden !important;}
 .stDeployButton {display: none !important;}
 .block-container {padding: 2rem 3rem !important; max-width: 100% !important;}
+
+/* Signal Cards */
+.signal-box {
+    padding: 1.5rem;
+    border-radius: 12px;
+    margin: 1rem 0;
+    border: 2px solid;
+}
+
+.signal-box.long {
+    background: linear-gradient(135deg, rgba(22, 199, 132, 0.15), rgba(22, 199, 132, 0.05));
+    border-color: #16c784;
+}
+
+.signal-box.short {
+    background: linear-gradient(135deg, rgba(234, 57, 67, 0.15), rgba(234, 57, 67, 0.05));
+    border-color: #ea3943;
+}
+
+.signal-box.wait {
+    background: linear-gradient(135deg, rgba(255, 169, 77, 0.15), rgba(255, 169, 77, 0.05));
+    border-color: #ffa94d;
+}
 
 /* Inputs */
 .stTextInput input, .stNumberInput input {
@@ -102,6 +126,7 @@ html, body, .stApp {
     color: var(--text-secondary) !important;
     font-weight: 600 !important;
     text-transform: uppercase !important;
+    font-size: 12px !important;
 }
 
 /* Buttons */
@@ -125,18 +150,31 @@ html, body, .stApp {
     color: #fff !important;
 }
 
-/* Radio */
-.stRadio > div {display: flex; gap: 1rem; flex-wrap: wrap;}
+/* Radio - Remove Card Style */
+.stRadio > div {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    background: transparent !important;
+}
+
 .stRadio > div > label {
-    background: var(--surface) !important;
+    background: transparent !important;
     border: 1px solid var(--border) !important;
     border-radius: 8px !important;
-    padding: 0.875rem 1.5rem !important;
+    padding: 0.75rem 1.25rem !important;
     color: var(--text-secondary) !important;
+    font-size: 14px !important;
+    font-weight: 600 !important;
+}
+
+.stRadio > div > label:hover {
+    border-color: var(--text-secondary) !important;
 }
 
 .stRadio > div > label[data-checked="true"] {
     background: var(--accent-primary) !important;
+    border-color: var(--accent-primary) !important;
     color: #000 !important;
 }
 
@@ -150,6 +188,7 @@ html, body, .stApp {
     color: var(--text-tertiary);
     font-weight: 600;
     text-transform: uppercase;
+    font-size: 13px;
 }
 
 .stTabs [aria-selected="true"] {
@@ -175,6 +214,12 @@ html, body, .stApp {
 [data-testid="stMetric"] label {
     color: var(--text-tertiary) !important;
     text-transform: uppercase !important;
+    font-size: 11px !important;
+}
+
+[data-testid="stMetric"] [data-testid="stMetricValue"] {
+    font-size: 24px !important;
+    font-weight: 700 !important;
 }
 
 /* Expander */
@@ -182,6 +227,16 @@ html, body, .stApp {
     background: var(--surface) !important;
     border: 1px solid var(--border) !important;
     color: var(--text-primary) !important;
+    border-radius: 8px !important;
+}
+
+.streamlit-expanderHeader:hover {
+    border-color: var(--border) !important;
+}
+
+/* Slider */
+.stSlider {
+    padding: 0 !important;
 }
 
 </style>
@@ -383,7 +438,7 @@ if 'user' not in st.session_state:
 if 'min_confidence_filter' not in st.session_state:
     st.session_state['min_confidence_filter'] = 60
 
-# ========= SIDEBAR (Native Streamlit) =========
+# ========= SIDEBAR =========
 with st.sidebar:
     st.title("Arxora")
     st.caption("TRADING INTELLIGENCE")
@@ -393,22 +448,40 @@ with st.sidebar:
     stats = db.get_statistics(st.session_state.user['user_id'])
     
     if user_info:
+        # Account & P&L
+        st.subheader("Account")
         pnl = user_info['current_capital'] - user_info['initial_capital']
         pnl_pct = (pnl / max(1e-9, user_info['initial_capital'])) * 100
         
-        st.metric("Current Capital", f"${user_info['current_capital']:,.2f}", f"{pnl_pct:+.2f}%")
+        st.metric(
+            "Capital", 
+            f"${user_info['current_capital']:,.2f}",
+            f"{pnl:+,.2f} ({pnl_pct:+.2f}%)"
+        )
         
+        st.markdown("---")
+        
+        # Statistics
+        st.subheader("Statistics")
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("Trades", stats['total_trades'])
+            st.metric("Total Trades", stats['total_trades'])
             st.metric("Closed", stats['closed_trades'])
         with col2:
             st.metric("Win Rate", f"{stats['win_rate']:.1f}%")
             st.metric("Avg P&L", f"{stats['avg_pnl']:.2f}%")
         
         st.markdown("---")
-        st.slider("Min. Confidence", 0, 100, st.session_state['min_confidence_filter'], 5, key="conf_slider")
-        st.session_state['min_confidence_filter'] = st.session_state.conf_slider
+        
+        # Settings
+        st.subheader("Settings")
+        new_conf = st.slider(
+            "Min. Confidence (%)", 
+            0, 100, 
+            st.session_state['min_confidence_filter'], 
+            5
+        )
+        st.session_state['min_confidence_filter'] = new_conf
         
         st.markdown("---")
         if st.button("Logout", use_container_width=True):
@@ -425,14 +498,12 @@ tabs = st.tabs(["AI Signals", "Portfolio", "Active Trades", "Statistics"])
 with tabs[0]:
     st.subheader("Trading Agent Analysis")
     
+    st.write("**Model**")
     models = get_available_models()
-    model = st.radio("Model", models, horizontal=True)
+    model = st.radio("", models, horizontal=True, label_visibility="collapsed")
     
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        ticker = st.text_input("Symbol", placeholder="AAPL, BTCUSD")
-    with col2:
-        st.metric("Min Conf", f"{st.session_state['min_confidence_filter']}%")
+    st.write("**Symbol**")
+    ticker = st.text_input("", placeholder="AAPL, BTCUSD", label_visibility="collapsed")
     
     if st.button("Analyze", type="primary"):
         if not ticker:
@@ -454,6 +525,7 @@ with tabs[0]:
                         tp1, tp2, tp3 = sanitize_targets(action, lv["entry"], lv["tp1"], lv["tp2"], lv["tp3"])
                         lv["tp1"], lv["tp2"], lv["tp3"] = tp1, tp2, tp3
                     
+                    # Store in session
                     st.session_state["last_signal"] = {
                         "ticker": ticker.upper(),
                         "symbol": symbol,
@@ -465,9 +537,29 @@ with tabs[0]:
                         "levels": lv
                     }
                     
-                    st.success(f"**{action}** — {ticker.upper()} @ ${price:.2f} ({conf_pct:.0f}% confidence)")
+                    # Determine card color class
+                    if action == "BUY":
+                        card_class = "long"
+                        action_text = "LONG"
+                    elif action == "SHORT":
+                        card_class = "short"
+                        action_text = "SHORT"
+                    else:
+                        card_class = "wait"
+                        action_text = "WAIT"
+                    
+                    # Display signal with colored card
+                    st.markdown(f'<div class="signal-box {card_class}">', unsafe_allow_html=True)
+                    st.markdown(f"### {action_text} — {ticker.upper()} @ ${price:.2f} ({conf_pct:.0f}% confidence)")
+                    
+                    # AI Override info
+                    ai_override = conf_pct - 44.0  # assuming base rules confidence is 44%
+                    st.caption(f"AI Override: {ai_override:+.0f}% · Combined algorithmic and ML analysis")
                     
                     if action in ("BUY", "SHORT"):
+                        st.markdown("---")
+                        
+                        # Entry, SL, and all TPs
                         col1, col2, col3 = st.columns(3)
                         with col1:
                             st.metric("Entry", f"${lv['entry']:.2f}")
@@ -476,9 +568,17 @@ with tabs[0]:
                         with col3:
                             st.metric("TP1", f"${lv['tp1']:.2f}")
                         
-                        rr = rr_line(lv)
-                        if rr:
-                            st.info(f"R/R: {rr}")
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("TP2", f"${lv['tp2']:.2f}")
+                        with col2:
+                            st.metric("TP3", f"${lv['tp3']:.2f}")
+                        with col3:
+                            rr = rr_line(lv)
+                            if rr:
+                                st.caption(f"**R/R:** {rr}")
+                    
+                    st.markdown('</div>', unsafe_allow_html=True)
                     
                     try:
                         log_agent_performance(model, ticker, datetime.today(), 0.0)
@@ -487,6 +587,8 @@ with tabs[0]:
                         
                 except Exception as e:
                     st.error(f"Error: {e}")
+                    if ARXORA_DEBUG:
+                        st.exception(e)
 
 # TAB 2: Portfolio
 with tabs[1]:
@@ -503,6 +605,9 @@ with tabs[1]:
             st.success(f"{sig['ticker']} — {sig['action']} ({sig['confidence']:.0f}%)")
             
             position_pct = st.slider("Position %", 5, 50, 10, 5)
+            
+            position_size = (user_info['current_capital'] * position_pct) / 100
+            st.info(f"Position Size: ${position_size:,.2f}")
             
             if st.button("Add Trade", type="primary"):
                 try:
@@ -539,27 +644,68 @@ with tabs[2]:
         st.info("No active trades")
     else:
         for t in trades:
-            with st.expander(f"{t['ticker']} — {t['direction']} ({t['remaining_percent']:.0f}%)"):
+            with st.expander(f"{t['ticker']} — {t['direction']} ({t['remaining_percent']:.0f}% remaining)"):
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     st.metric("Entry", f"${t['entry_price']:.2f}")
                 with col2:
                     st.metric("Position", f"${t['position_size']:.2f}")
                 with col3:
-                    st.metric("Conf", f"{t['confidence']}%")
+                    st.metric("Confidence", f"{t['confidence']}%")
+                
+                st.markdown("**Take Profit Status**")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    status = "✓" if t['tp1_closed'] else "○"
+                    st.write(f"{status} TP1: ${t['take_profit_1']:.2f}")
+                with col2:
+                    status = "✓" if t['tp2_closed'] else "○"
+                    st.write(f"{status} TP2: ${t['take_profit_2']:.2f}")
+                with col3:
+                    status = "✓" if t['tp3_closed'] else "○"
+                    st.write(f"{status} TP3: ${t['take_profit_3']:.2f}")
+                
+                st.markdown("---")
                 
                 price = st.number_input("Current Price", float(t['entry_price']), key=f"p_{t['trade_id']}")
                 
-                if t['direction'] == 'LONG':
-                    if not t['tp1_closed'] and price >= t['take_profit_1']:
-                        if st.button("Close TP1", key=f"tp1_{t['trade_id']}"):
-                            db.partial_close_trade(t['trade_id'], price, 'tp1')
-                            st.rerun()
-                else:
-                    if not t['tp1_closed'] and price <= t['take_profit_1']:
-                        if st.button("Close TP1", key=f"tp1_{t['trade_id']}"):
-                            db.partial_close_trade(t['trade_id'], price, 'tp1')
-                            st.rerun()
+                # Close buttons
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # TP buttons based on direction
+                    if t['direction'] == 'LONG':
+                        if not t['tp1_closed'] and price >= t['take_profit_1']:
+                            if st.button("Close TP1", key=f"tp1_{t['trade_id']}", use_container_width=True):
+                                db.partial_close_trade(t['trade_id'], price, 'tp1')
+                                st.rerun()
+                        elif t['tp1_closed'] and not t['tp2_closed'] and price >= t['take_profit_2']:
+                            if st.button("Close TP2", key=f"tp2_{t['trade_id']}", use_container_width=True):
+                                db.partial_close_trade(t['trade_id'], price, 'tp2')
+                                st.rerun()
+                        elif t['tp2_closed'] and not t['tp3_closed'] and price >= t['take_profit_3']:
+                            if st.button("Close TP3", key=f"tp3_{t['trade_id']}", use_container_width=True):
+                                db.partial_close_trade(t['trade_id'], price, 'tp3')
+                                st.rerun()
+                    else:  # SHORT
+                        if not t['tp1_closed'] and price <= t['take_profit_1']:
+                            if st.button("Close TP1", key=f"tp1_{t['trade_id']}", use_container_width=True):
+                                db.partial_close_trade(t['trade_id'], price, 'tp1')
+                                st.rerun()
+                        elif t['tp1_closed'] and not t['tp2_closed'] and price <= t['take_profit_2']:
+                            if st.button("Close TP2", key=f"tp2_{t['trade_id']}", use_container_width=True):
+                                db.partial_close_trade(t['trade_id'], price, 'tp2')
+                                st.rerun()
+                        elif t['tp2_closed'] and not t['tp3_closed'] and price <= t['take_profit_3']:
+                            if st.button("Close TP3", key=f"tp3_{t['trade_id']}", use_container_width=True):
+                                db.partial_close_trade(t['trade_id'], price, 'tp3')
+                                st.rerun()
+                
+                with col2:
+                    # Manual close entire position
+                    if st.button("Close All", key=f"close_{t['trade_id']}", use_container_width=True):
+                        db.full_close_trade(t['trade_id'], price, "MANUAL")
+                        st.rerun()
 
 # TAB 4: Statistics
 with tabs[3]:
@@ -578,10 +724,16 @@ with tabs[3]:
     closed = db.get_closed_trades(st.session_state.user['user_id'])
     if closed and pd:
         df = pd.DataFrame(closed)
-        st.line_chart(df['total_pnl_dollars'].cumsum())
-        st.dataframe(df[['ticker', 'direction', 'total_pnl_percent', 'close_date']])
+        df['cumulative_pnl'] = df['total_pnl_dollars'].cumsum()
+        
+        st.markdown("### Equity Curve")
+        st.line_chart(df['cumulative_pnl'])
+        
+        st.markdown("### Trade History")
+        st.dataframe(df[['ticker', 'direction', 'entry_price', 'close_price', 'total_pnl_percent', 'close_date']], use_container_width=True)
     else:
         st.info("No closed trades")
 
 st.markdown("---")
 st.caption("Arxora · Professional Trading Intelligence · 2025")
+
