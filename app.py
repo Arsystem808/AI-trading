@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# app.py — Arxora UI (финальный, стабильный, все фразы)
+# app.py — Arxora UI (production, Saxo-inspired dark theme, стабильная БД, сохранены все фразы)
 
 import os
 import re
@@ -13,49 +13,137 @@ from typing import Any, Dict, Optional, List
 
 import streamlit as st
 
+# ========= Опциональная подгрузка моделей (не ломает UI при ошибках) =========
+try:
+    from core.model_fetch import ensure_models
+    try:
+        ensure_models()
+    except Exception as _e:
+        import logging as _lg
+        _lg.warning("ensure_models failed: %s", _e)
+except Exception as _e:
+    import logging as _lg
+    _lg.warning("model_fetch import skipped: %s", _e)
+
+# ========= БД / Портфель =========
 try:
     from database import TradingDatabase
     db = TradingDatabase()
 except Exception as e:
     st.error(f"⚠️ Не удалось загрузить database.py: {e}")
     st.stop()
-try: import pandas as pd
-except Exception: pd = None
 
+try:
+    import pandas as pd
+except Exception:
+    pd = None
+
+try:
+    import requests
+except Exception:
+    requests = None
+
+# ========= Окружение =========
 MODEL_DIR = Path(os.getenv("ARXORA_MODEL_DIR", "/tmp/models"))
-try: import requests
-except Exception: requests = None
+ARXORA_DEBUG = os.getenv("ARXORA_DEBUG", "0") == "1"
 
+# ========= Конфиг страницы =========
 st.set_page_config(page_title="Arxora — трейд‑ИИ (MVP)", page_icon="assets/arxora_favicon_512.png", layout="centered")
 
+# ========= Загрузка кастомной темы / CSS =========
+def _inject_theme_css():
+    css_fallback = """
+    /* Arxora — Saxo-inspired premium dark theme (fallback) */
+    :root{
+      --bg:#070708; --panel:#0f1316; --muted:#9aa0a6; --accent:#16b397; --accent-2:#5B5BF7;
+      --danger:#ff4c4c; --glass: rgba(255,255,255,0.03); --card-border: rgba(255,255,255,0.04);
+      --glass-2: rgba(255,255,255,0.02);
+    }
+    html, body, .stApp, [data-testid="stAppViewContainer"]{
+      background: linear-gradient(180deg, rgba(7,7,8,1) 0%, rgba(12,12,13,1) 100%) !important;
+      color: #e6eef3;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+    }
+    .block-container{ max-width:1180px; padding-top:0.6rem; }
+    .arxora-hero {
+      width:100%; background: linear-gradient(90deg, rgba(11,10,20,1), rgba(18,16,40,1));
+      border-radius: 12px; padding: 18px;
+      box-shadow: 0 6px 28px rgba(5,6,8,0.6), inset 0 1px 0 rgba(255,255,255,0.02);
+      margin-bottom: 14px;
+    }
+    .arxora-logo { font-size:28px; font-weight:800; letter-spacing:0.4px; color: #ffffff; display:inline-block; }
+    .arxora-sub { color: var(--muted); margin-top:4px; font-size:13px; display:block; }
+    .panel {
+      background: linear-gradient(180deg, rgba(16,18,20,0.6), rgba(8,9,11,0.6));
+      border-radius:12px; padding:12px; border:1px solid var(--card-border); box-shadow: 0 8px 24px rgba(3,4,6,0.6); margin-bottom:12px;
+    }
+    .panel-compact { padding:8px; border-radius:10px; }
+    .signal-header { display:flex; align-items:center; gap:12px; padding:12px; border-radius:10px;
+      background: linear-gradient(90deg, rgba(10,20,16,0.5), rgba(18,14,30,0.4));
+      border:1px solid rgba(255,255,255,0.03);
+    }
+    .signal-badge {
+      padding:8px 12px; border-radius:8px; font-weight:700;
+      background: linear-gradient(90deg, rgba(20,200,150,0.12), rgba(20,200,150,0.08));
+      color: var(--accent); min-width:72px; text-align:center;
+    }
+    .signal-title { font-weight:800; font-size:18px; }
+    .stat-grid { display:flex; gap:10px; align-items:stretch; }
+    .stat-card { flex:1; padding:10px; border-radius:10px; background:var(--glass); border:1px solid var(--card-border); }
+    .primary-btn {
+      background: linear-gradient(90deg, var(--accent-2), #4a6df0);
+      color:white; padding:10px 14px; border-radius:10px; font-weight:700; border:none;
+      box-shadow: 0 6px 18px rgba(75,90,200,0.12);
+    }
+    .ghost-btn {
+      background: transparent; border:1px solid rgba(255,255,255,0.06);
+      color:var(--muted); padding:9px 12px; border-radius:10px; font-weight:600;
+    }
+    .muted { color:var(--muted); font-size:13px; }
+    .kv { font-weight:700; font-size:1.05rem; }
+    .footer { color: #8d98a6; font-size:12px; margin-top:18px; }
+    h1,h2,h3{ letter-spacing:.2px }
+    /* Inputs: делаем «редактируемые» поля контрастнее */
+    input[type="text"], input[type="number"], .stNumberInput input, .stTextInput input {
+      background:#14171a; color:#ffb000; border:1px solid #2a323d; border-radius:10px;
+    }
+    /* DataFrame плотный стиль */
+    .stDataFrame table{ background:transparent; color:#e6eef3; border-collapse:collapse; }
+    .stDataFrame th, .stDataFrame td{ padding:8px 10px; border-bottom:1px solid rgba(255,255,255,0.03); }
+    /* Buttons weight */
+    .stButton > button { font-weight:700; border-radius:10px; }
+    @media (max-width: 768px) {
+      .signal-title { font-size:16px; }
+      .arxora-logo { font-size:20px; }
+    }
+    """
+    css_path = Path("style.css")
+    try:
+        if css_path.exists():
+            st.markdown(f"<style>{css_path.read_text(encoding='utf-8')}</style>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<style>{css_fallback}</style>", unsafe_allow_html=True)
+    except Exception:
+        st.markdown(f"<style>{css_fallback}</style>", unsafe_allow_html=True)
+
+_inject_theme_css()
+
+# ========= Брендинговая шапка =========
 def render_arxora_header():
     hero_path = "assets/arxora_logo_hero.png"
+    st.markdown('<div class="arxora-hero">', unsafe_allow_html=True)
     if os.path.exists(hero_path):
-        st.image(hero_path, use_container_width=True)
+        st.image(hero_path, width="stretch")
+        st.markdown('<span class="arxora-sub">trade smarter.</span>', unsafe_allow_html=True)
     else:
-        st.markdown("""
-        <div style="border-radius:8px;overflow:hidden;
-                    box-shadow:0 0 0 1px rgba(0,0,0,.06),0 12px 32px rgba(0,0,0,.18);">
-          <div style="background:#5B5BF7;padding:28px 16px;">
-            <div style="max-width:1120px;margin:0 auto;">
-              <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
-                          color:#fff;font-weight:700;letter-spacing:.4px;
-                          font-size:clamp(36px,7vw,72px);line-height:1.05;">
-                Arxora
-              </div>
-            </div>
-          </div>
-          <div style="background:#000;padding:12px 16px 16px 16px;">
-            <div style="max-width:1120px;margin:0 auto;">
-              <div style="color:#fff;font-size:clamp(16px,2.4vw,28px);opacity:.92;">trade smarter.</div>
-            </div>
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown('<span class="arxora-logo">Arxora</span><br><span class="arxora-sub">trade smarter.</span>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
+# ========= Вспомогательная проверка пользователя в активной БД =========
 def _user_exists_in_current_db(username: str) -> bool:
     name = (username or "").strip()
-    if not name: return False
+    if not name:
+        return False
     conn = None
     try:
         conn = sqlite3.connect(db.db_name, timeout=10)
@@ -66,14 +154,26 @@ def _user_exists_in_current_db(username: str) -> bool:
         return False
     finally:
         try:
-            if conn: conn.close()
-        except Exception: pass
+            if conn:
+                conn.close()
+        except Exception:
+            pass
 
+# ========= Аутентификация =========
 def show_auth_page():
     render_arxora_header()
-    st.title("🔐 Вход в систему")
+    st.markdown("<h2 style='margin: 10px 0 16px 0; font-weight: 800;'>🔐 Вход в систему</h2>", unsafe_allow_html=True)
+
+    if ARXORA_DEBUG:
+        try:
+            st.caption(f"DB path: {Path(db.db_name).resolve()}")
+        except Exception:
+            pass
+
     tab1, tab2 = st.tabs(["Вход", "Регистрация"])
+
     with tab1:
+        st.markdown('<div class="panel">', unsafe_allow_html=True)
         st.subheader("Войти в аккаунт")
         username = st.text_input("Имя пользователя", key="login_username")
         password = st.text_input("Пароль", type="password", key="login_password")
@@ -91,13 +191,14 @@ def show_auth_page():
                         st.info("В этой базе такого пользователя нет. Перейдите во вкладку «Регистрация» и создайте его здесь.")
                     else:
                         st.info("Пользователь существует. Проверьте пароль и раскладку/символы (пробелы).")
+        st.markdown('</div>', unsafe_allow_html=True)
+
     with tab2:
+        st.markdown('<div class="panel">', unsafe_allow_html=True)
         st.subheader("Создать аккаунт")
         new_username = st.text_input("Имя пользователя", key="reg_username")
         new_password = st.text_input("Пароль", type="password", key="reg_password")
-        initial_capital = st.number_input(
-            "Начальный капитал (виртуальный)", min_value=1000, value=10000, step=1000
-        )
+        initial_capital = st.number_input("Начальный капитал (виртуальный)", min_value=1000, value=10000, step=1000)
         if st.button("Зарегистрироваться", type="primary"):
             if len((new_username or "").strip()) < 3:
                 st.error("❌ Имя пользователя должно быть минимум 3 символа")
@@ -115,11 +216,14 @@ def show_auth_page():
                         st.success("✅ Регистрация успешна! Теперь войдите в систему")
                 else:
                     st.error("❌ Это имя пользователя уже занято")
+        st.markdown('</div>', unsafe_allow_html=True)
 
+# ——— Требуем авторизацию
 if 'user' not in st.session_state:
     show_auth_page()
     st.stop()
 
+# ========= Сайдбар пользователя =========
 user_info = db.get_user_info(st.session_state.user['user_id'])
 stats = db.get_statistics(st.session_state.user['user_id'])
 
@@ -135,21 +239,29 @@ st.sidebar.divider()
 if st.sidebar.button("🚪 Выйти"):
     del st.session_state.user
     st.rerun()
+
 min_confidence_filter = st.sidebar.slider("Мин. Confidence для добавления", 0, 100, 60)
+
+# ========= Header =========
 render_arxora_header()
 
+# ========= Performance hooks =========
 try:
     from core.performance_tracker import log_agent_performance, get_agent_performance
 except Exception:
     def log_agent_performance(*args, **kwargs): pass
     def get_agent_performance(*args, **kwargs): return None
 
+# ========= Доменные константы =========
 ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))
 MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT",  "0.0010"))
 
+# ========= Хелперы =========
 def _fmt(x: Any) -> str:
-    try: return f"{float(x):.2f}"
-    except Exception: return "0.00"
+    try:
+        return f"{float(x):.2f}"
+    except Exception:
+        return "0.00"
 
 def sanitize_targets(action: str, entry: float, tp1: float, tp2: float, tp3: float):
     step = max(MIN_TP_STEP_PCT * max(1.0, abs(entry)), 1e-6 * max(1.0, abs(entry)))
@@ -190,10 +302,10 @@ def rr_line(levels: Dict[str, float]) -> str:
 
 def card_html(title: str, value: str, sub: Optional[str]=None, color: Optional[str]=None) -> str:
     bg = "#141a20"
-    if color == "green": bg = "#16b397"
-    elif color == "red": bg = "#e5484d"
+    if color == "green": bg = "#0e7a4f"
+    elif color == "red": bg = "#a31d1d"
     return f"""
-        <div style="background:{bg}; padding:12px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.06); margin:6px 0;">
+        <div class="panel-compact" style="background:{bg}; padding:12px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.06); margin:6px 0;">
             <div style="font-size:0.9rem; opacity:0.85;">{title}</div>
             <div style="font-size:1.4rem; font-weight:700; margin-top:4px;">{value}</div>
             {f"<div style='font-size:0.8rem; opacity:0.7; margin-top:2px;'>{sub}</div>" if sub else ""}
@@ -208,11 +320,7 @@ def resolve_asset_title_polygon(raw_symbol: str, normalized: str) -> str:
     if not api or requests is None:
         return s
     try:
-        r = requests.get(
-            f"https://api.polygon.io/v3/reference/tickers/{t}",
-            params={"apiKey": api},
-            timeout=2.5,
-        )
+        r = requests.get(f"https://api.polygon.io/v3/reference/tickers/{t}", params={"apiKey": api}, timeout=2.5)
         if r.ok:
             data = r.json() or {}
             name = ((data.get("results") or {}).get("name") or "").strip()
@@ -222,25 +330,31 @@ def resolve_asset_title_polygon(raw_symbol: str, normalized: str) -> str:
         pass
     return s
 
-# Импорт services.data для совместимости
-try: import services.data
+# Совместимость: services.data может лежать в другом месте
+try:
+    import services.data  # noqa
 except Exception:
     try:
         import core.data as _core_data
         sys.modules['services.data'] = _core_data
-    except Exception: pass
+    except Exception:
+        pass
 
 def _load_strategy_module():
     try:
         mod = importlib.import_module("core.strategy")
-        try: mod = importlib.reload(mod)
-        except Exception: pass
+        try:
+            mod = importlib.reload(mod)
+        except Exception:
+            pass
         return mod, None
-    except Exception: return None, traceback.format_exc()
+    except Exception:
+        return None, traceback.format_exc()
 
 def get_available_models() -> List[str]:
     mod, _ = _load_strategy_module()
-    if not mod: return ["Octopus"]
+    if not mod:
+        return ["Octopus"]
     reg = getattr(mod, "STRATEGY_REGISTRY", {}) or {}
     keys = list(reg.keys())
     return (["Octopus"] if "Octopus" in keys else []) + [k for k in sorted(keys) if k != "Octopus"]
@@ -255,12 +369,15 @@ def run_model_by_name(ticker_norm: str, model_name: str) -> Dict[str, Any]:
     if model_name in reg and callable(reg[model_name]):
         return reg[model_name](ticker_norm, "Краткосрочный")
     fname = f"analyze_asset_{model_name.lower()}"
-    if hasattr(mod, fname): return getattr(mod, fname)(ticker_norm, "Краткосрочный")
+    if hasattr(mod, fname):
+        return getattr(mod, fname)(ticker_norm, "Краткосрочный")
     raise RuntimeError(f"Стратегия {model_name} недоступна.")
 
 def render_confidence_breakdown_inline(ticker: str, conf_pct: float):
-    try: overall = float(conf_pct or 0.0)
-    except Exception: overall = 0.0
+    try:
+        overall = float(conf_pct or 0.0)
+    except Exception:
+        overall = 0.0
     st.session_state["last_overall_conf_pct"] = overall
     rules_pct = float(st.session_state.get("last_rules_pct", 44.0))
     ai_delta = overall - rules_pct
@@ -273,7 +390,7 @@ def render_confidence_breakdown_inline(ticker: str, conf_pct: float):
     empty_chars = max(0, WIDTH - filled)
     bar = "[" + ("░" * rules_chars) + ("█" * ai_chars) + ("·" * empty_chars) + "]"
     html = f"""
-    <div style="background:#2b2b2b;color:#fff;border-radius:12px;padding:10px 12px;
+    <div style="background:#1a1f26;color:#fff;border-radius:12px;padding:10px 12px;
                 font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;">
       <div>Общая уверенность: {overall:.0f}%</div>
       <div>└ AI override: {sign}{ai_pct:.0f}% {bar}</div>
@@ -281,6 +398,7 @@ def render_confidence_breakdown_inline(ticker: str, conf_pct: float):
     """
     st.markdown(html, unsafe_allow_html=True)
 
+# ========= Вкладки =========
 tab_signals, tab_portfolio, tab_active, tab_stats = st.tabs([
     "AI Сигналы", "💼 Портфель", "📋 Активные сделки", "📈 Статистика"
 ])
@@ -288,24 +406,31 @@ tab_signals, tab_portfolio, tab_active, tab_stats = st.tabs([
 # === TAB 1: AI Сигналы ===
 with tab_signals:
     st.subheader("AI agents")
+    st.markdown('<div class="panel">', unsafe_allow_html=True)
+
     models = get_available_models()
     model = st.radio("Выберите модель", options=models, index=0, horizontal=False, key="agent_radio")
+
     ticker_input = st.text_input("Тикер", placeholder="Примеры ввода: AAPL • SPY • BTCUSD • C:EURUSD")
     ticker = ticker_input.strip().upper()
     symbol_for_engine = normalize_for_polygon(ticker)
+
     run = st.button("Проанализировать", type="primary", key="main_analyze")
     st.write(f"Mode: AI · Model: {model}")
 
     if run and ticker:
         try:
             out = run_model_by_name(symbol_for_engine, model)
+
             rec = out.get("recommendation")
             if not rec and ("action" in out or "confidence" in out):
                 rec = {"action": out.get("action","WAIT"), "confidence": float(out.get("confidence",0.0))}
             if not rec: rec = {"action":"WAIT","confidence":0.0}
+
             action = str(rec.get("action","WAIT"))
             conf_val = float(rec.get("confidence",0.0))
             conf_pct_val = conf_val*100.0 if conf_val <= 1.0 else conf_val
+
             st.session_state["last_overall_conf_pct"] = conf_pct_val
             st.session_state["last_signal"] = {
                 "ticker": ticker,
@@ -315,37 +440,43 @@ with tab_signals:
                 "model": model,
                 "output": out
             }
+
             last_price = float(out.get("last_price", 0.0) or 0.0)
+
             asset_title = resolve_asset_title_polygon(ticker, symbol_for_engine)
-            st.markdown(
-                f"<div style='text-align:center; font-weight:800; letter-spacing:.2px; font-size:clamp(20px,3.6vw,34px); margin-top:4px;'>{asset_title}</div>", unsafe_allow_html=True)
-            st.markdown(
-                f"<div style='font-size:3rem; font-weight:800; text-align:center; margin:6px 0 14px 0;'>${last_price:.2f}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align:center; font-weight:800; letter-spacing:.2px; font-size:clamp(20px,3.6vw,34px); margin-top:4px;'>{asset_title}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='font-size:3rem; font-weight:800; text-align:center; margin:6px 0 14px 0;'>${last_price:.2f}</div>", unsafe_allow_html=True)
+
             lv = {k: float(out.get("levels", {}).get(k, 0.0)) for k in ("entry","sl","tp1","tp2","tp3")}
             if action in ("BUY", "SHORT"):
                 tp1, tp2, tp3 = lv["tp1"], lv["tp2"], lv["tp3"]
                 t1, t2, t3 = sanitize_targets(action, lv["entry"], tp1, tp2, tp3)
                 lv["tp1"], lv["tp2"], lv["tp3"] = float(t1), float(t2), float(t3)
-            # Цветная шапка:
+
             mode_text, entry_title = entry_mode_labels(action, lv.get("entry", last_price), last_price, ENTRY_MARKET_EPS)
             header_text = "WAIT"
             if action == "BUY": header_text = f"Long • {mode_text}"
             elif action == "SHORT": header_text = f"Short • {mode_text}"
-            bg = "#eb9414"
-            txt = "#fff"
-            border = "rgba(255,255,255,0.06)"
-            if action == "BUY": bg = "linear-gradient(98deg, #16b397, #16b397)"
-            elif action == "SHORT": bg = "linear-gradient(98deg, #e5484d, #e5484d)"
+
+            # Цветная шапка по направлению
+            bg = "linear-gradient(98deg, #1d2127, #1a1f26)"   # WAIT
+            if action == "BUY":   bg = "linear-gradient(98deg, #0e7a4f, #16b397)"
+            if action == "SHORT": bg = "linear-gradient(98deg, #b21f1f, #e5484d)"
+
             st.markdown(f"""
-            <div style="background:{bg}; padding:14px 16px; border-radius:16px; border:1px solid {border}; margin-bottom:10px; color:{txt};">
-              <div style="font-size:1.15rem; font-weight:700;">{header_text}</div>
-              <div style="opacity:.88; font-size:.95rem; margin-top:2px;">{int(round(conf_pct_val))}% confidence</div>
+            <div class="signal-header" style="background:{bg};">
+              <div class="signal-badge">{'Long' if action=='BUY' else ('Short' if action=='SHORT' else 'Wait')}</div>
+              <div class="signal-title">{header_text}</div>
+              <div class="muted" style="margin-left:auto;">{int(round(conf_pct_val))}% confidence</div>
             </div>
             """, unsafe_allow_html=True)
+
             now_utc = datetime.now(timezone.utc)
             eod_utc = now_utc.replace(hour=23, minute=59, second=59, microsecond=0)
             st.caption(f"As‑of: {now_utc.strftime('%Y-%m-%dT%H:%M:%SZ')} UTC • Valid until: {eod_utc.strftime('%Y-%m-%dT%H:%M:%SZ')} • Model: {model}")
+
             render_confidence_breakdown_inline(ticker, conf_pct_val)
+
             if action in ("BUY", "SHORT"):
                 c1, c2, c3 = st.columns(3)
                 with c1: st.markdown(card_html(entry_title, f"{lv['entry']:.2f}", color="green"), unsafe_allow_html=True)
@@ -357,7 +488,8 @@ with tab_signals:
                 rr = rr_line(lv)
                 if rr:
                     st.markdown(f"<div style='margin-top:6px; color:#FFA94D; font-weight:600;'>{rr}</div>", unsafe_allow_html=True)
-            # --- все фразы ---
+
+            # Фразы / дисклеймер
             CUSTOM_PHRASES = {
                 "CONTEXT": {
                     "support":["Цена у уровня покупательской активности. Оптимально — вход по ордеру из AI‑анализа с акцентом на рост; важен контроль риска и пересмотр плана при закреплении ниже зоны."],
@@ -368,51 +500,67 @@ with tab_signals:
                 "DISCLAIMER":"AI‑анализ носит информационный характер, не является инвестрекомендацией; рынок меняется быстро, прошлые результаты не гарантируют будущие."
             }
             ctx_key = "support" if action == "BUY" else ("resistance" if action == "SHORT" else "neutral")
-            st.markdown(f"<div style='opacity:0.9'>{CUSTOM_PHRASES['CONTEXT'][ctx_key][0]}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='panel' style='padding:10px;'>{CUSTOM_PHRASES['CONTEXT'][ctx_key][0]}</div>", unsafe_allow_html=True)
             if action in ("BUY", "SHORT"):
                 stopline = CUSTOM_PHRASES["STOPLINE"][0].format(sl=_fmt(lv["sl"]), risk_pct=f"{abs(lv['entry']-lv['sl'])/max(1e-9,abs(lv['entry']))*100.0:.1f}")
-                st.markdown(f"<div style='opacity:0.9; margin-top:4px'>{stopline}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='panel-compact' style='padding:10px;'>{stopline}</div>", unsafe_allow_html=True)
             st.caption(CUSTOM_PHRASES["DISCLAIMER"])
-            try: log_agent_performance(model, ticker, datetime.today(), 0.0)
-            except Exception: pass
+
+            try:
+                log_agent_performance(model, ticker, datetime.today(), 0.0)
+            except Exception:
+                pass
+
         except Exception as e:
             st.error(f"Ошибка анализа: {e}")
             st.exception(e)
-    elif not ticker:
+    else:
         st.info("Введите тикер и нажмите «Проанализировать». Примеры формата показаны в поле ввода.")
+
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # === TAB 2: Портфель ===
 with tab_portfolio:
     st.header("💼 Добавить сигнал в портфель")
+    st.markdown('<div class="panel">', unsafe_allow_html=True)
+
     if "last_signal" in st.session_state:
         sig = st.session_state["last_signal"]
         ticker = sig["ticker"]
         action = sig["action"]
         conf = sig["confidence"]
         out = sig["output"]
+
         if action not in ("BUY", "SHORT"):
             st.warning("⚠️ Последний сигнал — WAIT. Добавление в портфель недоступно.")
         elif not db.can_add_trade(st.session_state.user['user_id'], ticker):
             st.warning(f"⚠️ По {ticker} уже есть активная сделка! Закройте её перед добавлением новой.")
         else:
             st.success(f"✅ Сигнал: **{ticker}** — **{action}** (Confidence: {conf:.0f}%)")
+
             lv = {k: float(out.get("levels", {}).get(k, 0.0)) for k in ("entry","sl","tp1","tp2","tp3")}
+
             st.write("**Параметры сделки:**")
             st.write(f"- Entry: ${lv['entry']:.2f}")
             st.write(f"- Stop Loss: ${lv['sl']:.2f}")
             st.write(f"- TP1: ${lv['tp1']:.2f} (30% закрытие + SL в безубыток)")
             st.write(f"- TP2: ${lv['tp2']:.2f} (ещё 30%)")
             st.write(f"- TP3: ${lv['tp3']:.2f} (остаток 40%)")
+
             position_percent = st.slider("% от капитала", min_value=5, max_value=50, value=10, step=5)
             position_size = (user_info['current_capital'] * position_percent) / 100
             st.info(f"Размер позиции: **${position_size:,.2f}** ({position_percent}% от капитала)")
+
             potential_profit = position_size * abs(lv['tp1'] - lv['entry']) / max(1e-9, abs(lv['entry']))
             potential_loss = position_size * abs(lv['entry'] - lv['sl']) / max(1e-9, abs(lv['entry']))
+
             col1, col2 = st.columns(2)
             col1.success(f"Потенциальная прибыль (TP1): **${potential_profit:.2f}**")
             col2.error(f"Потенциальный убыток (SL): **${potential_loss:.2f}**")
+
             if conf < min_confidence_filter:
                 st.warning(f"⚠️ Confidence ({conf:.0f}%) ниже фильтра ({min_confidence_filter}%). Рекомендуется не добавлять.")
+
             if st.button("✅ ДОБАВИТЬ В ПОРТФЕЛЬ", type="primary", use_container_width=True):
                 try:
                     signal_data = {
@@ -439,9 +587,13 @@ with tab_portfolio:
     else:
         st.info("📊 Сначала проанализируйте тикер во вкладке 'AI Сигналы', затем добавьте сигнал в портфель здесь.")
 
+    st.markdown('</div>', unsafe_allow_html=True)
+
 # === TAB 3: Активные сделки ===
 with tab_active:
     st.header("📋 Активные сделки")
+    st.markdown('<div class="panel">', unsafe_allow_html=True)
+
     active_trades = db.get_active_trades(st.session_state.user['user_id'])
     if not active_trades:
         st.info("У вас пока нет активных сделок. Добавьте сигнал во вкладке 'Портфель'!")
@@ -461,99 +613,105 @@ with tab_active:
                     st.write(f"TP1: {'✅' if trade['tp1_closed'] else '⏳'} (30%)")
                     st.write(f"TP2: {'✅' if trade['tp2_closed'] else '⏳'} (30%)")
                     st.write(f"TP3: {'✅' if trade['tp3_closed'] else '⏳'} (40%)")
+
                 st.divider()
+
                 current_price = st.number_input(
                     "Текущая цена (для симуляции закрытия)",
                     value=float(trade['entry_price']),
                     key=f"price_{trade['trade_id']}"
                 )
-                # Логика частичного закрытия
+
                 if trade['direction'] == 'LONG':
                     if not trade['tp1_closed'] and current_price >= trade['take_profit_1']:
                         st.success("🎯 TP1 достигнут! Закрыть 30% + перенести SL в безубыток?")
                         if st.button("Закрыть TP1", key=f"tp1_{trade['trade_id']}"):
-                            db.partial_close_trade(trade['trade_id'], current_price, 'tp1')
-                            st.rerun()
+                            db.partial_close_trade(trade['trade_id'], current_price, 'tp1'); st.rerun()
                     elif trade['tp1_closed'] and not trade['tp2_closed'] and current_price >= trade['take_profit_2']:
                         st.success("🎯 TP2 достигнут! Закрыть ещё 30%?")
                         if st.button("Закрыть TP2", key=f"tp2_{trade['trade_id']}"):
-                            db.partial_close_trade(trade['trade_id'], current_price, 'tp2')
-                            st.rerun()
+                            db.partial_close_trade(trade['trade_id'], current_price, 'tp2'); st.rerun()
                     elif trade['tp2_closed'] and not trade['tp3_closed'] and current_price >= trade['take_profit_3']:
                         st.success("🎯 TP3 достигнут! Закрыть остаток (40%)?")
                         if st.button("Закрыть TP3", key=f"tp3_{trade['trade_id']}"):
-                            db.partial_close_trade(trade['trade_id'], current_price, 'tp3')
-                            st.rerun()
-                    elif (trade['sl_breakeven'] and current_price <= trade['entry_price']) or \
-                         (not trade['sl_breakeven'] and current_price <= trade['stop_loss']):
+                            db.partial_close_trade(trade['trade_id'], current_price, 'tp3'); st.rerun()
+                    elif (trade['sl_breakeven'] and current_price <= trade['entry_price']) or (not trade['sl_breakeven'] and current_price <= trade['stop_loss']):
                         st.error("⚠️ Stop Loss сработал!")
                         if st.button("Закрыть по SL", key=f"sl_{trade['trade_id']}"):
-                            db.full_close_trade(trade['trade_id'], current_price, "SL_HIT")
-                            st.rerun()
+                            db.full_close_trade(trade['trade_id'], current_price, "SL_HIT"); st.rerun()
                 elif trade['direction'] == 'SHORT':
                     if not trade['tp1_closed'] and current_price <= trade['take_profit_1']:
                         st.success("🎯 TP1 достигнут! Закрыть 30% + перенести SL в безубыток?")
                         if st.button("Закрыть TP1", key=f"tp1_{trade['trade_id']}"):
-                            db.partial_close_trade(trade['trade_id'], current_price, 'tp1')
-                            st.rerun()
+                            db.partial_close_trade(trade['trade_id'], current_price, 'tp1'); st.rerun()
                     elif trade['tp1_closed'] and not trade['tp2_closed'] and current_price <= trade['take_profit_2']:
                         st.success("🎯 TP2 достигнут! Закрыть ещё 30%?")
                         if st.button("Закрыть TP2", key=f"tp2_{trade['trade_id']}"):
-                            db.partial_close_trade(trade['trade_id'], current_price, 'tp2')
-                            st.rerun()
+                            db.partial_close_trade(trade['trade_id'], current_price, 'tp2'); st.rerun()
                     elif trade['tp2_closed'] and not trade['tp3_closed'] and current_price <= trade['take_profit_3']:
                         st.success("🎯 TP3 достигнут! Закрыть остаток (40%)?")
                         if st.button("Закрыть TP3", key=f"tp3_{trade['trade_id']}"):
-                            db.partial_close_trade(trade['trade_id'], current_price, 'tp3')
-                            st.rerun()
-                    elif (trade['sl_breakeven'] and current_price >= trade['entry_price']) or \
-                         (not trade['sl_breakeven'] and current_price >= trade['stop_loss']):
+                            db.partial_close_trade(trade['trade_id'], current_price, 'tp3'); st.rerun()
+                    elif (trade['sl_breakeven'] and current_price >= trade['entry_price']) or (not trade['sl_breakeven'] and current_price >= trade['stop_loss']):
                         st.error("⚠️ Stop Loss сработал!")
                         if st.button("Закрыть по SL", key=f"sl_{trade['trade_id']}"):
-                            db.full_close_trade(trade['trade_id'], current_price, "SL_HIT")
-                            st.rerun()
+                            db.full_close_trade(trade['trade_id'], current_price, "SL_HIT"); st.rerun()
+
                 if st.button("🔴 Закрыть всю позицию вручную", key=f"manual_{trade['trade_id']}"):
-                    db.full_close_trade(trade['trade_id'], current_price, "MANUAL")
-                    st.rerun()
+                    db.full_close_trade(trade['trade_id'], current_price, "MANUAL"); st.rerun()
+
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # === TAB 4: Статистика ===
 with tab_stats:
     st.header("📈 Статистика портфеля")
+    st.markdown('<div class="panel">', unsafe_allow_html=True)
+
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Всего сделок", stats['total_trades'])
     col2.metric("Win Rate", f"{stats['win_rate']:.1f}%")
     col3.metric("Закрыто", stats['closed_trades'])
     col4.metric("Средний P&L", f"{stats['avg_pnl']:.2f}%")
+
     closed_trades = db.get_closed_trades(st.session_state.user['user_id'])
     if closed_trades and pd:
         df = pd.DataFrame(closed_trades)
         df['cumulative_pnl'] = df['total_pnl_dollars'].cumsum()
         df['equity'] = user_info['initial_capital'] + df['cumulative_pnl']
+
         st.subheader("Equity Curve")
-        st.line_chart(df.set_index('close_date')['equity'])
+        try:
+            st.line_chart(df.set_index('close_date')['equity'])
+        except Exception:
+            st.line_chart(df['equity'])
+
         st.subheader("История сделок")
-        st.dataframe(
-            df[[
-                'ticker', 'direction', 'entry_price', 'close_price',
-                'close_reason', 'total_pnl_percent', 'total_pnl_dollars', 'close_date'
-            ]].style.format({
-                'entry_price': '${:.2f}',
-                'close_price': '${:.2f}',
-                'total_pnl_percent': '{:.2f}%',
-                'total_pnl_dollars': '${:.2f}'
-            }),
-            use_container_width=True
-        )
+        try:
+            st.dataframe(
+                df[[
+                    'ticker', 'direction', 'entry_price', 'close_price',
+                    'close_reason', 'total_pnl_percent', 'total_pnl_dollars', 'close_date'
+                ]].style.format({
+                    'entry_price': '${:.2f}',
+                    'close_price': '${:.2f}',
+                    'total_pnl_percent': '{:.2f}%',
+                    'total_pnl_dollars': '${:.2f}'
+                })
+            )
+        except Exception:
+            st.dataframe(df, use_container_width=True)
     else:
         st.info("История сделок пуста. Закройте хотя бы одну сделку для отображения статистики.")
 
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ========= Footer / About =========
 st.markdown("---")
-st.markdown("<style>.stButton > button { font-weight: 600; }</style>", unsafe_allow_html=True)
 st.markdown(
     """
-    <div style="background-color: #000000; color: #ffffff; padding: 15px; border-radius: 10px; margin-top: 6px;">
-        <h4 style="font-weight: 600; margin-top: 0;">О проекте</h4>
-        <p style="font-weight: 300; margin-bottom: 0;">
+    <div class="panel">
+        <h4 style="font-weight: 600; margin: 0 0 8px 0;">О проекте</h4>
+        <p class="muted" style="margin:0;">
         Arxora — современное решение, которое помогает трейдерам принимать точные и обоснованные решения
         с помощью ансамбля моделей и калибровки уверенности. Система автоматизирует анализ, повышает качество входов
         и помогает управлять рисками. Несколько ИИ-агентов с разными подходами: трендовые и контртрендовые стратегии. 
