@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
-# Arxora Trading Platform — app.py
-# v14.1 Final Production (radio/inputs/account/logout UX fixes)
+# app.py — Arxora Trading Platform v14.0 (FINAL PRODUCTION READY)
 
 import os
 import re
@@ -15,116 +14,19 @@ from typing import Any, Dict, Optional, List, Tuple
 
 import streamlit as st
 
-# ================= Page Config =================
-st.set_page_config(
-    page_title="Arxora",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="collapsed"  # по умолчанию контент в фокусе
-)
+# ========= Model Loading =========
+try:
+    from core.model_fetch import ensure_models
+    try:
+        ensure_models()
+    except Exception as _e:
+        import logging as _lg
+        _lg.warning("ensure_models failed: %s", _e)
+except Exception as _e:
+    import logging as _lg
+    _lg.warning("model_fetch import skipped: %s", _e)
 
-# ================= Styles (CSS) =================
-st.markdown("""
-<style>
-:root {
-  --bg-primary: #000000;
-  --surface: #1a1a1a;
-  --surface-hover: #252525;
-  --text-primary: #ffffff;
-  --text-secondary: #a0a0a0;
-  --text-tertiary: #707070;
-  --accent-primary: #16c784;
-  --accent-blue: #5B7FF9;
-  --border: rgba(255,255,255,0.12);
-}
-html, body, .stApp {
-  background: var(--bg-primary) !important;
-  color: var(--text-primary) !important;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif !important;
-}
-#MainMenu, footer, header {visibility: hidden !important;}
-
-.block-container {padding: 2rem !important; max-width: 1400px !important;}
-@media (max-width: 768px) {.block-container {padding: 1rem !important;}}
-
-/* ===== Inputs: одна обводка + glow ===== */
-.stTextInput > div, .stNumberInput > div {border: none !important; box-shadow: none !important;}
-.stTextInput input, .stNumberInput input {
-  background: #151515 !important;
-  color: #fff !important;
-  border: 1.5px solid rgba(91,127,249,0.55) !important;
-  border-radius: 14px !important;
-  padding: 0.9rem 1.1rem !important;
-  min-height: 46px !important;
-  box-shadow: none !important;
-  outline: none !important;
-  padding-right: 2.75rem !important; /* запас справа под подсказки/иконки */
-}
-.stTextInput input:focus, .stNumberInput input:focus {
-  border-color: #5B7FF9 !important;
-  box-shadow: inset 0 0 0 1px #5B7FF9, 0 0 0 3px rgba(91,127,249,0.25) !important;
-}
-.stTextInput input::placeholder {color: #9da3af !important; opacity: 1 !important;}
-/* Контейнеры инпутов не дают overlay выходить за рамку */
-.stTextInput > div, .stNumberInput > div,
-.stTextInput > div > div, .stNumberInput > div > div {
-  overflow: hidden !important; border-radius: 14px !important;
-}
-/* password: глаз и подсказки внутри */
-[data-testid="stPasswordInput"] > div {overflow: hidden !important; border-radius: 14px !important;}
-[data-testid="stPasswordInput"] svg {transform: translateX(-6px);}
-
-/* ===== Buttons ===== */
-.stButton > button {
-  padding: 0.75rem 1.5rem !important;
-  background: var(--accent-primary) !important;
-  color: #000 !important; border: none !important; border-radius: 10px !important;
-  font-weight: 700 !important; text-transform: uppercase !important; font-size: 13px !important;
-  min-height: 44px !important; transition: all 0.2s !important;
-}
-.stButton > button:hover {background: #14b578 !important; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(22,199,132,0.3) !important;}
-.stButton > button[kind="primary"] {background: var(--accent-blue) !important; color: #fff !important;}
-.stButton > button[kind="primary"]:hover {background: #4a6df0 !important; box-shadow: 0 4px 12px rgba(91,127,249,0.3) !important;}
-.stButton > button[kind="secondary"] {background: #ea3943 !important; color: #fff !important;}
-
-/* ===== Radio with blue dot (без серого круга) ===== */
-.stRadio > div {display: flex; gap: 0.75rem; flex-wrap: wrap;}
-.stRadio > div > label {
-  position: relative !important;
-  background: transparent !important;
-  border: 1px solid var(--border) !important;
-  border-radius: 10px !important;
-  padding: 0.65rem 1.2rem 0.65rem 2.6rem !important;
-  color: var(--text-secondary) !important;
-  font-size: 13px !important; font-weight: 600 !important; transition: all 0.2s !important;
-}
-/* скрыть базовую иконку */
-.stRadio > div > label > div:first-child {display: none !important;}
-.stRadio [data-baseweb="radio"] {display: none !important; visibility: hidden !important; width: 0 !important; height: 0 !important; overflow: hidden !important;}
-/* наша синяя точка */
-.stRadio > div > label::before {
-  content: '';
-  position: absolute; left: 0.9rem; top: 50%; transform: translateY(-50%);
-  width: 10px; height: 10px; border-radius: 50%;
-  background: rgba(160,160,160,0.25);
-  border: 2px solid rgba(160,160,160,0.6); transition: all 0.2s ease;
-}
-.stRadio > div > label:hover {border-color: var(--text-secondary) !important; background: var(--surface) !important;}
-.stRadio > div > label[data-checked="true"] {color: var(--accent-blue) !important; border-color: var(--accent-blue) !important;}
-.stRadio > div > label[data-checked="true"]::before {background: var(--accent-blue); border-color: var(--accent-blue); box-shadow: 0 0 8px rgba(91,127,249,0.65);}
-
-/* ===== Cards ===== */
-.trade-card {min-height: 150px; height: 100%; display: flex; flex-direction: column; justify-content: space-between;}
-@media (max-width: 768px) {.trade-card {min-height: 130px;}}
-
-/* Metrics */
-[data-testid="stMetric"] {background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem;}
-[data-testid="stMetric"] label {color: var(--text-tertiary) !important; text-transform: uppercase; font-size: 10px; letter-spacing: 0.5px; font-weight: 600;}
-[data-testid="stMetric"] [data-testid="stMetricValue"] {font-size: 24px !important; font-weight: 700 !important; color: #fff !important;}
-</style>
-""", unsafe_allow_html=True)
-
-# ================= Safe Imports / DB =================
+# ========= Database =========
 try:
     from database import TradingDatabase
     db = TradingDatabase()
@@ -136,33 +38,378 @@ try:
     import pandas as pd
 except Exception:
     pd = None
+
 try:
     import requests
 except Exception:
     requests = None
 
-# ================= Env =================
+# ========= Environment =========
+MODEL_DIR = Path(os.getenv("ARXORA_MODEL_DIR", "/tmp/models"))
 ARXORA_DEBUG = os.getenv("ARXORA_DEBUG", "0") == "1"
 ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))
 MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT",  "0.0010"))
 
-# ================= Helpers =================
-def clear_all_caches():
-    try:
-        st.cache_data.clear()
-    except Exception:
-        pass
+# ========= Page Config =========
+st.set_page_config(
+    page_title="Arxora",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"  # Changed to expanded
+)
 
-def normalize_for_polygon(symbol: str) -> str:
-    s = (symbol or "").strip().upper().replace(" ", "")
-    if ":" in s:
-        head, tail = s.split(":", 1)
-        tail = tail.replace("USDT", "USD").replace("USDC", "USD")
-        return f"{head}:{tail}"
-    if re.match(r"^[A-Z]{2,10}USD(T|C)?$", s or ""):
-        s = s.replace("USDT", "USD").replace("USDC", "USD")
-        return f"X:{s}"
-    return s
+# ========= PRODUCTION-GRADE THEME =========
+st.markdown("""
+<style>
+:root {
+    --bg-primary: #000000;
+    --bg-secondary: #0a0a0a;
+    --surface: #1a1a1a;
+    --surface-hover: #252525;
+    --accent-primary: #16c784;
+    --accent-blue: #5B7FF9;
+    --success: #16c784;
+    --danger: #ea3943;
+    --warning: #ffa94d;
+    --text-primary: #ffffff;
+    --text-secondary: #a0a0a0;
+    --text-tertiary: #707070;
+    --border: rgba(255, 255, 255, 0.1);
+    --border-light: rgba(255, 255, 255, 0.05);
+}
+
+html, body, .stApp {
+    background: var(--bg-primary) !important;
+    color: var(--text-primary) !important;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif !important;
+}
+
+#MainMenu, footer, header {visibility: hidden !important;}
+.stDeployButton {display: none !important;}
+
+.block-container {
+    padding: 2rem !important;
+    max-width: 1400px !important;
+    margin: 0 auto !important;
+}
+
+/* Mobile responsive */
+@media (max-width: 768px) {
+    .block-container {
+        padding: 1rem !important;
+    }
+    h1 {
+        font-size: 24px !important;
+    }
+    h2 {
+        font-size: 18px !important;
+    }
+}
+
+.element-container {
+    margin-bottom: 1rem !important;
+}
+
+/* FIXED: Input fields - clean single border */
+.stTextInput > div > div > input,
+.stNumberInput > div > div > input {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 8px !important;
+    color: var(--text-primary) !important;
+    padding: 0.75rem 1rem !important;
+    font-size: 14px !important;
+    min-height: 44px !important;
+    box-shadow: none !important;
+}
+
+.stTextInput > div > div > input:focus,
+.stNumberInput > div > div > input:focus {
+    border: 1px solid var(--accent-primary) !important;
+    outline: none !important;
+    box-shadow: 0 0 0 1px var(--accent-primary) !important;
+}
+
+.stTextInput label, .stNumberInput label {
+    color: var(--text-secondary) !important;
+    font-weight: 600 !important;
+    text-transform: uppercase !important;
+    font-size: 11px !important;
+    letter-spacing: 0.5px !important;
+    margin-bottom: 0.5rem !important;
+}
+
+/* Remove default Streamlit input container borders */
+.stTextInput > div,
+.stNumberInput > div {
+    border: none !important;
+    box-shadow: none !important;
+}
+
+/* Buttons */
+.stButton > button {
+    padding: 0.75rem 1.5rem !important;
+    background: var(--accent-primary) !important;
+    color: #000 !important;
+    border: none !important;
+    border-radius: 8px !important;
+    font-weight: 700 !important;
+    text-transform: uppercase !important;
+    font-size: 13px !important;
+    letter-spacing: 0.5px !important;
+    min-height: 44px !important;
+    transition: all 0.2s !important;
+}
+
+.stButton > button:hover {
+    background: #14b578 !important;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(22, 199, 132, 0.3) !important;
+}
+
+.stButton > button[kind="primary"] {
+    background: var(--accent-blue) !important;
+    color: #fff !important;
+}
+
+.stButton > button[kind="primary"]:hover {
+    background: #4a6df0 !important;
+    box-shadow: 0 4px 12px rgba(91, 127, 249, 0.3) !important;
+}
+
+.stButton > button[kind="secondary"] {
+    background: var(--danger) !important;
+    color: #fff !important;
+}
+
+.stButton > button[kind="secondary"]:hover {
+    background: #d32f3a !important;
+    box-shadow: 0 4px 12px rgba(234, 57, 67, 0.3) !important;
+}
+
+/* Radio - clean with blue dot */
+.stRadio > div {
+    display: flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.stRadio > div > label {
+    background: transparent !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 8px !important;
+    padding: 0.65rem 1.25rem 0.65rem 2.5rem !important;
+    color: var(--text-secondary) !important;
+    font-size: 13px !important;
+    font-weight: 600 !important;
+    transition: all 0.2s !important;
+    cursor: pointer !important;
+    position: relative !important;
+}
+
+/* Hide Streamlit's default radio icon */
+.stRadio > div > label > div:first-child {
+    display: none !important;
+}
+
+.stRadio > div > label::before {
+    content: '';
+    position: absolute;
+    left: 1rem;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: transparent;
+    border: 2px solid var(--text-tertiary);
+    transition: all 0.2s;
+}
+
+.stRadio > div > label:hover {
+    border-color: var(--text-secondary) !important;
+    background: var(--surface) !important;
+}
+
+.stRadio > div > label[data-checked="true"] {
+    background: transparent !important;
+    border-color: var(--accent-blue) !important;
+    color: var(--accent-blue) !important;
+}
+
+.stRadio > div > label[data-checked="true"]::before {
+    background: var(--accent-blue);
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 8px rgba(91, 127, 249, 0.6);
+}
+
+/* Tabs */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 2rem;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0 !important;
+}
+
+.stTabs [data-baseweb="tab"] {
+    color: var(--text-tertiary);
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 1px;
+    padding: 1rem 0 !important;
+    background: transparent !important;
+}
+
+.stTabs [data-baseweb="tab"]:hover {
+    color: var(--text-secondary);
+}
+
+.stTabs [aria-selected="true"] {
+    color: var(--text-primary) !important;
+    border-bottom: 2px solid var(--accent-primary) !important;
+}
+
+/* Metrics */
+[data-testid="stMetric"] {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.25rem;
+}
+
+[data-testid="stMetric"] label {
+    color: var(--text-tertiary) !important;
+    text-transform: uppercase !important;
+    font-size: 10px !important;
+    letter-spacing: 0.5px !important;
+    font-weight: 600 !important;
+}
+
+[data-testid="stMetric"] [data-testid="stMetricValue"] {
+    font-size: 24px !important;
+    font-weight: 700 !important;
+    color: var(--text-primary) !important;
+}
+
+/* Slider */
+.stSlider {
+    padding: 0.5rem 0 !important;
+}
+
+/* Expander */
+.streamlit-expanderHeader {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text-primary) !important;
+    border-radius: 8px !important;
+    padding: 1rem !important;
+    font-weight: 600 !important;
+}
+
+.streamlit-expanderHeader:hover {
+    background: var(--surface-hover) !important;
+    border-color: var(--border) !important;
+}
+
+.streamlit-expanderContent {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    border-top: none !important;
+    border-radius: 0 0 8px 8px !important;
+    padding: 1.5rem !important;
+}
+
+/* Headings */
+h1 {
+    font-size: 32px !important;
+    font-weight: 700 !important;
+    margin-bottom: 0.5rem !important;
+    letter-spacing: -0.5px !important;
+}
+
+h2 {
+    font-size: 20px !important;
+    font-weight: 700 !important;
+    margin: 1.5rem 0 1rem 0 !important;
+}
+
+h3 {
+    font-size: 16px !important;
+    font-weight: 600 !important;
+    margin: 1rem 0 0.5rem 0 !important;
+}
+
+/* Captions */
+.caption {
+    font-size: 12px !important;
+    color: var(--text-tertiary) !important;
+    line-height: 1.5 !important;
+}
+
+/* Dataframe */
+.stDataFrame {
+    background: var(--surface) !important;
+    border-radius: 12px !important;
+}
+
+/* Footer */
+.footer-text {
+    text-align: center;
+    color: var(--text-tertiary);
+    font-size: 12px;
+    padding: 2rem 0 1rem 0;
+    border-top: 1px solid var(--border-light);
+}
+
+/* Standardized card height */
+.trade-card {
+    min-height: 150px;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+}
+
+@media (max-width: 768px) {
+    .trade-card {
+        min-height: 130px;
+    }
+}
+
+/* Info boxes - remove emoji compatibility */
+.stAlert {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 12px !important;
+    padding: 1rem !important;
+}
+
+</style>
+""", unsafe_allow_html=True)
+
+# ========= Helper Functions =========
+def clear_all_caches():
+    """Clear all Streamlit caches"""
+    st.cache_data.clear()
+
+def _user_exists_in_current_db(username: str) -> bool:
+    name = (username or "").strip()
+    if not name:
+        return False
+    conn = None
+    try:
+        conn = sqlite3.connect(db.db_name, timeout=10)
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM users WHERE username = ? COLLATE NOCASE", (name,))
+        return cur.fetchone() is not None
+    except Exception:
+        return False
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 def sanitize_targets(action: str, entry: float, tp1: float, tp2: float, tp3: float):
     step = max(MIN_TP_STEP_PCT * max(1.0, abs(entry)), 1e-6 * max(1.0, abs(entry)))
@@ -180,6 +427,17 @@ def sanitize_targets(action: str, entry: float, tp1: float, tp2: float, tp3: flo
         return a[0], a[1], a[2]
     return tp1, tp2, tp3
 
+def normalize_for_polygon(symbol: str) -> str:
+    s = (symbol or "").strip().upper().replace(" ", "")
+    if ":" in s:
+        head, tail = s.split(":", 1)
+        tail = tail.replace("USDT", "USD").replace("USDC", "USD")
+        return f"{head}:{tail}"
+    if re.match(r"^[A-Z]{2,10}USD(T|C)?$", s or ""):
+        s = s.replace("USDT", "USD").replace("USDC", "USD")
+        return f"X:{s}"
+    return s
+
 def rr_line(levels: Dict[str, float]) -> str:
     risk = abs(levels["entry"] - levels["sl"])
     if risk <= 1e-9:
@@ -189,7 +447,7 @@ def rr_line(levels: Dict[str, float]) -> str:
     rr3 = abs(levels["tp3"] - levels["entry"]) / risk
     return f"1:{rr1:.1f} (TP1) · 1:{rr2:.1f} (TP2) · 1:{rr3:.1f} (TP3)"
 
-@st.cache_data(show_spinner=False, ttl=86400, max_entries=1000)
+@st.cache_data(show_spinner=False, ttl=86400)
 def resolve_asset_title_polygon(raw_symbol: str, normalized: str) -> str:
     s = (raw_symbol or "").strip().upper()
     t = (normalized or s).strip().upper()
@@ -197,7 +455,11 @@ def resolve_asset_title_polygon(raw_symbol: str, normalized: str) -> str:
     if not api or requests is None:
         return s
     try:
-        r = requests.get(f"https://api.polygon.io/v3/reference/tickers/{t}", params={"apiKey": api}, timeout=2.5)
+        r = requests.get(
+            f"https://api.polygon.io/v3/reference/tickers/{t}",
+            params={"apiKey": api},
+            timeout=2.5
+        )
         if r.ok:
             data = r.json() or {}
             name = ((data.get("results") or {}).get("name") or "").strip()
@@ -207,12 +469,234 @@ def resolve_asset_title_polygon(raw_symbol: str, normalized: str) -> str:
         pass
     return s
 
-def normalize_override(ai_override: float) -> float:
-    # Приводим к шкале 0-100: предполагаем доверительный диапазон [-50, +50]
-    pct = 50 + (ai_override / 100.0) * 100  # -100→0, 0→50, +100→100
-    return max(0, min(100, pct))
+def get_tp_status(trade: Dict, price: float) -> Tuple[Optional[str], bool]:
+    """Get which TP can be closed"""
+    is_long = trade['direction'] == 'LONG'
+    
+    if not trade['tp1_closed']:
+        can_close = (price >= trade['take_profit_1']) if is_long else (price <= trade['take_profit_1'])
+        return ('tp1', can_close)
+    elif not trade['tp2_closed']:
+        can_close = (price >= trade['take_profit_2']) if is_long else (price <= trade['take_profit_2'])
+        return ('tp2', can_close)
+    elif not trade['tp3_closed']:
+        can_close = (price >= trade['take_profit_3']) if is_long else (price <= trade['take_profit_3'])
+        return ('tp3', can_close)
+    
+    return (None, False)
 
-# ================= Strategy Loader =================
+def check_sl_hit(trade: Dict, price: float) -> bool:
+    """Check if stop loss is hit"""
+    is_long = trade['direction'] == 'LONG'
+    
+    if trade['sl_breakeven']:
+        return (price <= trade['entry_price']) if is_long else (price >= trade['entry_price'])
+    else:
+        return (price <= trade['stop_loss']) if is_long else (price >= trade['stop_loss'])
+
+def render_signal_card(action: str, ticker: str, price: float, conf_pct: float, rules_conf: float, levels: Dict, output: Dict, model_name: str):
+    """Render premium signal card with AI override indicator"""
+    
+    asset_title = resolve_asset_title_polygon(ticker, ticker)
+    ai_override = conf_pct - rules_conf
+    
+    # Extract probabilities
+    probs = output.get('probs') or {}
+    tp1_prob = int(probs.get('tp1', 0.0) * 100) if probs else 0
+    tp2_prob = int(probs.get('tp2', 0.0) * 100) if probs else 0
+    tp3_prob = int(probs.get('tp3', 0.0) * 100) if probs else 0
+    
+    # Main signal card
+    if action == "BUY":
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, rgba(22, 199, 132, 0.25), rgba(22, 199, 132, 0.05)); 
+                    border: 2px solid #16c784; 
+                    border-radius: 16px; 
+                    padding: 2rem; 
+                    margin: 1.5rem 0;
+                    box-shadow: 0 8px 24px rgba(22, 199, 132, 0.15);">
+            <div style="font-size: 24px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem; letter-spacing: -0.3px;">
+                Long • Buy Limit
+            </div>
+            <div style="font-size: 14px; color: #b0b0b0;">
+                {int(conf_pct)}% confidence
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+    elif action == "SHORT":
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, rgba(234, 57, 67, 0.25), rgba(234, 57, 67, 0.05)); 
+                    border: 2px solid #ea3943; 
+                    border-radius: 16px; 
+                    padding: 2rem; 
+                    margin: 1.5rem 0;
+                    box-shadow: 0 8px 24px rgba(234, 57, 67, 0.15);">
+            <div style="font-size: 24px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem; letter-spacing: -0.3px;">
+                Short • Sell Limit
+            </div>
+            <div style="font-size: 14px; color: #b0b0b0;">
+                {int(conf_pct)}% confidence
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+    else:
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, rgba(255, 169, 77, 0.25), rgba(255, 169, 77, 0.05)); 
+                    border: 2px solid #ffa94d; 
+                    border-radius: 16px; 
+                    padding: 2rem; 
+                    margin: 1.5rem 0;
+                    box-shadow: 0 8px 24px rgba(255, 169, 77, 0.15);">
+            <div style="font-size: 24px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem; letter-spacing: -0.3px;">
+                Wait
+            </div>
+            <div style="font-size: 14px; color: #b0b0b0;">
+                {int(conf_pct)}% confidence
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Show model and asset info
+    st.caption(f"**{asset_title}** • Model: **{model_name}** • As-of: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    
+    # AI Override INDICATOR (RESTORED)
+    override_pct = min(100, max(0, (ai_override + 50)))  # Normalize to 0-100
+    st.markdown(f"""
+    <div style="margin: 1rem 0 1.5rem 0;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+            <span style="font-size: 11px; color: #a0a0a0; text-transform: uppercase; letter-spacing: 1px; font-weight: 600;">AI Override</span>
+            <span style="font-size: 13px; color: #ffffff; font-weight: 700;">{ai_override:+.0f}%</span>
+        </div>
+        <div style="height: 8px; background: rgba(255, 255, 255, 0.05); border-radius: 4px; overflow: hidden;">
+            <div style="height: 100%; width: {override_pct}%; background: linear-gradient(90deg, #16c784, #5B7FF9); transition: width 0.6s ease;"></div>
+        </div>
+        <div style="font-size: 10px; color: #707070; margin-top: 0.25rem; font-family: 'SF Mono', monospace;">
+            Rules: {rules_conf:.0f}% → ML: {conf_pct:.0f}%
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Signal Description
+    if action in ("BUY", "SHORT"):
+        risk_pct = abs(levels['entry'] - levels['sl']) / max(1e-9, abs(levels['entry'])) * 100
+        
+        if action == "BUY":
+            description = f"""
+Price at buyer demand level. Optimal entry via AI-analyzed order with growth focus; 
+risk control and plan revision essential if consolidation occurs below zone.
+
+**Stop-loss:** ${levels['sl']:.2f}. Potential risk ~{risk_pct:.1f}% from entry.
+            """
+        else:  # SHORT
+            description = f"""
+Price at resistance level. Optimal entry via AI-analyzed order with downside focus; 
+risk control and plan revision essential if consolidation occurs above zone.
+
+**Stop-loss:** ${levels['sl']:.2f}. Potential risk ~{risk_pct:.1f}% from entry.
+            """
+        
+        st.markdown(description)
+    
+    st.markdown(f"### ${price:,.2f}")
+    
+    if action in ("BUY", "SHORT"):
+        st.markdown("---")
+        
+        # Standardized height cards
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown(f"""
+            <div class="trade-card" style="background: linear-gradient(145deg, #1e3a2c, #1a1a1a); 
+                        border: 2px solid rgba(22, 199, 132, 0.4); 
+                        border-radius: 16px; 
+                        padding: 1.5rem;
+                        box-shadow: 0 8px 16px rgba(22, 199, 132, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
+                <div style="font-size: 10px; color: #16c784; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">ENTRY</div>
+                <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px;">${levels['entry']:.2f}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col2:
+            st.markdown(f"""
+            <div class="trade-card" style="background: linear-gradient(145deg, #3a1e1e, #1a1a1a); 
+                        border: 2px solid rgba(234, 57, 67, 0.4); 
+                        border-radius: 16px; 
+                        padding: 1.5rem;
+                        box-shadow: 0 8px 16px rgba(234, 57, 67, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
+                <div style="font-size: 10px; color: #ea3943; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">STOP LOSS</div>
+                <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px;">${levels['sl']:.2f}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col3:
+            st.markdown(f"""
+            <div class="trade-card" style="background: linear-gradient(145deg, #1e2a3a, #1a1a1a); 
+                        border: 2px solid rgba(91, 127, 249, 0.4); 
+                        border-radius: 16px; 
+                        padding: 1.5rem;
+                        box-shadow: 0 8px 16px rgba(91, 127, 249, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
+                <div style="font-size: 10px; color: #5B7FF9; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">TP1</div>
+                <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px; margin-bottom: 0.5rem;">${levels['tp1']:.2f}</div>
+                <div style="font-size: 11px; color: #16c784; font-weight: 600;">Probability {tp1_prob}%</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown(f"""
+            <div class="trade-card" style="background: linear-gradient(145deg, #1e2a3a, #1a1a1a); 
+                        border: 2px solid rgba(91, 127, 249, 0.4); 
+                        border-radius: 16px; 
+                        padding: 1.5rem;
+                        box-shadow: 0 8px 16px rgba(91, 127, 249, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
+                <div style="font-size: 10px; color: #5B7FF9; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">TP2</div>
+                <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px; margin-bottom: 0.5rem;">${levels['tp2']:.2f}</div>
+                <div style="font-size: 11px; color: #16c784; font-weight: 600;">Probability {tp2_prob}%</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col2:
+            st.markdown(f"""
+            <div class="trade-card" style="background: linear-gradient(145deg, #1e2a3a, #1a1a1a); 
+                        border: 2px solid rgba(91, 127, 249, 0.4); 
+                        border-radius: 16px; 
+                        padding: 1.5rem;
+                        box-shadow: 0 8px 16px rgba(91, 127, 249, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
+                <div style="font-size: 10px; color: #5B7FF9; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">TP3</div>
+                <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px; margin-bottom: 0.5rem;">${levels['tp3']:.2f}</div>
+                <div style="font-size: 11px; color: #16c784; font-weight: 600;">Probability {tp3_prob}%</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        st.markdown("---")
+        
+        # R/R in WHITE
+        rr = rr_line(levels)
+        if rr:
+            st.markdown(f"""
+            <div style="background: rgba(91, 127, 249, 0.1); 
+                        border: 1px solid rgba(91, 127, 249, 0.3); 
+                        border-radius: 12px; 
+                        padding: 1rem;
+                        text-align: center;">
+                <div style="font-size: 14px; font-weight: 700; color: #ffffff;">RR ≈ {rr}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+# ========= Strategy Loading =========
+try:
+    import services.data  # noqa
+except Exception:
+    try:
+        import core.data as _core_data
+        sys.modules['services.data'] = _core_data
+    except Exception:
+        pass
+
 def _load_strategy_module():
     try:
         mod = importlib.import_module("core.strategy")
@@ -246,255 +730,184 @@ def run_model_by_name(ticker_norm: str, model_name: str) -> Dict[str, Any]:
         return getattr(mod, fname)(ticker_norm, "Краткосрочный")
     raise RuntimeError(f"Strategy {model_name} is not available.")
 
-# ================= UI Components =================
-def render_signal_card(action: str, ticker: str, price: float, conf_pct: float, rules_conf: float, levels: Dict, output: Dict, model_name: str):
-    asset_title = resolve_asset_title_polygon(ticker, ticker)
-    ai_override = conf_pct - rules_conf
-    probs = output.get('probs') or {}
-    tp1_prob = int(probs.get('tp1', 0.0) * 100) if probs else 0
-    tp2_prob = int(probs.get('tp2', 0.0) * 100) if probs else 0
-    tp3_prob = int(probs.get('tp3', 0.0) * 100) if probs else 0
+try:
+    from core.performance_tracker import log_agent_performance, get_agent_performance
+except Exception:
+    def log_agent_performance(*args, **kwargs): pass
+    def get_agent_performance(*args, **kwargs): return None
 
-    # Header card
-    if action == "BUY":
-        st.markdown("""
-        <div style="background: linear-gradient(135deg, rgba(22, 199, 132, 0.25), rgba(22, 199, 132, 0.05));
-                    border: 2px solid #16c784; border-radius: 16px; padding: 2rem; margin: 1.5rem 0;
-                    box-shadow: 0 8px 24px rgba(22, 199, 132, 0.15);">
-            <div style="font-size: 24px; font-weight: 700;">Long • Buy Limit</div>
-            <div style="font-size: 14px; color: #b0b0b0;">{}% confidence</div>
-        </div>
-        """.format(int(conf_pct)), unsafe_allow_html=True)
-    elif action == "SHORT":
-        st.markdown("""
-        <div style="background: linear-gradient(135deg, rgba(234, 57, 67, 0.25), rgba(234, 57, 67, 0.05));
-                    border: 2px solid #ea3943; border-radius: 16px; padding: 2rem; margin: 1.5rem 0;
-                    box-shadow: 0 8px 24px rgba(234, 57, 67, 0.15);">
-            <div style="font-size: 24px; font-weight: 700;">Short • Sell Limit</div>
-            <div style="font-size: 14px; color: #b0b0b0;">{}% confidence</div>
-        </div>
-        """.format(int(conf_pct)), unsafe_allow_html=True)
-    else:
-        st.markdown("""
-        <div style="background: linear-gradient(135deg, rgba(255, 169, 77, 0.25), rgba(255, 169, 77, 0.05));
-                    border: 2px solid #ffa94d; border-radius: 16px; padding: 2rem; margin: 1.5rem 0;
-                    box-shadow: 0 8px 24px rgba(255, 169, 77, 0.15);">
-            <div style="font-size: 24px; font-weight: 700;">Wait</div>
-            <div style="font-size: 14px; color: #b0b0b0;">{}% confidence</div>
-        </div>
-        """.format(int(conf_pct)), unsafe_allow_html=True)
-
-    # Caption + AI override indicator
-    st.caption(f"**{asset_title}** • Model: **{model_name}** • As-of: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    bar_width = normalize_override(ai_override)
-    st.markdown(f"""
-    <div style="margin: 1rem 0 1.5rem 0;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;">
-        <span style="font-size:11px;color:#a0a0a0;text-transform:uppercase;letter-spacing:1px;font-weight:600;">AI Override</span>
-        <span style="font-size:13px;color:#ffffff;font-weight:700;">{ai_override:+.0f}%</span>
-      </div>
-      <div style="height:8px;background:rgba(255,255,255,0.05);border-radius:4px;overflow:hidden;">
-        <div style="height:100%;width:{bar_width}%;background:linear-gradient(90deg,#16c784,#5B7FF9);transition:width .6s;"></div>
-      </div>
-      <div style="font-size:10px;color:#707070;margin-top:.25rem;font-family:'SF Mono',monospace;">Rules: {rules_conf:.0f}% → ML: {conf_pct:.0f}%</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # Description
-    if action in ("BUY", "SHORT"):
-        risk_pct = abs(levels['entry'] - levels['sl']) / max(1e-9, abs(levels['entry'])) * 100
-        if action == "BUY":
-            desc = f"""
-Price at buyer demand level. Optimal entry via AI-analyzed order with growth focus; 
-risk control and plan revision essential if consolidation occurs below zone.
-
-**Stop-loss:** ${levels['sl']:.2f}. Potential risk ~{risk_pct:.1f}% from entry.
-"""
-        else:
-            desc = f"""
-Price at resistance level. Optimal entry via AI-analyzed order with downside focus; 
-risk control and plan revision essential if consolidation occurs above zone.
-
-**Stop-loss:** ${levels['sl']:.2f}. Potential risk ~{risk_pct:.1f}% from entry.
-"""
-        st.markdown(desc)
-
-    st.markdown(f"### ${price:,.2f}")
-
-    if action in ("BUY", "SHORT"):
-        st.markdown("---")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown(f"""
-            <div class="trade-card" style="background: linear-gradient(145deg,#1e3a2c,#1a1a1a); border:2px solid rgba(22,199,132,.4); border-radius:16px; padding:1.5rem;">
-              <div style="font-size:10px;color:#16c784;text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-bottom:.75rem;">ENTRY</div>
-              <div style="font-size:28px;font-weight:700;">${levels['entry']:.2f}</div>
-            </div>
-            """, unsafe_allow_html=True)
-        with c2:
-            st.markdown(f"""
-            <div class="trade-card" style="background: linear-gradient(145deg,#3a1e1e,#1a1a1a); border:2px solid rgba(234,57,67,.4); border-radius:16px; padding:1.5rem;">
-              <div style="font-size:10px;color:#ea3943;text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-bottom:.75rem;">STOP LOSS</div>
-              <div style="font-size:28px;font-weight:700;">${levels['sl']:.2f}</div>
-            </div>
-            """, unsafe_allow_html=True)
-        with c3:
-            st.markdown(f"""
-            <div class="trade-card" style="background: linear-gradient(145deg,#1e2a3a,#1a1a1a); border:2px solid rgba(91,127,249,.4); border-radius:16px; padding:1.5rem;">
-              <div style="font-size:10px;color:#5B7FF9;text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-bottom:.75rem;">TP1</div>
-              <div style="font-size:28px;font-weight:700;margin-bottom:.5rem;">${levels['tp1']:.2f}</div>
-              <div style="font-size:11px;color:#16c784;font-weight:600;">Probability {tp1_prob}%</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        c1, c2, _ = st.columns(3)
-        with c1:
-            st.markdown(f"""
-            <div class="trade-card" style="background: linear-gradient(145deg,#1e2a3a,#1a1a1a); border:2px solid rgba(91,127,249,.4); border-radius:16px; padding:1.5rem;">
-              <div style="font-size:10px;color:#5B7FF9;text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-bottom:.75rem;">TP2</div>
-              <div style="font-size:28px;font-weight:700;margin-bottom:.5rem;">${levels['tp2']:.2f}</div>
-              <div style="font-size:11px;color:#16c784;font-weight:600;">Probability {tp2_prob}%</div>
-            </div>
-            """, unsafe_allow_html=True)
-        with c2:
-            st.markdown(f"""
-            <div class="trade-card" style="background: linear-gradient(145deg,#1e2a3a,#1a1a1a); border:2px solid rgba(91,127,249,.4); border-radius:16px; padding:1.5rem;">
-              <div style="font-size:10px;color:#5B7FF9;text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-bottom:.75rem;">TP3</div>
-              <div style="font-size:28px;font-weight:700;margin-bottom:.5rem;">${levels['tp3']:.2f}</div>
-              <div style="font-size:11px;color:#16c784;font-weight:600;">Probability {tp3_prob}%</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        st.markdown("---")
-        rr = rr_line(levels)
-        if rr:
-            st.markdown(f"""
-            <div style="background: rgba(91,127,249,0.1); border:1px solid rgba(91,127,249,0.3); border-radius:12px; padding:1rem; text-align:center;">
-              <div style="font-size:14px;font-weight:700;color:#fff;">RR ≈ {rr}</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-# ================= Auth Helpers =================
+# ========= AUTH PAGE =========
 def show_auth_page():
     st.markdown("<br><br>", unsafe_allow_html=True)
-    col1, col2, col3 = st.columns([1,2,1])
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.markdown("""
-        <div style="text-align:center;margin-bottom:2rem;">
-          <div style="font-size:36px;font-weight:700;">Arxora</div>
-          <div style="font-size:13px;color:#707070;text-transform:uppercase;letter-spacing:1.5px;">Trade Smarter</div>
+        <div style="text-align: center; margin-bottom: 3rem;">
+            <div style="font-size: 36px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem; letter-spacing: -0.5px;">Arxora</div>
+            <div style="font-size: 13px; color: #707070; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 500;">Trade Smarter</div>
         </div>
         """, unsafe_allow_html=True)
+        
         tab1, tab2 = st.tabs(["Login", "Register"])
+        
         with tab1:
             st.subheader("Sign In")
             username = st.text_input("Username", key="login_user")
             password = st.text_input("Password", type="password", key="login_pass")
-            if st.button("Sign In", type="primary", use_container_width=True, key="signin_btn"):
+            
+            if st.button("Sign In", type="primary", use_container_width=True):
                 if not username or not password:
                     st.error("Enter username and password")
                 else:
-                    try:
-                        user = db.login_user(username, password)
-                        if user:
-                            st.session_state.user = {"user_id": user["user_id"], "username": user["username"]}
-                            st.success("Login successful!")
-                            st.rerun()
-                        else:
-                            st.error("Invalid credentials")
-                    except Exception as e:
-                        st.error(str(e))
-                        if ARXORA_DEBUG: st.exception(e)
+                    user = db.login_user(username, password)
+                    if user:
+                        st.session_state.user = user
+                        st.success("Login successful!")
+                        st.rerun()
+                    else:
+                        st.error("Invalid credentials")
+        
         with tab2:
             st.subheader("Create Account")
             new_user = st.text_input("Username", key="reg_user")
             new_pass = st.text_input("Password", type="password", key="reg_pass")
             capital = st.number_input("Initial Capital", min_value=1000, value=10000, step=1000)
-            if st.button("Create Account", type="primary", use_container_width=True, key="create_btn"):
+            
+            if st.button("Create Account", type="primary", use_container_width=True):
                 if len((new_user or "").strip()) < 3:
                     st.error("Username: min 3 characters")
                 elif len((new_pass or "").strip()) < 6:
                     st.error("Password: min 6 characters")
+                elif _user_exists_in_current_db(new_user):
+                    st.error("Username taken")
                 else:
                     try:
                         user_id = db.register_user(new_user, new_pass, capital)
                         if user_id:
                             user = db.login_user(new_user, new_pass)
                             if user:
-                                st.session_state.user = {"user_id": user["user_id"], "username": user["username"]}
+                                st.session_state.user = user
                                 st.success("Account created!")
                                 st.rerun()
                     except Exception as e:
-                        st.error(str(e))
-                        if ARXORA_DEBUG: st.exception(e)
+                        st.error(f"Error: {e}")
 
-# ================= Guard =================
+# ========= CHECK AUTH =========
 if 'user' not in st.session_state:
     show_auth_page()
     st.stop()
 
-# ================= Sidebar (Account + Logout) =================
-user_id = st.session_state.get('user', {}).get('user_id')
-user_info = db.get_user_info(user_id) if user_id else None
-stats = db.get_statistics(user_id) if user_id else None
+# ========= INIT SESSION =========
+if 'min_confidence_filter' not in st.session_state:
+    st.session_state['min_confidence_filter'] = 60
 
+# ========= SIDEBAR with Account Window (FIXED) =========
 with st.sidebar:
     st.markdown("""
-    <div style="margin-bottom:1.5rem;">
-      <div style="font-size:26px;font-weight:700;">Arxora</div>
-      <div style="font-size:11px;color:#707070;text-transform:uppercase;letter-spacing:1.2px;">Trade Smarter</div>
+    <div style="margin-bottom: 2rem;">
+        <div style="font-size: 26px; font-weight: 700; color: #ffffff; margin-bottom: 0.25rem;">Arxora</div>
+        <div style="font-size: 11px; color: #707070; text-transform: uppercase; letter-spacing: 1.2px;">Trade Smarter</div>
     </div>
     """, unsafe_allow_html=True)
+    
     st.markdown("---")
-    st.subheader("Account")
-    if not user_info:
-        st.info("Not signed in")
-        if st.button("Go to Login", key="go_login_sidebar", use_container_width=True):
-            for k in list(st.session_state.keys()):
-                if k not in ("_session",):
-                    del st.session_state[k]
-            st.rerun()
-    else:
-        current_capital = float(user_info.get('current_capital', 0) or 0)
-        initial_capital = float(user_info.get('initial_capital', 0) or 0)
+    
+    user_info = db.get_user_info(st.session_state.user['user_id'])
+    stats = db.get_statistics(st.session_state.user['user_id'])
+    
+    if user_info:
+        # Account Window
+        st.subheader("Account")
+        
+        current_capital = float(user_info['current_capital'])
+        initial_capital = float(user_info['initial_capital'])
         pnl = current_capital - initial_capital
         pnl_pct = (pnl / max(1e-9, initial_capital)) * 100
+        
         pnl_color = '#16c784' if pnl >= 0 else '#ea3943'
-        st.metric("Capital", f"${current_capital:,.2f}")
-        st.metric("Initial", f"${initial_capital:,.2f}")
-        st.metric("P&L", f"${pnl:+,.2f}")
-        st.metric("P&L %", f"{pnl_pct:+.2f}%")
+        
+        # Account metrics
+        st.markdown(f"""
+        <div style="background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem;">
+            <div style="margin-bottom: 1.5rem;">
+                <div style="font-size: 10px; color: #707070; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 0.5rem;">Current Capital</div>
+                <div style="font-size: 28px; font-weight: 700; color: #ffffff;">${current_capital:,.2f}</div>
+            </div>
+            <div style="border-top: 1px solid rgba(255,255,255,0.05); padding-top: 1rem;">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 0.75rem;">
+                    <span style="font-size: 12px; color: #a0a0a0;">Initial Capital:</span>
+                    <span style="font-size: 12px; color: #ffffff; font-weight: 600;">${initial_capital:,.2f}</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; margin-bottom: 0.75rem;">
+                    <span style="font-size: 12px; color: #a0a0a0;">Total P&L:</span>
+                    <span style="font-size: 12px; color: {pnl_color}; font-weight: 600;">${pnl:+,.2f}</span>
+                </div>
+                <div style="display: flex; justify-content: space-between;">
+                    <span style="font-size: 12px; color: #a0a0a0;">P&L %:</span>
+                    <span style="font-size: 12px; color: {pnl_color}; font-weight: 600;">{pnl_pct:+.2f}%</span>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
         st.markdown("---")
+        
+        # Statistics
         st.subheader("Statistics")
-        st.metric("Total", stats.get('total_trades', 0) if stats else 0)
-        st.metric("Closed", stats.get('closed_trades', 0) if stats else 0)
-        st.metric("Win Rate", f"{stats.get('win_rate', 0):.1f}%" if stats else "0.0%")
-        st.metric("Avg P&L", f"{stats.get('avg_pnl', 0):.2f}%" if stats else "0.00%")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Total", stats['total_trades'])
+            st.metric("Closed", stats['closed_trades'])
+        with col2:
+            st.metric("Win Rate", f"{stats['win_rate']:.1f}%")
+            st.metric("Avg P&L", f"{stats['avg_pnl']:.2f}%")
+        
         st.markdown("---")
-        if st.button("Logout", key="logout_btn_sidebar", use_container_width=True):
+        
+        # Settings
+        st.subheader("Settings")
+        new_conf = st.slider(
+            "Min. Confidence (%)", 
+            0, 100, 
+            st.session_state['min_confidence_filter'], 
+            5
+        )
+        st.session_state['min_confidence_filter'] = new_conf
+        
+        st.markdown("---")
+        
+        # LOGOUT BUTTON (FIXED)
+        if st.button("Logout", use_container_width=True, key="logout_sidebar_btn"):
             clear_all_caches()
-            for k in list(st.session_state.keys()):
-                del st.session_state[k]
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
             st.rerun()
 
-# ================= Main =================
-st.markdown('<div style="font-size:32px;font-weight:700;letter-spacing:-0.5px;">Arxora</div>', unsafe_allow_html=True)
+# ========= MAIN CONTENT =========
+st.markdown("""
+<div style="margin-bottom: 2rem;">
+    <div style="font-size: 32px; font-weight: 700; color: #ffffff; margin-bottom: 0.25rem; letter-spacing: -0.5px;">Arxora</div>
+</div>
+""", unsafe_allow_html=True)
 
 tabs = st.tabs(["AI Signals", "Portfolio", "Active Trades", "Statistics"])
 
-# ---- Tab: AI Signals ----
+# TAB 1: AI Signals
 with tabs[0]:
     st.subheader("Trading Agent Analysis")
+    
     st.write("**Model**")
     models = get_available_models()
     model = st.radio("Select Model", models, horizontal=True, label_visibility="collapsed", key="model_radio")
+    
     st.write("**Symbol**")
-    c1, c2 = st.columns([4,1])
-    with c1:
+    col1, col2 = st.columns([4, 1])
+    with col1:
         ticker = st.text_input("Enter Symbol", placeholder="AAPL, TSLA, BTCUSD, ETHUSD", label_visibility="collapsed")
-    with c2:
+    with col2:
         analyze_btn = st.button("Analyze", type="primary", use_container_width=True)
+    
     if analyze_btn:
         if not ticker:
             st.warning("Enter symbol")
@@ -507,11 +920,14 @@ with tabs[0]:
                     action = str(rec.get("action", "WAIT"))
                     conf = float(rec.get("confidence", 0.0))
                     conf_pct = conf * 100 if conf <= 1 else conf
+                    
                     price = float(output.get("last_price", 0.0) or 0.0)
-                    lv = {k: float(output.get("levels", {}).get(k, 0.0)) for k in ("entry","sl","tp1","tp2","tp3")}
-                    if action in ("BUY","SHORT"):
+                    lv = {k: float(output.get("levels", {}).get(k, 0.0)) for k in ("entry", "sl", "tp1", "tp2", "tp3")}
+                    
+                    if action in ("BUY", "SHORT"):
                         tp1, tp2, tp3 = sanitize_targets(action, lv["entry"], lv["tp1"], lv["tp2"], lv["tp3"])
                         lv["tp1"], lv["tp2"], lv["tp3"] = tp1, tp2, tp3
+                    
                     st.session_state["last_signal"] = {
                         "ticker": ticker.upper(),
                         "symbol": symbol,
@@ -522,67 +938,101 @@ with tabs[0]:
                         "price": price,
                         "levels": lv
                     }
+                    
                     rules_conf = float(output.get("rules_confidence", 44.0))
                     render_signal_card(action, ticker.upper(), price, conf_pct, rules_conf, lv, output, model)
+                    
+                    try:
+                        log_agent_performance(model, ticker, datetime.today(), 0.0)
+                    except:
+                        pass
+                        
                 except Exception as e:
                     st.error(f"Error: {e}")
-                    if ARXORA_DEBUG: st.exception(e)
+                    if ARXORA_DEBUG:
+                        st.exception(e)
 
-# ---- Tab: Portfolio ----
+# TAB 2: Portfolio (FIXED - neutral color + no emoji)
 with tabs[1]:
     st.subheader("Add to Portfolio")
+    
     if "last_signal" in st.session_state:
         sig = st.session_state["last_signal"]
-        if sig["action"] not in ("BUY","SHORT"):
+        
+        if sig["action"] not in ("BUY", "SHORT"):
             st.warning("Signal was WAIT - cannot add to portfolio")
         elif not db.can_add_trade(st.session_state.user['user_id'], sig["ticker"]):
             st.warning(f"Active trade already exists for {sig['ticker']}")
         else:
+            # FIXED: Neutral gray card
             st.markdown(f"""
-            <div style="background: rgba(26,26,26,0.85); border:1px solid rgba(255,255,255,0.12); border-radius:12px; padding:1.5rem; margin: 0.5rem 0 1rem 0;">
-              <div style="font-size:18px;font-weight:700;color:#fff;margin-bottom:.4rem;">{sig['ticker']} — {sig['action']} ({sig['confidence']:.0f}% confidence)</div>
-              <div style="font-size:13px;color:#a0a0a0;">Model: {sig['model']}</div>
+            <div style="background: rgba(26, 26, 26, 0.8); 
+                        border: 1px solid rgba(255, 255, 255, 0.1); 
+                        border-radius: 12px; 
+                        padding: 1.5rem; 
+                        margin: 1rem 0;">
+                <div style="font-size: 18px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem;">
+                    {sig['ticker']} — {sig['action']} ({sig['confidence']:.0f}% confidence)
+                </div>
+                <div style="font-size: 13px; color: #a0a0a0;">
+                    Model: {sig['model']}
+                </div>
             </div>
             """, unsafe_allow_html=True)
+            
             col1, col2 = st.columns(2)
             with col1:
                 position_pct = st.slider("Position Size (%)", 5, 50, 10, 5)
             with col2:
-                position_size = (user_info.get('current_capital', 0) * position_pct) / 100
+                position_size = (user_info['current_capital'] * position_pct) / 100
                 st.metric("Position Value", f"${position_size:,.2f}")
+            
             st.markdown("### Trade Parameters")
-            c1, c2, c3 = st.columns(3)
-            with c1: st.write(f"**Entry:** ${sig['levels']['entry']:.2f}")
-            with c2: st.write(f"**Stop Loss:** ${sig['levels']['sl']:.2f}")
-            with c3:
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.write(f"**Entry:** ${sig['levels']['entry']:.2f}")
+            with col2:
+                st.write(f"**Stop Loss:** ${sig['levels']['sl']:.2f}")
+            with col3:
                 risk_pct = abs(sig['levels']['entry'] - sig['levels']['sl']) / max(1e-9, sig['levels']['entry']) * 100
                 st.write(f"**Risk:** {risk_pct:.2f}%")
+            
+            st.markdown("### Take Profit Levels")
+            tp_data = []
             probs = sig["output"].get('probs') or {}
+            for i, tp_key in enumerate(['tp1', 'tp2', 'tp3'], 1):
+                tp_price = sig['levels'][tp_key]
+                tp_prob = int(probs.get(tp_key, 0.0) * 100) if probs else 0
+                pnl_pct = abs(tp_price - sig['levels']['entry']) / max(1e-9, sig['levels']['entry']) * 100
+                tp_data.append({
+                    "Level": f"TP{i}",
+                    "Price": f"${tp_price:.2f}",
+                    "Probability": f"{tp_prob}%",
+                    "Potential P&L": f"{pnl_pct:.2f}%"
+                })
+            
             if pd:
-                df_tp = pd.DataFrame([{
-                    "Level": "TP1", "Price": f"${sig['levels']['tp1']:.2f}",
-                    "Probability": f"{int(probs.get('tp1',0)*100)}%",
-                    "Potential P&L": f"{abs(sig['levels']['tp1']-sig['levels']['entry'])/max(1e-9,sig['levels']['entry'])*100:.2f}%"
-                },{
-                    "Level": "TP2", "Price": f"${sig['levels']['tp2']:.2f}",
-                    "Probability": f"{int(probs.get('tp2',0)*100)}%",
-                    "Potential P&L": f"{abs(sig['levels']['tp2']-sig['levels']['entry'])/max(1e-9,sig['levels']['entry'])*100:.2f}%"
-                },{
-                    "Level": "TP3", "Price": f"${sig['levels']['tp3']:.2f}",
-                    "Probability": f"{int(probs.get('tp3',0)*100)}%",
-                    "Potential P&L": f"{abs(sig['levels']['tp3']-sig['levels']['entry'])/max(1e-9,sig['levels']['entry'])*100:.2f}%"
-                }])
-                st.dataframe(df_tp, use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(tp_data), use_container_width=True, hide_index=True)
+            
+            st.markdown("---")
+            
+            # FIXED: No emoji
             st.markdown("""
-            <div style="background: rgba(91,127,249,0.1); border:1px solid rgba(91,127,249,0.3); border-radius:12px; padding:1rem;">
-              <div style="font-size:13px;color:#fff;font-weight:600;margin-bottom:.4rem;">Partial Close Strategy</div>
-              <div style="font-size:12px;color:#a0a0a0;">TP1 (50%), TP2 (30%), TP3 (20%). Stop-loss moves to breakeven after TP1.</div>
+            <div style="background: rgba(91, 127, 249, 0.1); 
+                        border: 1px solid rgba(91, 127, 249, 0.3); 
+                        border-radius: 12px; 
+                        padding: 1rem;">
+                <div style="font-size: 13px; color: #ffffff; font-weight: 600; margin-bottom: 0.5rem;">Partial Close Strategy</div>
+                <div style="font-size: 12px; color: #a0a0a0;">TP1 (50%), TP2 (30%), TP3 (20%). Stop-loss moves to breakeven after TP1.</div>
             </div>
             """, unsafe_allow_html=True)
+            
             st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("Add Trade to Portfolio", type="primary", use_container_width=True, key="add_portfolio_btn"):
+            
+            if st.button("Add Trade to Portfolio", type="primary", use_container_width=True):
                 try:
                     probs = sig["output"].get('probs') or {}
+                    
                     data = {
                         'ticker': sig["ticker"],
                         'direction': 'LONG' if sig["action"] == 'BUY' else 'SHORT',
@@ -591,107 +1041,169 @@ with tabs[1]:
                         'tp1': sig["levels"]['tp1'],
                         'tp2': sig["levels"]['tp2'],
                         'tp3': sig["levels"]['tp3'],
-                        'tp1_prob': float(probs.get('tp1',0))*100 if probs else 0.0,
-                        'tp2_prob': float(probs.get('tp2',0))*100 if probs else 0.0,
-                        'tp3_prob': float(probs.get('tp3',0))*100 if probs else 0.0,
+                        'tp1_prob': float(probs.get('tp1', 0.0)) * 100 if probs else 0.0,
+                        'tp2_prob': float(probs.get('tp2', 0.0)) * 100 if probs else 0.0,
+                        'tp3_prob': float(probs.get('tp3', 0.0)) * 100 if probs else 0.0,
                         'confidence': int(sig["confidence"]),
                         'model': sig["model"]
                     }
+                    
                     trade_id = db.add_trade(st.session_state.user['user_id'], data, position_pct)
                     st.success(f"Trade #{trade_id} added to portfolio!")
                     clear_all_caches()
                     del st.session_state["last_signal"]
-                    time.sleep(0.7)
+                    time.sleep(1)
                     st.rerun()
                 except Exception as e:
-                    st.error(str(e))
-                    if ARXORA_DEBUG: st.exception(e)
+                    st.error(f"Error adding trade: {str(e)}")
+                    if ARXORA_DEBUG:
+                        st.exception(e)
     else:
         st.info("Analyze an asset first to add it to your portfolio")
 
-# ---- Tab: Active Trades ----
+# TAB 3: Active Trades
 with tabs[2]:
     st.subheader("Active Trades")
+    
     trades = db.get_active_trades(st.session_state.user['user_id'])
+    
     if not trades:
         st.info("No active trades")
     else:
         for t in trades:
             with st.expander(f"**{t['ticker']}** — {t['direction']} • {t['remaining_percent']:.0f}% remaining • Conf: {t['confidence']}%"):
-                c1, c2, c3, c4 = st.columns(4)
-                with c1: st.metric("Entry", f"${t['entry_price']:.2f}")
-                with c2: st.metric("Position", f"${t['position_size']:.2f}")
-                with c3: st.metric("Model", t.get('model', 'N/A'))
-                with c4: st.metric("SL Status", "Breakeven" if t['sl_breakeven'] else "Active")
-                st.markdown("**Take Profit Status**")
-                c1, c2, c3 = st.columns(3)
-                with c1: st.write(f"{'✅ Closed' if t['tp1_closed'] else '⭕ Open'} TP1: ${t['take_profit_1']:.2f}")
-                with c2: st.write(f"{'✅ Closed' if t['tp2_closed'] else '⭕ Open'} TP2: ${t['take_profit_2']:.2f}")
-                with c3: st.write(f"{'✅ Closed' if t['tp3_closed'] else '⭕ Open'} TP3: ${t['take_profit_3']:.2f}")
-                st.markdown("---")
-                price = st.number_input("Current Price", float(t['entry_price']), key=f"p_{t['trade_id']}")
-                # Правила автозакрытия (по кнопке)
-                def _safe_do(fn, *args):
-                    try:
-                        return fn(*args)
-                    except Exception as e:
-                        st.error(str(e)); 
-                        if ARXORA_DEBUG: st.exception(e)
-                        return None
-                # Кнопки
-                col1, col2 = st.columns(2)
+                col1, col2, col3, col4 = st.columns(4)
                 with col1:
-                    # Проверяем, что можно закрыть текущий TP
-                    is_long = (t['direction'] == 'LONG')
-                    def _can(level): return (price >= level) if is_long else (price <= level)
-                    if not t['tp1_closed'] and _can(t['take_profit_1']):
-                        if st.button("Close TP1", key=f"tp1_{t['trade_id']}", use_container_width=True):
-                            _safe_do(db.partial_close_trade, t['trade_id'], price, 'tp1'); st.rerun()
-                    elif (t['tp1_closed'] and not t['tp2_closed']) and _can(t['take_profit_2']):
-                        if st.button("Close TP2", key=f"tp2_{t['trade_id']}", use_container_width=True):
-                            _safe_do(db.partial_close_trade, t['trade_id'], price, 'tp2'); st.rerun()
-                    elif (t['tp1_closed'] and t['tp2_closed'] and not t['tp3_closed']) and _can(t['take_profit_3']):
-                        if st.button("Close TP3", key=f"tp3_{t['trade_id']}", use_container_width=True):
-                            _safe_do(db.partial_close_trade, t['trade_id'], price, 'tp3'); st.rerun()
-                    # SL
-                    sl_hit = (price <= t['entry_price']) if (t['direction']=='LONG' and t['sl_breakeven']) else ((price <= t['stop_loss']) if t['direction']=='LONG' else (price >= t['stop_loss']))
+                    st.metric("Entry", f"${t['entry_price']:.2f}")
+                with col2:
+                    st.metric("Position", f"${t['position_size']:.2f}")
+                with col3:
+                    st.metric("Model", t.get('model', 'N/A'))
+                with col4:
+                    sl_status = "Breakeven" if t['sl_breakeven'] else "Active"
+                    st.metric("SL Status", sl_status)
+                
+                st.markdown("**Take Profit Status**")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    status = "✅ Closed" if t['tp1_closed'] else "⭕ Open"
+                    st.write(f"{status} TP1: ${t['take_profit_1']:.2f}")
+                with col2:
+                    status = "✅ Closed" if t['tp2_closed'] else "⭕ Open"
+                    st.write(f"{status} TP2: ${t['take_profit_2']:.2f}")
+                with col3:
+                    status = "✅ Closed" if t['tp3_closed'] else "⭕ Open"
+                    st.write(f"{status} TP3: ${t['take_profit_3']:.2f}")
+                
+                st.markdown("---")
+                
+                price = st.number_input("Current Price", float(t['entry_price']), key=f"p_{t['trade_id']}")
+                
+                tp_level, can_close_tp = get_tp_status(t, price)
+                sl_hit = check_sl_hit(t, price)
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    if tp_level and can_close_tp:
+                        if st.button(f"Close {tp_level.upper()}", key=f"{tp_level}_{t['trade_id']}", use_container_width=True):
+                            with st.spinner("Closing..."):
+                                try:
+                                    db.partial_close_trade(t['trade_id'], price, tp_level)
+                                    clear_all_caches()
+                                    st.success(f"{tp_level.upper()} closed!")
+                                    time.sleep(0.5)
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error: {e}")
+                    
                     if sl_hit:
-                        st.error("Stop Loss triggered!")
+                        st.error("⚠️ Stop Loss triggered!")
                         if st.button("Close at SL", key=f"sl_{t['trade_id']}", use_container_width=True):
-                            _safe_do(db.full_close_trade, t['trade_id'], price, "SL_HIT"); st.rerun()
+                            with st.spinner("Closing..."):
+                                try:
+                                    db.full_close_trade(t['trade_id'], price, "SL_HIT")
+                                    clear_all_caches()
+                                    st.success("Closed at SL")
+                                    time.sleep(0.5)
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error: {e}")
+                
                 with col2:
                     if st.button("Close All (Manual)", key=f"close_{t['trade_id']}", type="secondary", use_container_width=True):
-                        _safe_do(db.full_close_trade, t['trade_id'], price, "MANUAL"); st.rerun()
+                        with st.spinner("Closing..."):
+                            try:
+                                db.full_close_trade(t['trade_id'], price, "MANUAL")
+                                clear_all_caches()
+                                st.success("Position closed!")
+                                time.sleep(0.5)
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error: {e}")
 
-# ---- Tab: Statistics ----
+# TAB 4: Statistics
 with tabs[3]:
     st.subheader("Performance Overview")
-    if stats:
-        c1, c2, c3, c4 = st.columns(4)
-        with c1: st.metric("Total Trades", stats.get('total_trades', 0))
-        with c2: st.metric("Win Rate", f"{stats.get('win_rate', 0):.1f}%")
-        with c3: st.metric("Closed Trades", stats.get('closed_trades', 0))
-        with c4: st.metric("Avg P&L", f"{stats.get('avg_pnl', 0):.2f}%")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total Trades", stats['total_trades'])
+    with col2:
+        st.metric("Win Rate", f"{stats['win_rate']:.1f}%")
+    with col3:
+        st.metric("Closed Trades", stats['closed_trades'])
+    with col4:
+        st.metric("Avg P&L", f"{stats['avg_pnl']:.2f}%")
+    
     closed = db.get_closed_trades(st.session_state.user['user_id'])
     if closed and pd:
         df = pd.DataFrame(closed)
         df['cumulative_pnl'] = df['total_pnl_dollars'].cumsum()
+        
         st.markdown("### Equity Curve")
         st.line_chart(df['cumulative_pnl'])
+        
         st.markdown("### Trade History")
-        cols = ['ticker','direction','entry_price','close_price','total_pnl_percent']
-        if 'close_reason' in df.columns: cols.append('close_reason')
-        if 'close_date' in df.columns: cols.append('close_date')
-        disp = df[cols].copy()
-        disp.columns = [c.replace('_',' ').title() for c in disp.columns]
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        
+        # Safe dataframe handling
+        try:
+            display_cols = ['ticker', 'direction', 'entry_price', 'close_price', 'total_pnl_percent']
+            if 'close_reason' in df.columns:
+                display_cols.append('close_reason')
+            if 'close_date' in df.columns:
+                display_cols.append('close_date')
+            
+            display_df = df[display_cols].copy()
+            display_df.columns = [col.replace('_', ' ').title() for col in display_df.columns]
+            
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
+        except Exception as e:
+            st.error(f"Error displaying trade history: {e}")
+            if ARXORA_DEBUG:
+                st.exception(e)
+        
+        # Summary stats
+        st.markdown("### Performance Breakdown")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            winning_trades = len(df[df['total_pnl_percent'] > 0])
+            st.metric("Winning Trades", winning_trades)
+        with col2:
+            losing_trades = len(df[df['total_pnl_percent'] <= 0])
+            st.metric("Losing Trades", losing_trades)
+        with col3:
+            avg_win = df[df['total_pnl_percent'] > 0]['total_pnl_percent'].mean() if winning_trades > 0 else 0
+            st.metric("Avg Win", f"{avg_win:.2f}%")
     else:
         st.info("No closed trades yet")
 
-# ---- Footer ----
+# FOOTER
 st.markdown("""
-<div style="text-align:center;color:#707070;font-size:12px;padding:2rem 0 1rem;border-top:1px solid rgba(255,255,255,0.05);margin-top:2rem;">
-  Arxora · Professional Trading Intelligence Platform combining algorithmic strategies with machine learning. 
-  AI-generated signals are informational only and do not constitute investment advice.
+<div class="footer-text">
+    Arxora · Professional Trading Intelligence Platform combining algorithmic strategies with machine learning. 
+    Features ensemble analysis, confidence calibration, and comprehensive risk management. 
+    AI-generated signals are informational only and do not constitute investment advice; markets change rapidly, 
+    past results do not guarantee future outcomes.
 </div>
 """, unsafe_allow_html=True)
