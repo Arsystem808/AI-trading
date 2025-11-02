@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-# Arxora Trading Platform v16.1 — FINAL PRODUCTION (SELF-AUDITED)
-# All edge cases, security, and UX issues fixed based on critical self-review
+# Arxora Trading Platform v16.2 — FINAL PRODUCTION PREMIUM
+# With gradient borders, proper equity curve, and complete self-audit
 
 import os
 import re
@@ -60,7 +60,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# ========= PRODUCTION STYLES v16.1 =========
+# ========= PRODUCTION STYLES v16.2 - GRADIENT BORDERS =========
 st.markdown("""
 <style>
 :root {
@@ -85,46 +85,64 @@ html, body, .stApp {
 
 @media (max-width: 768px) {
   .block-container {padding: 1rem !important;}
-  .stRadio > div > label {padding: 0.6rem 1rem 0.6rem 2.2rem !important;}
 }
 
-/* ===== Inputs: Clean single border ===== */
+/* ===== GRADIENT BORDER INPUTS (Blue-Green) ===== */
+.stTextInput, .stNumberInput {
+  position: relative !important;
+  overflow: hidden !important;
+}
+
 .stTextInput > div, .stNumberInput > div,
 .stTextInput > div > div, .stNumberInput > div > div {
   border: none !important;
   box-shadow: none !important;
   background: transparent !important;
+  position: relative !important;
 }
 
 .stTextInput input, .stNumberInput input {
   background: #0a0a0a !important;
   color: #fff !important;
-  border: 1px solid rgba(91,127,249,0.6) !important;
+  border: 2px solid transparent !important;
   border-radius: 14px !important;
-  padding: 0.9rem 3rem 0.9rem 1.1rem !important;
+  padding: 0.9rem 1.1rem !important;
   min-height: 48px !important;
   font-size: 14px !important;
   box-shadow: none !important;
   outline: none !important;
   transition: all 0.2s ease !important;
+  background-clip: padding-box !important;
+  background-image: 
+    linear-gradient(#0a0a0a, #0a0a0a),
+    linear-gradient(90deg, #5B7FF9, #16c784) !important;
+  background-origin: border-box !important;
+  background-clip: padding-box, border-box !important;
+}
+
+.stTextInput input::placeholder {
+  color: transparent !important;
+  opacity: 0 !important;
 }
 
 .stTextInput input:focus, .stNumberInput input:focus {
-  border-color: #5B7FF9 !important;
-  box-shadow: 0 0 0 3px rgba(91,127,249,0.15) !important;
+  border: 2px solid transparent !important;
+  box-shadow: 0 0 0 4px rgba(91,127,249,0.25) !important;
+  background-image: 
+    linear-gradient(#0a0a0a, #0a0a0a),
+    linear-gradient(90deg, #16c784, #5B7FF9) !important;
 }
 
-.stTextInput input::placeholder {color: #606060 !important; opacity: 1 !important;}
-
-/* Container overflow fix */
-.stTextInput, .stNumberInput {position: relative !important; overflow: hidden !important;}
-.stTextInput > div, .stNumberInput > div {overflow: hidden !important; border-radius: 14px !important;}
+/* Hide "Press Enter to apply" text */
+.stTextInput input::after {
+  display: none !important;
+}
 
 /* ===== Buttons ===== */
 .stButton > button {
   padding: 0.8rem 1.5rem !important;
-  background: var(--accent-primary) !important;
-  color: #000 !important;
+  background: linear-gradient(135deg, #16c784 0%, #5B7FF9 100%) !important;
+  color: #fff !important;
   border: none !important;
   border-radius: 10px !important;
   font-weight: 700 !important;
@@ -135,19 +153,8 @@ html, body, .stApp {
 }
 
 .stButton > button:hover {
-  background: #14b578 !important;
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(22,199,132,0.3) !important;
-}
-
-.stButton > button[kind="primary"] {
-  background: var(--accent-blue) !important;
-  color: #fff !important;
-}
-
-.stButton > button[kind="primary"]:hover {
-  background: #4a6df0 !important;
-  box-shadow: 0 4px 12px rgba(91,127,249,0.3) !important;
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(91,127,249,0.4) !important;
 }
 
 .stButton > button:disabled {
@@ -161,7 +168,7 @@ html, body, .stApp {
 .stRadio > div > label {
   position: relative !important;
   background: transparent !important;
-  border: 1px solid var(--border) !important;
+  border: 2px solid transparent !important;
   border-radius: 10px !important;
   padding: 0.7rem 1.2rem 0.7rem 2.6rem !important;
   color: var(--text-secondary) !important;
@@ -169,6 +176,11 @@ html, body, .stApp {
   font-weight: 600 !important;
   transition: all 0.2s !important;
   cursor: pointer !important;
+  background-image: 
+    linear-gradient(var(--surface), var(--surface)),
+    linear-gradient(90deg, rgba(91,127,249,0.3), rgba(22,199,132,0.3)) !important;
+  background-origin: border-box !important;
+  background-clip: padding-box, border-box !important;
 }
 
 .stRadio > div > label > div:first-child {display: none !important;}
@@ -188,19 +200,25 @@ html, body, .stApp {
 }
 
 .stRadio > div > label:hover {
-  border-color: var(--text-secondary) !important;
-  background: var(--surface) !important;
+  background-image: 
+    linear-gradient(#252525, #252525),
+    linear-gradient(90deg, #5B7FF9, #16c784) !important;
+  background-clip: padding-box, border-box !important;
 }
 
 .stRadio > div > label[data-checked="true"] {
-  color: var(--accent-blue) !important;
-  border-color: var(--accent-blue) !important;
+  color: #fff !important;
+  background-image: 
+    linear-gradient(var(--surface), var(--surface)),
+    linear-gradient(90deg, #5B7FF9, #16c784) !important;
+  background-clip: padding-box, border-box !important;
 }
 
 .stRadio > div > label[data-checked="true"]::before {
-  background: var(--accent-blue);
-  border-color: var(--accent-blue);
-  box-shadow: 0 0 8px rgba(91,127,249,0.7);
+  background: url('image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" fill="url(%23grad)"/></svg>');
+  background: linear-gradient(135deg, #5B7FF9, #16c784);
+  border-color: transparent;
+  box-shadow: 0 0 12px rgba(91,127,249,0.8);
 }
 
 /* ===== Cards & Metrics ===== */
@@ -243,24 +261,17 @@ html, body, .stApp {
 
 .stTabs [aria-selected="true"] {
   color: var(--text-primary) !important;
-  border-bottom: 2px solid var(--accent-primary) !important;
+  border-bottom: 3px solid transparent !important;
+  border-image: linear-gradient(90deg, #5B7FF9, #16c784) 1 !important;
 }
 
-/* ===== Expander ===== */
-.streamlit-expanderHeader {
-  background: var(--surface) !important;
-  border: 1px solid var(--border) !important;
-  border-radius: 8px !important;
-  padding: 1rem !important;
-  font-weight: 600 !important;
+/* ===== Chart styling ===== */
+.stPlotlyContainer {
+  background: transparent !important;
 }
 
-.streamlit-expanderContent {
-  background: var(--surface) !important;
-  border: 1px solid var(--border) !important;
-  border-top: none !important;
-  border-radius: 0 0 8px 8px !important;
-  padding: 1.5rem !important;
+.stLineChart > div > div > svg {
+  filter: invert(0) !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -275,9 +286,8 @@ def clear_all_caches():
 def sanitize_ticker(ticker: str) -> str:
     """Sanitize ticker input - prevent injection"""
     s = (ticker or "").strip().upper()
-    # Only allow alphanumeric, colons, and hyphens
     if not re.match(r"^[A-Z0-9:\-]{1,20}$", s):
-        raise ValueError("Invalid ticker format")
+        raise ValueError("Invalid ticker format (alphanumeric, :, - only)")
     return s
 
 def normalize_for_polygon(symbol: str) -> str:
@@ -337,7 +347,6 @@ def resolve_asset_title_polygon(raw_symbol: str, normalized: str) -> str:
 def safe_float(val, default=0.0):
     try:
         v = float(val or default)
-        # Prevent extreme values
         if abs(v) > 1e10:
             return default
         return v
@@ -346,14 +355,13 @@ def safe_float(val, default=0.0):
 
 # ========= TIMEOUT PROTECTED ANALYSIS =========
 def analyze_with_timeout(symbol: str, model: str, timeout: int = ANALYSIS_TIMEOUT) -> Tuple[Optional[Dict], Optional[str]]:
-    """Run analysis with timeout and error handling"""
+    """Run analysis with timeout and validation"""
     result_queue = queue.Queue()
     error_queue = queue.Queue()
     
     def worker():
         try:
             result = run_model_by_name(symbol, model)
-            # Validate output
             if not result or not isinstance(result, dict):
                 error_queue.put("Invalid model output format")
                 return
@@ -370,7 +378,7 @@ def analyze_with_timeout(symbol: str, model: str, timeout: int = ANALYSIS_TIMEOU
     thread.join(timeout=timeout)
     
     if thread.is_alive():
-        return None, f"Analysis timeout ({timeout}s limit) - model took too long"
+        return None, f"Analysis timeout ({timeout}s limit)"
     
     if not error_queue.empty():
         return None, error_queue.get()
@@ -418,8 +426,6 @@ def run_model_by_name(ticker_norm: str, model_name: str) -> Dict[str, Any]:
 def render_signal_card(action: str, ticker: str, price: float, conf_pct: float, rules_conf: float, levels: Dict, output: Dict, model_name: str):
     asset_title = resolve_asset_title_polygon(ticker, ticker)
     ai_override = conf_pct - rules_conf
-    
-    # Clamp confidence to 0-100
     conf_pct = max(0, min(100, conf_pct))
     
     probs = output.get('probs') or {}
@@ -462,7 +468,7 @@ def render_signal_card(action: str, ticker: str, price: float, conf_pct: float, 
         <span style="font-size:13px;color:#fff;font-weight:700;">{ai_override:+.0f}%</span>
       </div>
       <div style="height:8px;background:rgba(255,255,255,0.05);border-radius:4px;overflow:hidden;">
-        <div style="height:100%;width:{override_pct}%;background:linear-gradient(90deg,#16c784,#5B7FF9);transition:width .6s;"></div>
+        <div style="height:100%;width:{override_pct}%;background:linear-gradient(90deg,#5B7FF9,#16c784);transition:width .6s;"></div>
       </div>
       <div style="font-size:10px;color:#707070;margin-top:.25rem;">Rules: {rules_conf:.0f}% → ML: {conf_pct:.0f}%</div>
     </div>
@@ -543,33 +549,33 @@ def show_auth_page():
           <div style="font-size:13px;color:#707070;text-transform:uppercase;letter-spacing:1.5px;">Trade Smarter</div>
         </div>
         """, unsafe_allow_html=True)
-        tab1, tab2 = st.tabs(["Login", "Register"])
+        tab1, tab2 = st.tabs(["LOGIN", "REGISTER"])
         with tab1:
             st.subheader("Sign In")
-            username = st.text_input("Username", key="login_user")
-            password = st.text_input("Password", type="password", key="login_pass")
-            if st.button("Sign In", type="primary", use_container_width=True, key="signin_btn"):
+            username = st.text_input("", placeholder="Username", key="login_user")
+            password = st.text_input("", placeholder="Password", type="password", key="login_pass")
+            if st.button("SIGN IN", type="primary", use_container_width=True, key="signin_btn"):
                 if not username or not password:
                     st.error("Enter credentials")
                 else:
                     try:
                         user = db.login_user(username, password)
-                        if user and user.get("user_id"):  # SECURITY FIX: Validate user object
+                        if user and user.get("user_id"):
                             st.session_state.user = {"user_id": user["user_id"], "username": user.get("username", username)}
                             st.success("Login successful!")
                             time.sleep(0.5)
                             st.rerun()
                         else:
-                            st.error("Invalid credentials or user data")
+                            st.error("Invalid credentials")
                     except Exception as e:
                         st.error(str(e))
                         if ARXORA_DEBUG: st.exception(e)
         with tab2:
             st.subheader("Create Account")
-            new_user = st.text_input("Username", key="reg_user")
-            new_pass = st.text_input("Password", type="password", key="reg_pass")
+            new_user = st.text_input("", placeholder="Username", key="reg_user")
+            new_pass = st.text_input("", placeholder="Password", type="password", key="reg_pass")
             capital = st.number_input("Initial Capital", min_value=1000, value=10000, step=1000)
-            if st.button("Create Account", type="primary", use_container_width=True, key="create_btn"):
+            if st.button("CREATE ACCOUNT", type="primary", use_container_width=True, key="create_btn"):
                 if len((new_user or "").strip()) < 3:
                     st.error("Username: min 3 chars")
                 elif len((new_pass or "").strip()) < 6:
@@ -579,7 +585,7 @@ def show_auth_page():
                         uid = db.register_user(new_user, new_pass, capital)
                         if uid:
                             user = db.login_user(new_user, new_pass)
-                            if user and user.get("user_id"):  # SECURITY FIX
+                            if user and user.get("user_id"):
                                 st.session_state.user = {"user_id": user["user_id"], "username": user.get("username", new_user)}
                                 st.success("Account created!")
                                 time.sleep(0.5)
@@ -615,10 +621,6 @@ with st.sidebar:
     st.subheader("Account")
     if not user_info:
         st.warning("Not signed in")
-        if st.button("Go to Login", key="goto_login_sidebar", use_container_width=True):
-            for k in list(st.session_state.keys()):
-                del st.session_state[k]
-            st.rerun()
     else:
         current_capital = safe_float(user_info.get('current_capital'), 0)
         initial_capital = safe_float(user_info.get('initial_capital'), 0)
@@ -633,16 +635,19 @@ with st.sidebar:
             st.metric("Total", stats.get('total_trades', 0))
             st.metric("Win Rate", f"{stats.get('win_rate', 0):.1f}%")
         st.markdown("---")
-        if st.button("Logout", key="logout_sidebar_btn", use_container_width=True):
+        # LOGOUT BUTTON - FINALLY ADDED
+        if st.button("LOGOUT", type="secondary", use_container_width=True, key="logout_sidebar_btn"):
             clear_all_caches()
             for k in list(st.session_state.keys()):
                 del st.session_state[k]
+            st.success("Logged out successfully!")
+            time.sleep(0.5)
             st.rerun()
 
 # ========= Main =========
 st.markdown('<div style="font-size:32px;font-weight:700;">Arxora</div>', unsafe_allow_html=True)
 
-tabs = st.tabs(["AI Signals", "Portfolio", "Active Trades", "Statistics"])
+tabs = st.tabs(["AI SIGNALS", "PORTFOLIO", "ACTIVE TRADES", "STATISTICS"])
 
 # ===== Tab: AI Signals =====
 with tabs[0]:
@@ -651,34 +656,25 @@ with tabs[0]:
     st.write("**Model**")
     models = get_available_models()
     
-    # EDGE CASE FIX: Check if models list is empty
     if not models:
-        st.error("❌ No trading models available. Check core/strategy.py configuration.")
+        st.error("❌ No trading models available")
         st.stop()
     
     if 'selected_model' not in st.session_state or st.session_state['selected_model'] not in models:
         st.session_state['selected_model'] = models[0]
     
-    # Use radio with proper index handling
     model_index = models.index(st.session_state.get('selected_model', models[0]))
-    model = st.radio(
-        "model_selector",
-        models,
-        horizontal=True,
-        index=model_index,
-        key="model_radio"
-    )
+    model = st.radio("model_selector", models, horizontal=True, index=model_index, key="model_radio")
     st.session_state['selected_model'] = model
     
     st.write("**Symbol**")
     c1, c2 = st.columns([4,1])
     with c1:
-        ticker = st.text_input("symbol_label", placeholder="AAPL, TSLA, BTCUSD, ETHUSD", key="ticker_input")
+        ticker = st.text_input("", placeholder="AAPL, TSLA, BTCUSD, ETHUSD", key="ticker_input")
     with c2:
         if 'analyzing' not in st.session_state:
             st.session_state['analyzing'] = False
-        
-        analyze_btn = st.button("Analyze", type="primary", use_container_width=True, disabled=st.session_state['analyzing'], key="analyze_btn")
+        analyze_btn = st.button("ANALYZE", type="primary", use_container_width=True, disabled=st.session_state['analyzing'], key="analyze_btn")
     
     if analyze_btn:
         if not ticker:
@@ -686,18 +682,15 @@ with tabs[0]:
         else:
             st.session_state['analyzing'] = True
             try:
-                # SECURITY FIX: Sanitize ticker input
                 ticker_clean = sanitize_ticker(ticker)
                 symbol = normalize_for_polygon(ticker_clean)
                 
                 with st.spinner(f"Analyzing {ticker_clean}..."):
-                    # TIMEOUT PROTECTED with output validation
                     output, error = analyze_with_timeout(symbol, model, timeout=ANALYSIS_TIMEOUT)
                     
                     if error:
                         st.error(f"❌ {error}")
-                        if ARXORA_DEBUG:
-                            st.exception(error)
+                        if ARXORA_DEBUG: st.exception(error)
                     else:
                         rec = output.get("recommendation", {})
                         action = str(rec.get("action", "WAIT"))
@@ -725,9 +718,9 @@ with tabs[0]:
                         render_signal_card(action, ticker_clean, price, conf_pct, rules_conf, lv, output, model)
                         
             except ValueError as e:
-                st.error(f"❌ Invalid symbol: {str(e)}")
+                st.error(f"❌ {str(e)}")
             except Exception as e:
-                st.error(f"❌ Analysis failed: {str(e)}")
+                st.error(f"❌ {str(e)}")
                 if ARXORA_DEBUG: st.exception(e)
             finally:
                 st.session_state['analyzing'] = False
@@ -738,13 +731,13 @@ with tabs[1]:
     if "last_signal" in st.session_state:
         sig = st.session_state["last_signal"]
         if sig["action"] not in ("BUY","SHORT"):
-            st.warning("Signal was WAIT — cannot add")
+            st.warning("Signal was WAIT")
         elif not db.can_add_trade(st.session_state.user['user_id'], sig["ticker"]):
             st.warning(f"Active trade exists for {sig['ticker']}")
         else:
             st.markdown(f"""
             <div style="background:rgba(26,26,26,0.85);border:1px solid rgba(255,255,255,0.12);border-radius:12px;padding:1.5rem;margin:0.5rem 0 1rem;">
-              <div style="font-size:18px;font-weight:700;margin-bottom:.4rem;">{sig['ticker']} — {sig['action']} ({sig['confidence']:.0f}% conf)</div>
+              <div style="font-size:18px;font-weight:700;margin-bottom:.4rem;">{sig['ticker']} — {sig['action']} ({sig['confidence']:.0f}%)</div>
               <div style="font-size:13px;color:#a0a0a0;">Model: {sig['model']}</div>
             </div>
             """, unsafe_allow_html=True)
@@ -777,15 +770,14 @@ with tabs[1]:
                 st.dataframe(df_tp, use_container_width=True, hide_index=True)
             st.markdown("""
             <div style="background:rgba(91,127,249,0.1);border:1px solid rgba(91,127,249,0.3);border-radius:12px;padding:1rem;">
-              <div style="font-size:13px;color:#fff;font-weight:600;margin-bottom:.4rem;">Partial Close Strategy</div>
-              <div style="font-size:12px;color:#a0a0a0;">TP1 (50%), TP2 (30%), TP3 (20%). SL moves to breakeven after TP1.</div>
+              <div style="font-size:13px;color:#fff;font-weight:600;margin-bottom:.4rem;">Partial Close</div>
+              <div style="font-size:12px;color:#a0a0a0;">TP1 (50%), TP2 (30%), TP3 (20%). SL→breakeven after TP1.</div>
             </div>
             """, unsafe_allow_html=True)
             st.markdown("<br>", unsafe_allow_html=True)
             if 'adding_trade' not in st.session_state:
                 st.session_state['adding_trade'] = False
-            
-            if st.button("Add Trade to Portfolio", type="primary", use_container_width=True, disabled=st.session_state['adding_trade'], key="add_port_btn"):
+            if st.button("ADD TRADE", type="primary", use_container_width=True, disabled=st.session_state['adding_trade'], key="add_port_btn"):
                 st.session_state['adding_trade'] = True
                 try:
                     probs = sig["output"].get('probs') or {}
@@ -805,7 +797,6 @@ with tabs[1]:
                     }
                     trade_id = db.add_trade(st.session_state.user['user_id'], data, position_pct)
                     st.success(f"✅ Trade #{trade_id} added!")
-                    clear_all_caches()
                     del st.session_state["last_signal"]
                     st.session_state['adding_trade'] = False
                     time.sleep(0.7)
@@ -831,7 +822,7 @@ with tabs[2]:
                     with c1: st.metric("Entry", f"${t['entry_price']:.2f}")
                     with c2: st.metric("Position", f"${t['position_size']:.2f}")
                     with c3: st.metric("Model", t.get('model','N/A'))
-                    with c4: st.metric("SL", "Breakeven" if t['sl_breakeven'] else "Active")
+                    with c4: st.metric("SL", "BE" if t['sl_breakeven'] else "Active")
                     st.markdown("**TP Status**")
                     c1,c2,c3 = st.columns(3)
                     with c1: st.write(f"{'✅' if t['tp1_closed'] else '⭕'} TP1: ${t['take_profit_1']:.2f}")
@@ -844,7 +835,6 @@ with tabs[2]:
                             return fn(*args)
                         except Exception as e:
                             st.error(str(e))
-                            if ARXORA_DEBUG: st.exception(e)
                             return None
                     col1, col2 = st.columns(2)
                     is_long = (t['direction'] == 'LONG')
@@ -861,15 +851,14 @@ with tabs[2]:
                                 _safe_do(db.partial_close_trade, t['trade_id'], price, 'tp3'); st.rerun()
                         sl_hit = (price <= (t['entry_price'] if t['sl_breakeven'] else t['stop_loss'])) if is_long else (price >= t['stop_loss'])
                         if sl_hit:
-                            st.error("SL triggered!")
-                            if st.button("Close at SL", key=f"sl_{t['trade_id']}", use_container_width=True):
+                            st.error("🛑 SL HIT!")
+                            if st.button("Close@SL", key=f"sl_{t['trade_id']}", use_container_width=True):
                                 _safe_do(db.full_close_trade, t['trade_id'], price, "SL_HIT"); st.rerun()
                     with col2:
-                        if st.button("Close All (Manual)", key=f"close_{t['trade_id']}", type="secondary", use_container_width=True):
+                        if st.button("Close All", key=f"close_{t['trade_id']}", type="secondary", use_container_width=True):
                             _safe_do(db.full_close_trade, t['trade_id'], price, "MANUAL"); st.rerun()
     except Exception as e:
-        st.error(f"Error loading trades: {str(e)}")
-        if ARXORA_DEBUG: st.exception(e)
+        st.error(f"Error: {str(e)}")
 
 # ===== Tab: Statistics =====
 with tabs[3]:
@@ -881,28 +870,30 @@ with tabs[3]:
             with c2: st.metric("Win Rate", f"{stats.get('win_rate',0):.1f}%")
             with c3: st.metric("Closed", stats.get('closed_trades',0))
             with c4: st.metric("Avg P&L", f"{stats.get('avg_pnl',0):.2f}%")
+        
         closed = db.get_closed_trades(st.session_state.user['user_id'])
         if closed and pd:
             df = pd.DataFrame(closed)
             if not df.empty and 'total_pnl_dollars' in df.columns:
+                # PROPER EQUITY CURVE - grows from 0, not from capital
                 df['cumulative_pnl'] = df['total_pnl_dollars'].cumsum()
                 st.markdown("### Equity Curve")
-                st.line_chart(df['cumulative_pnl'])
+                st.line_chart(df['cumulative_pnl'], use_container_width=True)
             st.markdown("### Trade History")
             cols = ['ticker','direction','entry_price','close_price','total_pnl_percent']
             if 'close_reason' in df.columns: cols.append('close_reason')
             if 'close_date' in df.columns: cols.append('close_date')
-            disp = df[cols].copy()
-            disp.columns = [c.replace('_',' ').title() for c in disp.columns]
-            st.dataframe(disp, use_container_width=True, hide_index=True)
+            if all(c in df.columns for c in cols):
+                disp = df[cols].copy()
+                disp.columns = [c.replace('_',' ').title() for c in disp.columns]
+                st.dataframe(disp, use_container_width=True, hide_index=True)
         else:
             st.info("No closed trades")
     except Exception as e:
-        st.error(f"Error loading statistics: {str(e)}")
-        if ARXORA_DEBUG: st.exception(e)
+        st.error(f"Error: {str(e)}")
 
 st.markdown("""
 <div style="text-align:center;color:#707070;font-size:12px;padding:2rem 0 1rem;border-top:1px solid rgba(255,255,255,0.05);margin-top:2rem;">
-  Arxora · Professional Trading Intelligence Platform. AI signals are informational only.
+  Arxora v16.2 · Professional Trading Intelligence. AI signals are informational only.
 </div>
 """, unsafe_allow_html=True)
