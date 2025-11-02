@@ -55,7 +55,7 @@ st.set_page_config(
     page_title="Arxora",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="expanded"  # Changed to expanded
+    initial_sidebar_state="expanded"
 )
 
 # ========= PRODUCTION-GRADE THEME =========
@@ -110,11 +110,12 @@ html, body, .stApp {
     margin-bottom: 1rem !important;
 }
 
-/* FIXED: Input fields - clean single border */
+/* FIXED: Input fields - ПОЛНАЯ обводка синяя */
 .stTextInput > div > div > input,
-.stNumberInput > div > div > input {
+.stNumberInput > div > div > input,
+.stPasswordInput > div > div > input {
     background: var(--surface) !important;
-    border: 1px solid var(--border) !important;
+    border: 2px solid #5B7FF9 !important;
     border-radius: 8px !important;
     color: var(--text-primary) !important;
     padding: 0.75rem 1rem !important;
@@ -124,13 +125,14 @@ html, body, .stApp {
 }
 
 .stTextInput > div > div > input:focus,
-.stNumberInput > div > div > input:focus {
-    border: 1px solid var(--accent-primary) !important;
+.stNumberInput > div > div > input:focus,
+.stPasswordInput > div > div > input:focus {
+    border: 2px solid #5B7FF9 !important;
     outline: none !important;
-    box-shadow: 0 0 0 1px var(--accent-primary) !important;
+    box-shadow: 0 0 0 1px #5B7FF9 !important;
 }
 
-.stTextInput label, .stNumberInput label {
+.stTextInput label, .stNumberInput label, .stPasswordInput label {
     color: var(--text-secondary) !important;
     font-weight: 600 !important;
     text-transform: uppercase !important;
@@ -141,7 +143,8 @@ html, body, .stApp {
 
 /* Remove default Streamlit input container borders */
 .stTextInput > div,
-.stNumberInput > div {
+.stNumberInput > div,
+.stPasswordInput > div {
     border: none !important;
     box-shadow: none !important;
 }
@@ -149,8 +152,8 @@ html, body, .stApp {
 /* Buttons */
 .stButton > button {
     padding: 0.75rem 1.5rem !important;
-    background: var(--accent-primary) !important;
-    color: #000 !important;
+    background: #5B7FF9 !important;
+    color: #ffffff !important;
     border: none !important;
     border-radius: 8px !important;
     font-weight: 700 !important;
@@ -162,13 +165,13 @@ html, body, .stApp {
 }
 
 .stButton > button:hover {
-    background: #14b578 !important;
+    background: #4a6df0 !important;
     transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(22, 199, 132, 0.3) !important;
+    box-shadow: 0 4px 12px rgba(91, 127, 249, 0.3) !important;
 }
 
 .stButton > button[kind="primary"] {
-    background: var(--accent-blue) !important;
+    background: #5B7FF9 !important;
     color: #fff !important;
 }
 
@@ -196,7 +199,7 @@ html, body, .stApp {
 
 .stRadio > div > label {
     background: transparent !important;
-    border: 1px solid var(--border) !important;
+    border: 2px solid #5B7FF9 !important;
     border-radius: 8px !important;
     padding: 0.65rem 1.25rem 0.65rem 2.5rem !important;
     color: var(--text-secondary) !important;
@@ -222,24 +225,24 @@ html, body, .stApp {
     height: 8px;
     border-radius: 50%;
     background: transparent;
-    border: 2px solid var(--text-tertiary);
+    border: 2px solid #5B7FF9;
     transition: all 0.2s;
 }
 
 .stRadio > div > label:hover {
-    border-color: var(--text-secondary) !important;
-    background: var(--surface) !important;
+    border-color: #5B7FF9 !important;
+    background: rgba(91, 127, 249, 0.05) !important;
 }
 
 .stRadio > div > label[data-checked="true"] {
-    background: transparent !important;
-    border-color: var(--accent-blue) !important;
-    color: var(--accent-blue) !important;
+    background: rgba(91, 127, 249, 0.1) !important;
+    border-color: #5B7FF9 !important;
+    color: #5B7FF9 !important;
 }
 
 .stRadio > div > label[data-checked="true"]::before {
-    background: var(--accent-blue);
-    border-color: var(--accent-blue);
+    background: #5B7FF9;
+    border-color: #5B7FF9;
     box-shadow: 0 0 8px rgba(91, 127, 249, 0.6);
 }
 
@@ -802,7 +805,7 @@ if 'user' not in st.session_state:
 if 'min_confidence_filter' not in st.session_state:
     st.session_state['min_confidence_filter'] = 60
 
-# ========= SIDEBAR with Account Window (FIXED) =========
+# ========= SIDEBAR with Account Window =========
 with st.sidebar:
     st.markdown("""
     <div style="margin-bottom: 2rem;">
@@ -877,7 +880,7 @@ with st.sidebar:
         
         st.markdown("---")
         
-        # LOGOUT BUTTON (FIXED)
+        # LOGOUT BUTTON - FIXED AND VISIBLE
         if st.button("Logout", use_container_width=True, key="logout_sidebar_btn"):
             clear_all_caches()
             for key in list(st.session_state.keys()):
@@ -952,7 +955,7 @@ with tabs[0]:
                     if ARXORA_DEBUG:
                         st.exception(e)
 
-# TAB 2: Portfolio (FIXED - neutral color + no emoji)
+# TAB 2: Portfolio
 with tabs[1]:
     st.subheader("Add to Portfolio")
     
@@ -964,7 +967,6 @@ with tabs[1]:
         elif not db.can_add_trade(st.session_state.user['user_id'], sig["ticker"]):
             st.warning(f"Active trade already exists for {sig['ticker']}")
         else:
-            # FIXED: Neutral gray card
             st.markdown(f"""
             <div style="background: rgba(26, 26, 26, 0.8); 
                         border: 1px solid rgba(255, 255, 255, 0.1); 
@@ -1016,7 +1018,6 @@ with tabs[1]:
             
             st.markdown("---")
             
-            # FIXED: No emoji
             st.markdown("""
             <div style="background: rgba(91, 127, 249, 0.1); 
                         border: 1px solid rgba(91, 127, 249, 0.3); 
@@ -1050,16 +1051,13 @@ with tabs[1]:
                     
                     trade_id = db.add_trade(st.session_state.user['user_id'], data, position_pct)
                     st.success(f"Trade #{trade_id} added to portfolio!")
-                    clear_all_caches()
                     del st.session_state["last_signal"]
                     time.sleep(1)
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Error adding trade: {str(e)}")
-                    if ARXORA_DEBUG:
-                        st.exception(e)
+                    st.error(f"Error adding trade: {e}")
     else:
-        st.info("Analyze an asset first to add it to your portfolio")
+        st.info("Run analysis first to add trade to portfolio")
 
 # TAB 3: Active Trades
 with tabs[2]:
@@ -1070,81 +1068,99 @@ with tabs[2]:
     if not trades:
         st.info("No active trades")
     else:
-        for t in trades:
-            with st.expander(f"**{t['ticker']}** — {t['direction']} • {t['remaining_percent']:.0f}% remaining • Conf: {t['confidence']}%"):
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Entry", f"${t['entry_price']:.2f}")
-                with col2:
-                    st.metric("Position", f"${t['position_size']:.2f}")
-                with col3:
-                    st.metric("Model", t.get('model', 'N/A'))
-                with col4:
-                    sl_status = "Breakeven" if t['sl_breakeven'] else "Active"
-                    st.metric("SL Status", sl_status)
+        for trade in trades:
+            direction_color = '#16c784' if trade['direction'] == 'LONG' else '#ea3943'
+            
+            st.markdown(f"""
+            <div style="background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                    <div>
+                        <div style="font-size: 20px; font-weight: 700; color: #ffffff; margin-bottom: 0.25rem;">
+                            {trade['ticker']}
+                        </div>
+                        <div style="font-size: 12px; color: {direction_color}; text-transform: uppercase; font-weight: 600;">
+                            {trade['direction']}
+                        </div>
+                    </div>
+                    <div style="text-align: right;">
+                        <div style="font-size: 11px; color: #707070; text-transform: uppercase; margin-bottom: 0.25rem;">Trade #{trade['trade_id']}</div>
+                        <div style="font-size: 11px; color: #a0a0a0;">{trade['model']}</div>
+                    </div>
+                </div>
                 
-                st.markdown("**Take Profit Status**")
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    status = "✅ Closed" if t['tp1_closed'] else "⭕ Open"
-                    st.write(f"{status} TP1: ${t['take_profit_1']:.2f}")
-                with col2:
-                    status = "✅ Closed" if t['tp2_closed'] else "⭕ Open"
-                    st.write(f"{status} TP2: ${t['take_profit_2']:.2f}")
-                with col3:
-                    status = "✅ Closed" if t['tp3_closed'] else "⭕ Open"
-                    st.write(f"{status} TP3: ${t['take_profit_3']:.2f}")
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; margin-top: 1rem;">
+                    <div>
+                        <div style="font-size: 10px; color: #707070; text-transform: uppercase; margin-bottom: 0.25rem;">Entry</div>
+                        <div style="font-size: 16px; font-weight: 600; color: #ffffff;">${trade['entry_price']:.2f}</div>
+                    </div>
+                    <div>
+                        <div style="font-size: 10px; color: #707070; text-transform: uppercase; margin-bottom: 0.25rem;">Stop Loss</div>
+                        <div style="font-size: 16px; font-weight: 600; color: #ea3943;">${trade['stop_loss']:.2f}</div>
+                        {'<div style="font-size: 10px; color: #5B7FF9; margin-top: 0.25rem;">Break-even</div>' if trade['sl_breakeven'] else ''}
+                    </div>
+                    <div>
+                        <div style="font-size: 10px; color: #707070; text-transform: uppercase; margin-bottom: 0.25rem;">Position</div>
+                        <div style="font-size: 16px; font-weight: 600; color: #ffffff;">${trade['position_size']:,.2f}</div>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            tp_data = []
+            for i in range(1, 4):
+                tp_closed = trade[f'tp{i}_closed']
+                tp_price = trade[f'take_profit_{i}']
+                tp_prob = trade.get(f'tp{i}_prob', 0)
                 
-                st.markdown("---")
+                status = "✓ Closed" if tp_closed else "Open"
                 
-                price = st.number_input("Current Price", float(t['entry_price']), key=f"p_{t['trade_id']}")
-                
-                tp_level, can_close_tp = get_tp_status(t, price)
-                sl_hit = check_sl_hit(t, price)
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    if tp_level and can_close_tp:
-                        if st.button(f"Close {tp_level.upper()}", key=f"{tp_level}_{t['trade_id']}", use_container_width=True):
-                            with st.spinner("Closing..."):
-                                try:
-                                    db.partial_close_trade(t['trade_id'], price, tp_level)
-                                    clear_all_caches()
-                                    st.success(f"{tp_level.upper()} closed!")
-                                    time.sleep(0.5)
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Error: {e}")
+                tp_data.append({
+                    "Level": f"TP{i}",
+                    "Price": f"${tp_price:.2f}",
+                    "Status": status,
+                    "Probability": f"{tp_prob:.0f}%"
+                })
+            
+            if pd:
+                st.dataframe(pd.DataFrame(tp_data), use_container_width=True, hide_index=True)
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                current_price = st.number_input(
+                    f"Current Price for {trade['ticker']}", 
+                    value=float(trade['entry_price']),
+                    step=0.01,
+                    key=f"price_{trade['trade_id']}"
+                )
+            
+            with col2:
+                st.write("")
+                st.write("")
+                if st.button("Update Position", key=f"update_{trade['trade_id']}", use_container_width=True):
+                    tp_target, can_close = get_tp_status(trade, current_price)
+                    if tp_target and can_close:
+                        try:
+                            db.close_tp(trade['trade_id'], tp_target, current_price)
+                            st.success(f"{tp_target.upper()} closed at ${current_price:.2f}")
+                            time.sleep(0.5)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error: {e}")
                     
-                    if sl_hit:
-                        st.error("⚠️ Stop Loss triggered!")
-                        if st.button("Close at SL", key=f"sl_{t['trade_id']}", use_container_width=True):
-                            with st.spinner("Closing..."):
-                                try:
-                                    db.full_close_trade(t['trade_id'], price, "SL_HIT")
-                                    clear_all_caches()
-                                    st.success("Closed at SL")
-                                    time.sleep(0.5)
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Error: {e}")
-                
-                with col2:
-                    if st.button("Close All (Manual)", key=f"close_{t['trade_id']}", type="secondary", use_container_width=True):
-                        with st.spinner("Closing..."):
-                            try:
-                                db.full_close_trade(t['trade_id'], price, "MANUAL")
-                                clear_all_caches()
-                                st.success("Position closed!")
-                                time.sleep(0.5)
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Error: {e}")
+                    if check_sl_hit(trade, current_price):
+                        try:
+                            db.close_trade_sl(trade['trade_id'], current_price)
+                            st.warning(f"Stop loss hit at ${current_price:.2f}")
+                            time.sleep(0.5)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+            
+            st.markdown("---")
 
 # TAB 4: Statistics
 with tabs[3]:
-    st.subheader("Performance Overview")
+    st.subheader("Trading Statistics")
     
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -1152,58 +1168,27 @@ with tabs[3]:
     with col2:
         st.metric("Win Rate", f"{stats['win_rate']:.1f}%")
     with col3:
-        st.metric("Closed Trades", stats['closed_trades'])
-    with col4:
         st.metric("Avg P&L", f"{stats['avg_pnl']:.2f}%")
+    with col4:
+        st.metric("Closed Trades", stats['closed_trades'])
     
-    closed = db.get_closed_trades(st.session_state.user['user_id'])
-    if closed and pd:
-        df = pd.DataFrame(closed)
-        df['cumulative_pnl'] = df['total_pnl_dollars'].cumsum()
+    st.markdown("---")
+    
+    st.subheader("Trade History")
+    history = db.get_trade_history(st.session_state.user['user_id'])
+    
+    if history and pd:
+        df_history = pd.DataFrame(history)
+        display_df = df_history[['ticker', 'direction', 'entry_price', 'exit_price', 'pnl_percent', 'status', 'opened_at']].copy()
+        display_df.columns = ['Ticker', 'Direction', 'Entry', 'Exit', 'P&L %', 'Status', 'Date']
         
-        st.markdown("### Equity Curve")
-        st.line_chart(df['cumulative_pnl'])
-        
-        st.markdown("### Trade History")
-        
-        # Safe dataframe handling
-        try:
-            display_cols = ['ticker', 'direction', 'entry_price', 'close_price', 'total_pnl_percent']
-            if 'close_reason' in df.columns:
-                display_cols.append('close_reason')
-            if 'close_date' in df.columns:
-                display_cols.append('close_date')
-            
-            display_df = df[display_cols].copy()
-            display_df.columns = [col.replace('_', ' ').title() for col in display_df.columns]
-            
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
-        except Exception as e:
-            st.error(f"Error displaying trade history: {e}")
-            if ARXORA_DEBUG:
-                st.exception(e)
-        
-        # Summary stats
-        st.markdown("### Performance Breakdown")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            winning_trades = len(df[df['total_pnl_percent'] > 0])
-            st.metric("Winning Trades", winning_trades)
-        with col2:
-            losing_trades = len(df[df['total_pnl_percent'] <= 0])
-            st.metric("Losing Trades", losing_trades)
-        with col3:
-            avg_win = df[df['total_pnl_percent'] > 0]['total_pnl_percent'].mean() if winning_trades > 0 else 0
-            st.metric("Avg Win", f"{avg_win:.2f}%")
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            hide_index=True
+        )
     else:
-        st.info("No closed trades yet")
+        st.info("No trade history yet")
 
-# FOOTER
-st.markdown("""
-<div class="footer-text">
-    Arxora · Professional Trading Intelligence Platform combining algorithmic strategies with machine learning. 
-    Features ensemble analysis, confidence calibration, and comprehensive risk management. 
-    AI-generated signals are informational only and do not constitute investment advice; markets change rapidly, 
-    past results do not guarantee future outcomes.
-</div>
-""", unsafe_allow_html=True)
+st.markdown("<br><br>", unsafe_allow_html=True)
+st.markdown('<div class="footer-text">Arxora © 2025 • Trade Smarter</div>', unsafe_allow_html=True)
