@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# app.py — Arxora Trading Platform v11.0 (Final Production)
+# app.py — Arxora Trading Platform v12.0 (Final Production)
 
 import os
 import re
@@ -163,7 +163,7 @@ html, body, .stApp {
     box-shadow: 0 4px 12px rgba(234, 57, 67, 0.3) !important;
 }
 
-/* Radio - Remove Icons */
+/* Radio - with blue dot */
 .stRadio > div {
     display: flex;
     gap: 0.75rem;
@@ -174,7 +174,7 @@ html, body, .stApp {
     background: transparent !important;
     border: 1px solid var(--border) !important;
     border-radius: 8px !important;
-    padding: 0.65rem 1.25rem !important;
+    padding: 0.65rem 1.25rem 0.65rem 2.5rem !important;
     color: var(--text-secondary) !important;
     font-size: 13px !important;
     font-weight: 600 !important;
@@ -184,11 +184,16 @@ html, body, .stApp {
 }
 
 .stRadio > div > label::before {
-    content: '•';
+    content: '';
     position: absolute;
-    left: 0.75rem;
-    color: var(--text-tertiary);
-    font-size: 16px;
+    left: 1rem;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-tertiary);
+    transition: all 0.2s;
 }
 
 .stRadio > div > label:hover {
@@ -197,18 +202,14 @@ html, body, .stApp {
 }
 
 .stRadio > div > label[data-checked="true"] {
-    background: var(--accent-primary) !important;
-    border-color: var(--accent-primary) !important;
-    color: #000 !important;
+    background: transparent !important;
+    border-color: var(--accent-blue) !important;
+    color: var(--accent-blue) !important;
 }
 
 .stRadio > div > label[data-checked="true"]::before {
-    color: #000;
-}
-
-/* Hide Streamlit radio button icon */
-.stRadio > div > label > div:first-child {
-    display: none !important;
+    background: var(--accent-blue);
+    box-shadow: 0 0 8px rgba(91, 127, 249, 0.5);
 }
 
 /* Tabs */
@@ -505,24 +506,10 @@ def render_signal_card(action: str, ticker: str, price: float, conf_pct: float, 
     
     st.caption(f"**{asset_title}** • As-of: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     
-    # AI Override as progress indicator
-    override_pct = min(100, max(0, ai_override + 50))  # Normalize to 0-100 for display
-    st.markdown(f"""
-    <div style="margin: 1rem 0;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
-            <span style="font-size: 11px; color: #a0a0a0; text-transform: uppercase; letter-spacing: 1px; font-weight: 600;">AI Override</span>
-            <span style="font-size: 13px; color: #ffffff; font-weight: 700;">{ai_override:+.0f}%</span>
-        </div>
-        <div style="height: 8px; background: rgba(255, 255, 255, 0.05); border-radius: 4px; overflow: hidden;">
-            <div style="height: 100%; width: {override_pct}%; background: linear-gradient(90deg, #16c784, #5B7FF9); transition: width 0.6s ease;"></div>
-        </div>
-        <div style="font-size: 10px; color: #707070; margin-top: 0.25rem; font-family: 'SF Mono', monospace;">
-            Rules: {rules_conf:.0f}% → ML: {conf_pct:.0f}%
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    # Simple AI Override
+    st.caption(f"AI override: {ai_override:+.0f}%")
     
-    # Signal Description (MOVED HERE - right after main card)
+    # Signal Description
     if action in ("BUY", "SHORT"):
         risk_pct = abs(levels['entry'] - levels['sl']) / max(1e-9, abs(levels['entry'])) * 100
         
@@ -548,7 +535,7 @@ risk control and plan revision essential if consolidation occurs above zone.
     if action in ("BUY", "SHORT"):
         st.markdown("---")
         
-        # Premium card grid - TP cards now BLUE
+        # Same height cards - FIXED
         col1, col2, col3 = st.columns(3)
         with col1:
             st.markdown(f"""
@@ -556,6 +543,7 @@ risk control and plan revision essential if consolidation occurs above zone.
                         border: 2px solid rgba(22, 199, 132, 0.4); 
                         border-radius: 16px; 
                         padding: 1.5rem;
+                        min-height: 140px;
                         box-shadow: 0 8px 16px rgba(22, 199, 132, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
                 <div style="font-size: 10px; color: #16c784; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">ENTRY</div>
                 <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px;">${levels['entry']:.2f}</div>
@@ -568,6 +556,7 @@ risk control and plan revision essential if consolidation occurs above zone.
                         border: 2px solid rgba(234, 57, 67, 0.4); 
                         border-radius: 16px; 
                         padding: 1.5rem;
+                        min-height: 140px;
                         box-shadow: 0 8px 16px rgba(234, 57, 67, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
                 <div style="font-size: 10px; color: #ea3943; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">STOP LOSS</div>
                 <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px;">${levels['sl']:.2f}</div>
@@ -580,6 +569,7 @@ risk control and plan revision essential if consolidation occurs above zone.
                         border: 2px solid rgba(91, 127, 249, 0.4); 
                         border-radius: 16px; 
                         padding: 1.5rem;
+                        min-height: 140px;
                         box-shadow: 0 8px 16px rgba(91, 127, 249, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
                 <div style="font-size: 10px; color: #5B7FF9; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">TP1</div>
                 <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px; margin-bottom: 0.5rem;">${levels['tp1']:.2f}</div>
@@ -596,6 +586,7 @@ risk control and plan revision essential if consolidation occurs above zone.
                         border: 2px solid rgba(91, 127, 249, 0.4); 
                         border-radius: 16px; 
                         padding: 1.5rem;
+                        min-height: 140px;
                         box-shadow: 0 8px 16px rgba(91, 127, 249, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
                 <div style="font-size: 10px; color: #5B7FF9; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">TP2</div>
                 <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px; margin-bottom: 0.5rem;">${levels['tp2']:.2f}</div>
@@ -609,6 +600,7 @@ risk control and plan revision essential if consolidation occurs above zone.
                         border: 2px solid rgba(91, 127, 249, 0.4); 
                         border-radius: 16px; 
                         padding: 1.5rem;
+                        min-height: 140px;
                         box-shadow: 0 8px 16px rgba(91, 127, 249, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
                 <div style="font-size: 10px; color: #5B7FF9; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">TP3</div>
                 <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px; margin-bottom: 0.5rem;">${levels['tp3']:.2f}</div>
@@ -618,7 +610,7 @@ risk control and plan revision essential if consolidation occurs above zone.
         
         st.markdown("---")
         
-        # R/R in WHITE text
+        # R/R in WHITE
         rr = rr_line(levels)
         if rr:
             st.markdown(f"""
@@ -746,7 +738,7 @@ if 'user' not in st.session_state:
 if 'min_confidence_filter' not in st.session_state:
     st.session_state['min_confidence_filter'] = 60
 
-# ========= SIDEBAR =========
+# ========= SIDEBAR with Account Window =========
 with st.sidebar:
     st.markdown("""
     <div style="margin-bottom: 2rem;">
@@ -761,18 +753,41 @@ with st.sidebar:
     stats = db.get_statistics(st.session_state.user['user_id'])
     
     if user_info:
+        # Account Window
         st.subheader("Account")
-        pnl = user_info['current_capital'] - user_info['initial_capital']
-        pnl_pct = (pnl / max(1e-9, user_info['initial_capital'])) * 100
         
-        st.metric(
-            "Capital", 
-            f"${user_info['current_capital']:,.2f}",
-            f"{pnl:+,.2f} ({pnl_pct:+.2f}%)"
-        )
+        current_capital = user_info['current_capital']
+        initial_capital = user_info['initial_capital']
+        pnl = current_capital - initial_capital
+        pnl_pct = (pnl / max(1e-9, initial_capital)) * 100
+        
+        # Account metrics
+        st.markdown(f"""
+        <div style="background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem;">
+            <div style="margin-bottom: 1.5rem;">
+                <div style="font-size: 10px; color: #707070; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 0.5rem;">Current Capital</div>
+                <div style="font-size: 28px; font-weight: 700; color: #ffffff;">${current_capital:,.2f}</div>
+            </div>
+            <div style="border-top: 1px solid rgba(255,255,255,0.05); padding-top: 1rem;">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 0.75rem;">
+                    <span style="font-size: 12px; color: #a0a0a0;">Initial Capital:</span>
+                    <span style="font-size: 12px; color: #ffffff; font-weight: 600;">${initial_capital:,.2f}</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; margin-bottom: 0.75rem;">
+                    <span style="font-size: 12px; color: #a0a0a0;">Total P&L:</span>
+                    <span style="font-size: 12px; color: {'#16c784' if pnl >= 0 else '#ea3943'}; font-weight: 600;">${pnl:+,.2f}</span>
+                </div>
+                <div style="display: flex; justify-content: space-between;">
+                    <span style="font-size: 12px; color: #a0a0a0;">P&L %:</span>
+                    <span style="font-size: 12px; color: {'#16c784' if pnl_pct >= 0 else '#ea3943'}; font-weight: 600;">{pnl_pct:+.2f}%</span>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
         
         st.markdown("---")
         
+        # Statistics
         st.subheader("Statistics")
         col1, col2 = st.columns(2)
         with col1:
@@ -784,6 +799,7 @@ with st.sidebar:
         
         st.markdown("---")
         
+        # Settings
         st.subheader("Settings")
         new_conf = st.slider(
             "Min. Confidence (%)", 
@@ -794,6 +810,8 @@ with st.sidebar:
         st.session_state['min_confidence_filter'] = new_conf
         
         st.markdown("---")
+        
+        # LOGOUT BUTTON
         if st.button("Logout", use_container_width=True):
             clear_all_caches()
             for key in list(st.session_state.keys()):
@@ -820,7 +838,7 @@ with tabs[0]:
     st.write("**Symbol**")
     col1, col2 = st.columns([4, 1])
     with col1:
-        ticker = st.text_input("Enter Symbol", placeholder="aapl", label_visibility="collapsed")
+        ticker = st.text_input("Enter Symbol", placeholder="AAPL, TSLA, BTCUSD, ETHUSD", label_visibility="collapsed")
     with col2:
         analyze_btn = st.button("Analyze", type="primary", use_container_width=True)
     
@@ -868,7 +886,7 @@ with tabs[0]:
                     if ARXORA_DEBUG:
                         st.exception(e)
 
-# TAB 2: Portfolio - ENHANCED
+# TAB 2: Portfolio
 with tabs[1]:
     st.subheader("Add to Portfolio")
     
@@ -962,9 +980,6 @@ with tabs[2]:
         st.info("No active trades")
     else:
         for t in trades:
-            # Calculate current P&L percentage
-            direction_mult = 1 if t['direction'] == 'LONG' else -1
-            
             with st.expander(f"**{t['ticker']}** — {t['direction']} • {t['remaining_percent']:.0f}% remaining • Conf: {t['confidence']}%"):
                 col1, col2, col3, col4 = st.columns(4)
                 with col1:
@@ -1036,7 +1051,7 @@ with tabs[2]:
                             except Exception as e:
                                 st.error(f"Error: {e}")
 
-# TAB 4: Statistics - ENHANCED
+# TAB 4: Statistics
 with tabs[3]:
     st.subheader("Performance Overview")
     
