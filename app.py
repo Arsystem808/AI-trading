@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# app.py — Arxora Trading Platform v15.0 (FINAL PRODUCTION READY)
+# app.py — Arxora Trading Platform v14.0 (FINAL PRODUCTION READY)
 
 import os
 import re
@@ -55,7 +55,7 @@ st.set_page_config(
     page_title="Arxora",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded"  # Changed to expanded
 )
 
 # ========= PRODUCTION-GRADE THEME =========
@@ -93,6 +93,7 @@ html, body, .stApp {
     margin: 0 auto !important;
 }
 
+/* Mobile responsive */
 @media (max-width: 768px) {
     .block-container {
         padding: 1rem !important;
@@ -109,7 +110,7 @@ html, body, .stApp {
     margin-bottom: 1rem !important;
 }
 
-/* Input fields - clean single border */
+/* FIXED: Input fields - clean single border */
 .stTextInput > div > div > input,
 .stNumberInput > div > div > input {
     background: var(--surface) !important;
@@ -138,16 +139,11 @@ html, body, .stApp {
     margin-bottom: 0.5rem !important;
 }
 
+/* Remove default Streamlit input container borders */
 .stTextInput > div,
 .stNumberInput > div {
     border: none !important;
     box-shadow: none !important;
-}
-
-/* Input instruction hide */
-[data-testid="InputInstructions"],
-[aria-live="polite"][data-testid="stMarkdownContainer"] {
-    display: none !important;
 }
 
 /* Buttons */
@@ -162,8 +158,6 @@ html, body, .stApp {
     font-size: 13px !important;
     letter-spacing: 0.5px !important;
     min-height: 44px !important;
-    height: 44px !important;
-    width: 100% !important;
     transition: all 0.2s !important;
 }
 
@@ -193,7 +187,7 @@ html, body, .stApp {
     box-shadow: 0 4px 12px rgba(234, 57, 67, 0.3) !important;
 }
 
-/* Radio - clean with blue dot and production gradient outline */
+/* Radio - clean with blue dot */
 .stRadio > div {
     display: flex;
     gap: 0.75rem;
@@ -202,7 +196,7 @@ html, body, .stApp {
 
 .stRadio > div > label {
     background: transparent !important;
-    border: 1.5px solid var(--border) !important;
+    border: 1px solid var(--border) !important;
     border-radius: 8px !important;
     padding: 0.65rem 1.25rem 0.65rem 2.5rem !important;
     color: var(--text-secondary) !important;
@@ -213,6 +207,7 @@ html, body, .stApp {
     position: relative !important;
 }
 
+/* Hide Streamlit's default radio icon */
 .stRadio > div > label > div:first-child {
     display: none !important;
 }
@@ -220,11 +215,11 @@ html, body, .stApp {
 .stRadio > div > label::before {
     content: '';
     position: absolute;
-    left: 12px;
+    left: 1rem;
     top: 50%;
     transform: translateY(-50%);
-    width: 10px;
-    height: 10px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     background: transparent;
     border: 2px solid var(--text-tertiary);
@@ -238,19 +233,14 @@ html, body, .stApp {
 
 .stRadio > div > label[data-checked="true"] {
     background: transparent !important;
-    border-color: transparent !important;
-    background:
-        linear-gradient(var(--bg-primary), var(--bg-primary)) padding-box,
-        linear-gradient(135deg, #16c784, #5B7FF9) border-box !important;
-    border: 1.5px solid transparent !important;
+    border-color: var(--accent-blue) !important;
     color: var(--accent-blue) !important;
-    box-shadow: 0 0 0 1px rgba(91,127,249,0.35) inset !important;
 }
 
 .stRadio > div > label[data-checked="true"]::before {
-    border-color: #5B7FF9;
-    background: radial-gradient(circle at center, #5B7FF9 55%, #5B7FF9 55%) !important;
-    box-shadow: 0 0 8px rgba(91,127,249,0.6);
+    background: var(--accent-blue);
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 8px rgba(91, 127, 249, 0.6);
 }
 
 /* Tabs */
@@ -349,13 +339,6 @@ h3 {
     margin: 1rem 0 0.5rem 0 !important;
 }
 
-h4 {
-    font-size: 14px !important;
-    font-weight: 700 !important;
-    margin: 0.5rem 0 0.25rem 0 !important;
-    color: var(--text-primary) !important;
-}
-
 /* Captions */
 .caption {
     font-size: 12px !important;
@@ -378,7 +361,7 @@ h4 {
     border-top: 1px solid var(--border-light);
 }
 
-/* Trade card */
+/* Standardized card height */
 .trade-card {
     min-height: 150px;
     height: 100%;
@@ -393,7 +376,7 @@ h4 {
     }
 }
 
-/* Info boxes */
+/* Info boxes - remove emoji compatibility */
 .stAlert {
     background: var(--surface) !important;
     border: 1px solid var(--border) !important;
@@ -485,34 +468,6 @@ def resolve_asset_title_polygon(raw_symbol: str, normalized: str) -> str:
     except Exception:
         pass
     return s
-
-def fetch_last_price_polygon(ticker_norm: str) -> Optional[float]:
-    """Fetch last price from Polygon API"""
-    api = os.getenv("POLYGON_API_KEY") or os.getenv("POLYGON_KEY")
-    if not api or requests is None:
-        return None
-    try:
-        if ticker_norm.startswith("X:"):  # crypto
-            r = requests.get(
-                f"https://api.polygon.io/v2/snapshot/locale/global/markets/crypto/tickers/{ticker_norm}",
-                params={"apiKey": api}, timeout=2.5
-            )
-            if r.ok:
-                j = r.json() or {}
-                t = (j.get("ticker") or {})
-                return float(((t.get("lastTrade") or {}).get("p") or (t.get("day") or {}).get("c") or 0.0))
-        else:  # stocks/ETFs
-            r = requests.get(
-                f"https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{ticker_norm}",
-                params={"apiKey": api}, timeout=2.5
-            )
-            if r.ok:
-                j = r.json() or {}
-                t = (j.get("ticker") or {})
-                return float(((t.get("lastTrade") or {}).get("p") or (t.get("day") or {}).get("c") or 0.0))
-    except Exception:
-        return None
-    return None
 
 def get_tp_status(trade: Dict, price: float) -> Tuple[Optional[str], bool]:
     """Get which TP can be closed"""
@@ -606,8 +561,8 @@ def render_signal_card(action: str, ticker: str, price: float, conf_pct: float, 
     # Show model and asset info
     st.caption(f"**{asset_title}** • Model: **{model_name}** • As-of: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     
-    # AI Override INDICATOR
-    override_pct = min(100, max(0, (ai_override + 50)))
+    # AI Override INDICATOR (RESTORED)
+    override_pct = min(100, max(0, (ai_override + 50)))  # Normalize to 0-100
     st.markdown(f"""
     <div style="margin: 1rem 0 1.5rem 0;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
@@ -734,7 +689,7 @@ risk control and plan revision essential if consolidation occurs above zone.
 
 # ========= Strategy Loading =========
 try:
-    import services.data
+    import services.data  # noqa
 except Exception:
     try:
         import core.data as _core_data
@@ -847,7 +802,7 @@ if 'user' not in st.session_state:
 if 'min_confidence_filter' not in st.session_state:
     st.session_state['min_confidence_filter'] = 60
 
-# ========= SIDEBAR with Account Window =========
+# ========= SIDEBAR with Account Window (FIXED) =========
 with st.sidebar:
     st.markdown("""
     <div style="margin-bottom: 2rem;">
@@ -922,7 +877,7 @@ with st.sidebar:
         
         st.markdown("---")
         
-        # LOGOUT BUTTON
+        # LOGOUT BUTTON (FIXED)
         if st.button("Logout", use_container_width=True, key="logout_sidebar_btn"):
             clear_all_caches()
             for key in list(st.session_state.keys()):
@@ -997,7 +952,7 @@ with tabs[0]:
                     if ARXORA_DEBUG:
                         st.exception(e)
 
-# TAB 2: Portfolio
+# TAB 2: Portfolio (FIXED - neutral color + no emoji)
 with tabs[1]:
     st.subheader("Add to Portfolio")
     
@@ -1009,7 +964,7 @@ with tabs[1]:
         elif not db.can_add_trade(st.session_state.user['user_id'], sig["ticker"]):
             st.warning(f"Active trade already exists for {sig['ticker']}")
         else:
-            # Neutral gray card
+            # FIXED: Neutral gray card
             st.markdown(f"""
             <div style="background: rgba(26, 26, 26, 0.8); 
                         border: 1px solid rgba(255, 255, 255, 0.1); 
@@ -1061,6 +1016,7 @@ with tabs[1]:
             
             st.markdown("---")
             
+            # FIXED: No emoji
             st.markdown("""
             <div style="background: rgba(91, 127, 249, 0.1); 
                         border: 1px solid rgba(91, 127, 249, 0.3); 
@@ -1108,107 +1064,146 @@ with tabs[1]:
 # TAB 3: Active Trades
 with tabs[2]:
     st.subheader("Active Trades")
-
-    user_id = st.session_state.user['user_id']
-    try:
-        active = db.get_active_trades(user_id)
-    except Exception as e:
-        st.error(f"Failed to load active trades: {e}")
-        active = []
-
-    if not active:
-        st.info("No active trades at the moment.")
+    
+    trades = db.get_active_trades(st.session_state.user['user_id'])
+    
+    if not trades:
+        st.info("No active trades")
     else:
-        for tr in active:
-            sym_disp = tr['ticker']
-            norm = normalize_for_polygon(sym_disp)
-            price = fetch_last_price_polygon(norm) or float(tr['entry_price'])
-
-            next_tp_key, can_close_tp = get_tp_status(tr, price)
-            sl_is_hit = check_sl_hit(tr, price)
-
-            rr_levels = {
-                "entry": float(tr['entry_price']),
-                "sl": float(tr['stop_loss']),
-                "tp1": float(tr['take_profit_1']),
-                "tp2": float(tr['take_profit_2']),
-                "tp3": float(tr['take_profit_3']),
-            }
-            rr_text = rr_line(rr_levels)
-
-            st.markdown(f"#### {sym_disp} — {tr['direction']}  •  Last: ${price:,.2f}")
-            cols = st.columns(4)
-            cols[0].metric("Entry", f"${tr['entry_price']:.2f}")
-            cols[1].metric("SL", f"${tr['stop_loss']:.2f}")
-            cols[2].metric("TP1 | TP2 | TP3", f"${tr['take_profit_1']:.2f} · ${tr['take_profit_2']:.2f} · ${tr['take_profit_3']:.2f}")
-            cols[3].metric("RR", rr_text or "—")
-
-            st.markdown("""
-            <div style="height:8px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden;">
-              <div style="height:100%;width:100%;background:linear-gradient(90deg,#16c784,#5B7FF9);opacity:0.35;"></div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            b1, b2, b3, b4 = st.columns([1,1,1,1])
-
-            # 1) Close next TP (if threshold met)
-            if can_close_tp:
-                if b1.button(f"Close {next_tp_key.upper()}", key=f"tpclose_{tr['id']}"):
-                    try:
-                        db.partial_close(tr['id'], next_tp_key, float(price))
-                        if next_tp_key == 'tp1' and not tr.get('sl_breakeven', False):
-                            db.move_sl_to_breakeven(tr['id'])
-                        st.success(f"{sym_disp}: {next_tp_key.upper()} closed at ${price:,.2f}")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Partial close failed: {e}")
-            else:
-                b1.button("Close TP (waiting)", key=f"tpblocked_{tr['id']}", disabled=True)
-
-            # 2) Move SL to Breakeven
-            if not tr.get('sl_breakeven', False):
-                if b2.button("SL → Breakeven", key=f"slbe_{tr['id']}"):
-                    try:
-                        db.move_sl_to_breakeven(tr['id'])
-                        st.success(f"{sym_disp}: SL moved to breakeven")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Failed to move SL: {e}")
-            else:
-                b2.button("SL at Breakeven", key=f"slbe_set_{tr['id']}", disabled=True)
-
-            # 3) Market close
-            if b3.button("Close at Market", key=f"mktclose_{tr['id']}"):
-                try:
-                    db.close_trade_market(tr['id'], float(price))
-                    st.success(f"{sym_disp}: position closed at market ${price:,.2f}")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Market close failed: {e}")
-
-            # 4) Auto SL trigger
-            if sl_is_hit:
-                if b4.button("Confirm SL Close", key=f"slclose_{tr['id']}"):
-                    try:
-                        db.close_trade_sl(tr['id'], float(price))
-                        st.warning(f"{sym_disp}: stop-loss executed at ${price:,.2f}")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"SL close failed: {e}")
-            else:
-                b4.button("SL not hit", key=f"slnoop_{tr['id']}", disabled=True)
-
-            st.markdown("---")
+        for t in trades:
+            with st.expander(f"**{t['ticker']}** — {t['direction']} • {t['remaining_percent']:.0f}% remaining • Conf: {t['confidence']}%"):
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Entry", f"${t['entry_price']:.2f}")
+                with col2:
+                    st.metric("Position", f"${t['position_size']:.2f}")
+                with col3:
+                    st.metric("Model", t.get('model', 'N/A'))
+                with col4:
+                    sl_status = "Breakeven" if t['sl_breakeven'] else "Active"
+                    st.metric("SL Status", sl_status)
+                
+                st.markdown("**Take Profit Status**")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    status = "✅ Closed" if t['tp1_closed'] else "⭕ Open"
+                    st.write(f"{status} TP1: ${t['take_profit_1']:.2f}")
+                with col2:
+                    status = "✅ Closed" if t['tp2_closed'] else "⭕ Open"
+                    st.write(f"{status} TP2: ${t['take_profit_2']:.2f}")
+                with col3:
+                    status = "✅ Closed" if t['tp3_closed'] else "⭕ Open"
+                    st.write(f"{status} TP3: ${t['take_profit_3']:.2f}")
+                
+                st.markdown("---")
+                
+                price = st.number_input("Current Price", float(t['entry_price']), key=f"p_{t['trade_id']}")
+                
+                tp_level, can_close_tp = get_tp_status(t, price)
+                sl_hit = check_sl_hit(t, price)
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    if tp_level and can_close_tp:
+                        if st.button(f"Close {tp_level.upper()}", key=f"{tp_level}_{t['trade_id']}", use_container_width=True):
+                            with st.spinner("Closing..."):
+                                try:
+                                    db.partial_close_trade(t['trade_id'], price, tp_level)
+                                    clear_all_caches()
+                                    st.success(f"{tp_level.upper()} closed!")
+                                    time.sleep(0.5)
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error: {e}")
+                    
+                    if sl_hit:
+                        st.error("⚠️ Stop Loss triggered!")
+                        if st.button("Close at SL", key=f"sl_{t['trade_id']}", use_container_width=True):
+                            with st.spinner("Closing..."):
+                                try:
+                                    db.full_close_trade(t['trade_id'], price, "SL_HIT")
+                                    clear_all_caches()
+                                    st.success("Closed at SL")
+                                    time.sleep(0.5)
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error: {e}")
+                
+                with col2:
+                    if st.button("Close All (Manual)", key=f"close_{t['trade_id']}", type="secondary", use_container_width=True):
+                        with st.spinner("Closing..."):
+                            try:
+                                db.full_close_trade(t['trade_id'], price, "MANUAL")
+                                clear_all_caches()
+                                st.success("Position closed!")
+                                time.sleep(0.5)
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error: {e}")
 
 # TAB 4: Statistics
 with tabs[3]:
-    st.subheader("Performance & Analytics")
+    st.subheader("Performance Overview")
     
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Trades", stats['total_trades'])
-    col2.metric("Closed", stats['closed_trades'])
-    col3.metric("Win Rate", f"{stats['win_rate']:.1f}%")
-    col4.metric("Avg P&L %", f"{stats['avg_pnl']:.2f}%")
+    with col1:
+        st.metric("Total Trades", stats['total_trades'])
+    with col2:
+        st.metric("Win Rate", f"{stats['win_rate']:.1f}%")
+    with col3:
+        st.metric("Closed Trades", stats['closed_trades'])
+    with col4:
+        st.metric("Avg P&L", f"{stats['avg_pnl']:.2f}%")
     
-    st.markdown("---")
-    st.info("Detailed performance charts and historical data will be displayed here.")
+    closed = db.get_closed_trades(st.session_state.user['user_id'])
+    if closed and pd:
+        df = pd.DataFrame(closed)
+        df['cumulative_pnl'] = df['total_pnl_dollars'].cumsum()
+        
+        st.markdown("### Equity Curve")
+        st.line_chart(df['cumulative_pnl'])
+        
+        st.markdown("### Trade History")
+        
+        # Safe dataframe handling
+        try:
+            display_cols = ['ticker', 'direction', 'entry_price', 'close_price', 'total_pnl_percent']
+            if 'close_reason' in df.columns:
+                display_cols.append('close_reason')
+            if 'close_date' in df.columns:
+                display_cols.append('close_date')
+            
+            display_df = df[display_cols].copy()
+            display_df.columns = [col.replace('_', ' ').title() for col in display_df.columns]
+            
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
+        except Exception as e:
+            st.error(f"Error displaying trade history: {e}")
+            if ARXORA_DEBUG:
+                st.exception(e)
+        
+        # Summary stats
+        st.markdown("### Performance Breakdown")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            winning_trades = len(df[df['total_pnl_percent'] > 0])
+            st.metric("Winning Trades", winning_trades)
+        with col2:
+            losing_trades = len(df[df['total_pnl_percent'] <= 0])
+            st.metric("Losing Trades", losing_trades)
+        with col3:
+            avg_win = df[df['total_pnl_percent'] > 0]['total_pnl_percent'].mean() if winning_trades > 0 else 0
+            st.metric("Avg Win", f"{avg_win:.2f}%")
+    else:
+        st.info("No closed trades yet")
+
+# FOOTER
+st.markdown("""
+<div class="footer-text">
+    Arxora · Professional Trading Intelligence Platform combining algorithmic strategies with machine learning. 
+    Features ensemble analysis, confidence calibration, and comprehensive risk management. 
+    AI-generated signals are informational only and do not constitute investment advice; markets change rapidly, 
+    past results do not guarantee future outcomes.
+</div>
+""", unsafe_allow_html=True)
