@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# app.py — Arxora Trading Platform v9.0 (Production Level)
+# app.py — Arxora Trading Platform v10.0 (Final Production)
 
 import os
 import re
@@ -92,7 +92,6 @@ html, body, .stApp {
     margin: 0 auto !important;
 }
 
-/* Standardized spacing */
 .element-container {
     margin-bottom: 1rem !important;
 }
@@ -242,12 +241,12 @@ html, body, .stApp {
     color: var(--text-primary) !important;
 }
 
-/* Slider - Standardized */
+/* Slider */
 .stSlider {
     padding: 0.5rem 0 !important;
 }
 
-/* Expander - Standardized */
+/* Expander */
 .streamlit-expanderHeader {
     background: var(--surface) !important;
     border: 1px solid var(--border) !important;
@@ -270,7 +269,7 @@ html, body, .stApp {
     padding: 1.5rem !important;
 }
 
-/* Headings - Standardized */
+/* Headings */
 h1 {
     font-size: 32px !important;
     font-weight: 700 !important;
@@ -290,7 +289,7 @@ h3 {
     margin: 1rem 0 0.5rem 0 !important;
 }
 
-/* Captions - Standardized */
+/* Captions */
 .caption {
     font-size: 12px !important;
     color: var(--text-tertiary) !important;
@@ -427,22 +426,29 @@ def check_sl_hit(trade: Dict, price: float) -> bool:
         return (price <= trade['stop_loss']) if is_long else (price >= trade['stop_loss'])
 
 def render_signal_card(action: str, ticker: str, price: float, conf_pct: float, rules_conf: float, levels: Dict, output: Dict):
-    """Render professional signal card"""
+    """Render premium signal card"""
     
     asset_title = resolve_asset_title_polygon(ticker, ticker)
     ai_override = conf_pct - rules_conf
     
+    # Extract probabilities
+    probs = output.get('probs') or {}
+    tp1_prob = int(probs.get('tp1', 0.0) * 100) if probs else 0
+    tp2_prob = int(probs.get('tp2', 0.0) * 100) if probs else 0
+    tp3_prob = int(probs.get('tp3', 0.0) * 100) if probs else 0
+    
     if action == "BUY":
         st.markdown(f"""
-        <div style="background: linear-gradient(135deg, rgba(22, 199, 132, 0.2), rgba(22, 199, 132, 0.05)); 
+        <div style="background: linear-gradient(135deg, rgba(22, 199, 132, 0.25), rgba(22, 199, 132, 0.05)); 
                     border: 2px solid #16c784; 
-                    border-radius: 12px; 
+                    border-radius: 16px; 
                     padding: 2rem; 
-                    margin: 1.5rem 0;">
-            <div style="font-size: 22px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem;">
+                    margin: 1.5rem 0;
+                    box-shadow: 0 8px 24px rgba(22, 199, 132, 0.15);">
+            <div style="font-size: 24px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem; letter-spacing: -0.3px;">
                 Long • Buy Limit
             </div>
-            <div style="font-size: 14px; color: #a0a0a0;">
+            <div style="font-size: 14px; color: #b0b0b0;">
                 {int(conf_pct)}% confidence
             </div>
         </div>
@@ -450,15 +456,16 @@ def render_signal_card(action: str, ticker: str, price: float, conf_pct: float, 
         
     elif action == "SHORT":
         st.markdown(f"""
-        <div style="background: linear-gradient(135deg, rgba(234, 57, 67, 0.2), rgba(234, 57, 67, 0.05)); 
+        <div style="background: linear-gradient(135deg, rgba(234, 57, 67, 0.25), rgba(234, 57, 67, 0.05)); 
                     border: 2px solid #ea3943; 
-                    border-radius: 12px; 
+                    border-radius: 16px; 
                     padding: 2rem; 
-                    margin: 1.5rem 0;">
-            <div style="font-size: 22px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem;">
+                    margin: 1.5rem 0;
+                    box-shadow: 0 8px 24px rgba(234, 57, 67, 0.15);">
+            <div style="font-size: 24px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem; letter-spacing: -0.3px;">
                 Short • Sell Limit
             </div>
-            <div style="font-size: 14px; color: #a0a0a0;">
+            <div style="font-size: 14px; color: #b0b0b0;">
                 {int(conf_pct)}% confidence
             </div>
         </div>
@@ -466,60 +473,65 @@ def render_signal_card(action: str, ticker: str, price: float, conf_pct: float, 
         
     else:
         st.markdown(f"""
-        <div style="background: linear-gradient(135deg, rgba(255, 169, 77, 0.2), rgba(255, 169, 77, 0.05)); 
+        <div style="background: linear-gradient(135deg, rgba(255, 169, 77, 0.25), rgba(255, 169, 77, 0.05)); 
                     border: 2px solid #ffa94d; 
-                    border-radius: 12px; 
+                    border-radius: 16px; 
                     padding: 2rem; 
-                    margin: 1.5rem 0;">
-            <div style="font-size: 22px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem;">
+                    margin: 1.5rem 0;
+                    box-shadow: 0 8px 24px rgba(255, 169, 77, 0.15);">
+            <div style="font-size: 24px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem; letter-spacing: -0.3px;">
                 Wait
             </div>
-            <div style="font-size: 14px; color: #a0a0a0;">
+            <div style="font-size: 14px; color: #b0b0b0;">
                 {int(conf_pct)}% confidence
             </div>
         </div>
         """, unsafe_allow_html=True)
     
     st.caption(f"**{asset_title}** • As-of: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    st.caption(f"AI override: {ai_override:+.0f}% (Rules: {rules_conf:.0f}% → ML: {conf_pct:.0f}%)")
+    st.caption(f"AI override: {ai_override:+.0f}%")
     
     st.markdown(f"### ${price:,.2f}")
     
     if action in ("BUY", "SHORT"):
         st.markdown("---")
         
-        # Standardized grid
+        # Premium card grid
         col1, col2, col3 = st.columns(3)
         with col1:
             st.markdown(f"""
-            <div style="background: linear-gradient(135deg, rgba(22, 199, 132, 0.1), rgba(22, 199, 132, 0.02)); 
-                        border: 1px solid rgba(22, 199, 132, 0.3); 
-                        border-radius: 12px; 
-                        padding: 1.25rem;">
-                <div style="font-size: 10px; color: #707070; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 0.75rem;">Entry</div>
-                <div style="font-size: 24px; font-weight: 700; color: #ffffff;">${levels['entry']:.2f}</div>
+            <div style="background: linear-gradient(145deg, #1e3a2c, #1a1a1a); 
+                        border: 2px solid rgba(22, 199, 132, 0.4); 
+                        border-radius: 16px; 
+                        padding: 1.5rem;
+                        box-shadow: 0 8px 16px rgba(22, 199, 132, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
+                <div style="font-size: 10px; color: #16c784; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">ENTRY</div>
+                <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px;">${levels['entry']:.2f}</div>
             </div>
             """, unsafe_allow_html=True)
         
         with col2:
             st.markdown(f"""
-            <div style="background: linear-gradient(135deg, rgba(234, 57, 67, 0.1), rgba(234, 57, 67, 0.02)); 
-                        border: 1px solid rgba(234, 57, 67, 0.3); 
-                        border-radius: 12px; 
-                        padding: 1.25rem;">
-                <div style="font-size: 10px; color: #707070; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 0.75rem;">Stop Loss</div>
-                <div style="font-size: 24px; font-weight: 700; color: #ffffff;">${levels['sl']:.2f}</div>
+            <div style="background: linear-gradient(145deg, #3a1e1e, #1a1a1a); 
+                        border: 2px solid rgba(234, 57, 67, 0.4); 
+                        border-radius: 16px; 
+                        padding: 1.5rem;
+                        box-shadow: 0 8px 16px rgba(234, 57, 67, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
+                <div style="font-size: 10px; color: #ea3943; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">STOP LOSS</div>
+                <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px;">${levels['sl']:.2f}</div>
             </div>
             """, unsafe_allow_html=True)
         
         with col3:
             st.markdown(f"""
-            <div style="background: var(--surface); 
-                        border: 1px solid var(--border); 
-                        border-radius: 12px; 
-                        padding: 1.25rem;">
-                <div style="font-size: 10px; color: #707070; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 0.75rem;">TP1</div>
-                <div style="font-size: 24px; font-weight: 700; color: #ffffff;">${levels['tp1']:.2f}</div>
+            <div style="background: linear-gradient(145deg, #252525, #1a1a1a); 
+                        border: 2px solid rgba(255, 255, 255, 0.12); 
+                        border-radius: 16px; 
+                        padding: 1.5rem;
+                        box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
+                <div style="font-size: 10px; color: #a0a0a0; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">TP1</div>
+                <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px; margin-bottom: 0.5rem;">${levels['tp1']:.2f}</div>
+                <div style="font-size: 11px; color: #16c784; font-weight: 600;">Probability {tp1_prob}%</div>
             </div>
             """, unsafe_allow_html=True)
         
@@ -528,30 +540,58 @@ def render_signal_card(action: str, ticker: str, price: float, conf_pct: float, 
         col1, col2, col3 = st.columns(3)
         with col1:
             st.markdown(f"""
-            <div style="background: var(--surface); 
-                        border: 1px solid var(--border); 
-                        border-radius: 12px; 
-                        padding: 1.25rem;">
-                <div style="font-size: 10px; color: #707070; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 0.75rem;">TP2</div>
-                <div style="font-size: 24px; font-weight: 700; color: #ffffff;">${levels['tp2']:.2f}</div>
+            <div style="background: linear-gradient(145deg, #252525, #1a1a1a); 
+                        border: 2px solid rgba(255, 255, 255, 0.12); 
+                        border-radius: 16px; 
+                        padding: 1.5rem;
+                        box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
+                <div style="font-size: 10px; color: #a0a0a0; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">TP2</div>
+                <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px; margin-bottom: 0.5rem;">${levels['tp2']:.2f}</div>
+                <div style="font-size: 11px; color: #16c784; font-weight: 600;">Probability {tp2_prob}%</div>
             </div>
             """, unsafe_allow_html=True)
         
         with col2:
             st.markdown(f"""
-            <div style="background: var(--surface); 
-                        border: 1px solid var(--border); 
-                        border-radius: 12px; 
-                        padding: 1.25rem;">
-                <div style="font-size: 10px; color: #707070; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 0.75rem;">TP3</div>
-                <div style="font-size: 24px; font-weight: 700; color: #ffffff;">${levels['tp3']:.2f}</div>
+            <div style="background: linear-gradient(145deg, #252525, #1a1a1a); 
+                        border: 2px solid rgba(255, 255, 255, 0.12); 
+                        border-radius: 16px; 
+                        padding: 1.5rem;
+                        box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
+                <div style="font-size: 10px; color: #a0a0a0; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">TP3</div>
+                <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px; margin-bottom: 0.5rem;">${levels['tp3']:.2f}</div>
+                <div style="font-size: 11px; color: #16c784; font-weight: 600;">Probability {tp3_prob}%</div>
             </div>
             """, unsafe_allow_html=True)
         
         st.markdown("---")
+        
+        # R/R
         rr = rr_line(levels)
         if rr:
             st.info(f"**RR ≈ {rr}**")
+        
+        # Signal Description
+        st.markdown("---")
+        
+        risk_pct = abs(levels['entry'] - levels['sl']) / max(1e-9, abs(levels['entry'])) * 100
+        
+        if action == "BUY":
+            description = f"""
+Price at buyer demand level. Optimal entry via AI-analyzed order with growth focus; 
+risk control and plan revision essential if consolidation occurs below zone.
+
+**Stop-loss:** ${levels['sl']:.2f}. Potential risk ~{risk_pct:.1f}% from entry.
+            """
+        else:  # SHORT
+            description = f"""
+Price at resistance level. Optimal entry via AI-analyzed order with downside focus; 
+risk control and plan revision essential if consolidation occurs above zone.
+
+**Stop-loss:** ${levels['sl']:.2f}. Potential risk ~{risk_pct:.1f}% from entry.
+            """
+        
+        st.markdown(description)
 
 # ========= Strategy Loading =========
 try:
@@ -604,7 +644,6 @@ except Exception:
 
 # ========= AUTH PAGE =========
 def show_auth_page():
-    # Center content
     st.markdown("<br><br>", unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 2, 1])
