@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# app.py — Arxora Trading Platform v14.0 (FINAL PRODUCTION READY)
+# app.py — Arxora Trading Platform v14.1 (STANDARDIZED UI FIX)
 
 import os
 import re
@@ -55,10 +55,10 @@ st.set_page_config(
     page_title="Arxora",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="expanded"  # Changed to expanded
+    initial_sidebar_state="expanded"
 )
 
-# ========= PRODUCTION-GRADE THEME =========
+# ========= STANDARDIZED PRODUCTION THEME (FIXED) =========
 st.markdown("""
 <style>
 :root {
@@ -66,16 +66,17 @@ st.markdown("""
     --bg-secondary: #0a0a0a;
     --surface: #1a1a1a;
     --surface-hover: #252525;
-    --accent-primary: #16c784;
+    --accent-primary: #5B7FF9;
     --accent-blue: #5B7FF9;
+    --accent-green: #16c784;
     --success: #16c784;
     --danger: #ea3943;
     --warning: #ffa94d;
     --text-primary: #ffffff;
     --text-secondary: #a0a0a0;
     --text-tertiary: #707070;
-    --border: rgba(255, 255, 255, 0.1);
-    --border-light: rgba(255, 255, 255, 0.05);
+    --border: rgba(91, 127, 249, 0.2);
+    --border-light: rgba(91, 127, 249, 0.1);
 }
 
 html, body, .stApp {
@@ -110,27 +111,33 @@ html, body, .stApp {
     margin-bottom: 1rem !important;
 }
 
-/* FIXED: Input fields - clean single border */
+/* FIXED: Input fields - standardized blue border */
 .stTextInput > div > div > input,
-.stNumberInput > div > div > input {
+.stNumberInput > div > div > input,
+.stPasswordInput > div > div > input {
     background: var(--surface) !important;
-    border: 1px solid var(--border) !important;
-    border-radius: 8px !important;
+    border: 2px solid var(--border) !important;
+    border-radius: 12px !important;
     color: var(--text-primary) !important;
-    padding: 0.75rem 1rem !important;
+    padding: 0.875rem 1.25rem !important;
     font-size: 14px !important;
-    min-height: 44px !important;
+    min-height: 50px !important;
     box-shadow: none !important;
+    transition: all 0.2s ease !important;
 }
 
 .stTextInput > div > div > input:focus,
-.stNumberInput > div > div > input:focus {
-    border: 1px solid var(--accent-primary) !important;
+.stNumberInput > div > div > input:focus,
+.stPasswordInput > div > div > input:focus {
+    border: 2px solid var(--accent-primary) !important;
     outline: none !important;
-    box-shadow: 0 0 0 1px var(--accent-primary) !important;
+    box-shadow: 0 0 0 3px rgba(91, 127, 249, 0.15) !important;
+    background: rgba(91, 127, 249, 0.05) !important;
 }
 
-.stTextInput label, .stNumberInput label {
+.stTextInput label, 
+.stNumberInput label,
+.stPasswordInput label {
     color: var(--text-secondary) !important;
     font-weight: 600 !important;
     text-transform: uppercase !important;
@@ -139,114 +146,116 @@ html, body, .stApp {
     margin-bottom: 0.5rem !important;
 }
 
-/* Remove default Streamlit input container borders */
+/* Remove default Streamlit input container styling */
 .stTextInput > div,
-.stNumberInput > div {
+.stNumberInput > div,
+.stPasswordInput > div {
     border: none !important;
     box-shadow: none !important;
+    background: transparent !important;
 }
 
-/* Buttons */
+/* FIXED: Buttons - standardized blue accent */
 .stButton > button {
-    padding: 0.75rem 1.5rem !important;
+    padding: 0.875rem 1.5rem !important;
     background: var(--accent-primary) !important;
-    color: #000 !important;
-    border: none !important;
-    border-radius: 8px !important;
+    color: #ffffff !important;
+    border: 2px solid var(--accent-primary) !important;
+    border-radius: 12px !important;
     font-weight: 700 !important;
     text-transform: uppercase !important;
     font-size: 13px !important;
     letter-spacing: 0.5px !important;
-    min-height: 44px !important;
-    transition: all 0.2s !important;
+    min-height: 50px !important;
+    transition: all 0.2s ease !important;
+    box-shadow: 0 4px 12px rgba(91, 127, 249, 0.2) !important;
 }
 
 .stButton > button:hover {
-    background: #14b578 !important;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(22, 199, 132, 0.3) !important;
-}
-
-.stButton > button[kind="primary"] {
-    background: var(--accent-blue) !important;
-    color: #fff !important;
-}
-
-.stButton > button[kind="primary"]:hover {
     background: #4a6df0 !important;
-    box-shadow: 0 4px 12px rgba(91, 127, 249, 0.3) !important;
+    border-color: #4a6df0 !important;
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(91, 127, 249, 0.4) !important;
+}
+
+.stButton > button:active {
+    transform: translateY(0px);
 }
 
 .stButton > button[kind="secondary"] {
-    background: var(--danger) !important;
-    color: #fff !important;
+    background: transparent !important;
+    color: var(--accent-primary) !important;
+    border: 2px solid var(--accent-primary) !important;
 }
 
 .stButton > button[kind="secondary"]:hover {
-    background: #d32f3a !important;
-    box-shadow: 0 4px 12px rgba(234, 57, 67, 0.3) !important;
+    background: rgba(91, 127, 249, 0.1) !important;
 }
 
-/* Radio - clean with blue dot */
+/* FIXED: Radio buttons - blue dot indicator */
 .stRadio > div {
     display: flex;
-    gap: 0.75rem;
+    gap: 1rem;
     flex-wrap: wrap;
 }
 
 .stRadio > div > label {
-    background: transparent !important;
-    border: 1px solid var(--border) !important;
-    border-radius: 8px !important;
-    padding: 0.65rem 1.25rem 0.65rem 2.5rem !important;
+    background: var(--surface) !important;
+    border: 2px solid var(--border) !important;
+    border-radius: 12px !important;
+    padding: 0.75rem 1.25rem 0.75rem 2.75rem !important;
     color: var(--text-secondary) !important;
-    font-size: 13px !important;
+    font-size: 14px !important;
     font-weight: 600 !important;
-    transition: all 0.2s !important;
+    transition: all 0.2s ease !important;
     cursor: pointer !important;
     position: relative !important;
+    min-height: 50px !important;
+    display: flex !important;
+    align-items: center !important;
 }
 
-/* Hide Streamlit's default radio icon */
+/* Hide default radio button */
 .stRadio > div > label > div:first-child {
     display: none !important;
 }
 
+/* Blue dot indicator */
 .stRadio > div > label::before {
     content: '';
     position: absolute;
-    left: 1rem;
+    left: 1.25rem;
     top: 50%;
     transform: translateY(-50%);
-    width: 8px;
-    height: 8px;
+    width: 10px;
+    height: 10px;
     border-radius: 50%;
     background: transparent;
     border: 2px solid var(--text-tertiary);
-    transition: all 0.2s;
+    transition: all 0.2s ease;
 }
 
 .stRadio > div > label:hover {
-    border-color: var(--text-secondary) !important;
-    background: var(--surface) !important;
+    border-color: var(--accent-primary) !important;
+    background: rgba(91, 127, 249, 0.05) !important;
 }
 
 .stRadio > div > label[data-checked="true"] {
-    background: transparent !important;
-    border-color: var(--accent-blue) !important;
-    color: var(--accent-blue) !important;
+    background: rgba(91, 127, 249, 0.1) !important;
+    border-color: var(--accent-primary) !important;
+    color: var(--accent-primary) !important;
 }
 
 .stRadio > div > label[data-checked="true"]::before {
-    background: var(--accent-blue);
-    border-color: var(--accent-blue);
-    box-shadow: 0 0 8px rgba(91, 127, 249, 0.6);
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 12px rgba(91, 127, 249, 0.8);
 }
 
 /* Tabs */
 .stTabs [data-baseweb="tab-list"] {
     gap: 2rem;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 2px solid var(--border-light);
     padding-bottom: 0 !important;
 }
 
@@ -258,6 +267,7 @@ html, body, .stApp {
     letter-spacing: 1px;
     padding: 1rem 0 !important;
     background: transparent !important;
+    border-bottom: 2px solid transparent !important;
 }
 
 .stTabs [data-baseweb="tab"]:hover {
@@ -265,14 +275,14 @@ html, body, .stApp {
 }
 
 .stTabs [aria-selected="true"] {
-    color: var(--text-primary) !important;
+    color: var(--accent-primary) !important;
     border-bottom: 2px solid var(--accent-primary) !important;
 }
 
 /* Metrics */
 [data-testid="stMetric"] {
     background: var(--surface);
-    border: 1px solid var(--border);
+    border: 2px solid var(--border);
     border-radius: 12px;
     padding: 1.25rem;
 }
@@ -296,26 +306,30 @@ html, body, .stApp {
     padding: 0.5rem 0 !important;
 }
 
+.stSlider > div > div > div > div {
+    background: var(--accent-primary) !important;
+}
+
 /* Expander */
 .streamlit-expanderHeader {
     background: var(--surface) !important;
-    border: 1px solid var(--border) !important;
+    border: 2px solid var(--border) !important;
     color: var(--text-primary) !important;
-    border-radius: 8px !important;
+    border-radius: 12px !important;
     padding: 1rem !important;
     font-weight: 600 !important;
 }
 
 .streamlit-expanderHeader:hover {
     background: var(--surface-hover) !important;
-    border-color: var(--border) !important;
+    border-color: var(--accent-primary) !important;
 }
 
 .streamlit-expanderContent {
     background: var(--surface) !important;
-    border: 1px solid var(--border) !important;
+    border: 2px solid var(--border) !important;
     border-top: none !important;
-    border-radius: 0 0 8px 8px !important;
+    border-radius: 0 0 12px 12px !important;
     padding: 1.5rem !important;
 }
 
@@ -349,6 +363,7 @@ h3 {
 /* Dataframe */
 .stDataFrame {
     background: var(--surface) !important;
+    border: 2px solid var(--border) !important;
     border-radius: 12px !important;
 }
 
@@ -363,7 +378,7 @@ h3 {
 
 /* Standardized card height */
 .trade-card {
-    min-height: 150px;
+    min-height: 160px;
     height: 100%;
     display: flex;
     flex-direction: column;
@@ -372,16 +387,39 @@ h3 {
 
 @media (max-width: 768px) {
     .trade-card {
-        min-height: 130px;
+        min-height: 140px;
     }
 }
 
-/* Info boxes - remove emoji compatibility */
+/* Info boxes */
 .stAlert {
     background: var(--surface) !important;
-    border: 1px solid var(--border) !important;
+    border: 2px solid var(--border) !important;
     border-radius: 12px !important;
     padding: 1rem !important;
+}
+
+/* Select box */
+.stSelectbox > div > div > div {
+    background: var(--surface) !important;
+    border: 2px solid var(--border) !important;
+    border-radius: 12px !important;
+    color: var(--text-primary) !important;
+    min-height: 50px !important;
+}
+
+/* Text area */
+.stTextArea > div > div > textarea {
+    background: var(--surface) !important;
+    border: 2px solid var(--border) !important;
+    border-radius: 12px !important;
+    color: var(--text-primary) !important;
+    padding: 1rem !important;
+}
+
+.stTextArea > div > div > textarea:focus {
+    border-color: var(--accent-primary) !important;
+    box-shadow: 0 0 0 3px rgba(91, 127, 249, 0.15) !important;
 }
 
 </style>
@@ -509,12 +547,12 @@ def render_signal_card(action: str, ticker: str, price: float, conf_pct: float, 
     # Main signal card
     if action == "BUY":
         st.markdown(f"""
-        <div style="background: linear-gradient(135deg, rgba(22, 199, 132, 0.25), rgba(22, 199, 132, 0.05)); 
+        <div style="background: linear-gradient(135deg, rgba(22, 199, 132, 0.2), rgba(22, 199, 132, 0.05)); 
                     border: 2px solid #16c784; 
                     border-radius: 16px; 
                     padding: 2rem; 
                     margin: 1.5rem 0;
-                    box-shadow: 0 8px 24px rgba(22, 199, 132, 0.15);">
+                    box-shadow: 0 8px 24px rgba(22, 199, 132, 0.2);">
             <div style="font-size: 24px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem; letter-spacing: -0.3px;">
                 Long • Buy Limit
             </div>
@@ -526,12 +564,12 @@ def render_signal_card(action: str, ticker: str, price: float, conf_pct: float, 
         
     elif action == "SHORT":
         st.markdown(f"""
-        <div style="background: linear-gradient(135deg, rgba(234, 57, 67, 0.25), rgba(234, 57, 67, 0.05)); 
+        <div style="background: linear-gradient(135deg, rgba(234, 57, 67, 0.2), rgba(234, 57, 67, 0.05)); 
                     border: 2px solid #ea3943; 
                     border-radius: 16px; 
                     padding: 2rem; 
                     margin: 1.5rem 0;
-                    box-shadow: 0 8px 24px rgba(234, 57, 67, 0.15);">
+                    box-shadow: 0 8px 24px rgba(234, 57, 67, 0.2);">
             <div style="font-size: 24px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem; letter-spacing: -0.3px;">
                 Short • Sell Limit
             </div>
@@ -543,12 +581,12 @@ def render_signal_card(action: str, ticker: str, price: float, conf_pct: float, 
         
     else:
         st.markdown(f"""
-        <div style="background: linear-gradient(135deg, rgba(255, 169, 77, 0.25), rgba(255, 169, 77, 0.05)); 
+        <div style="background: linear-gradient(135deg, rgba(255, 169, 77, 0.2), rgba(255, 169, 77, 0.05)); 
                     border: 2px solid #ffa94d; 
                     border-radius: 16px; 
                     padding: 2rem; 
                     margin: 1.5rem 0;
-                    box-shadow: 0 8px 24px rgba(255, 169, 77, 0.15);">
+                    box-shadow: 0 8px 24px rgba(255, 169, 77, 0.2);">
             <div style="font-size: 24px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem; letter-spacing: -0.3px;">
                 Wait
             </div>
@@ -561,8 +599,8 @@ def render_signal_card(action: str, ticker: str, price: float, conf_pct: float, 
     # Show model and asset info
     st.caption(f"**{asset_title}** • Model: **{model_name}** • As-of: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     
-    # AI Override INDICATOR (RESTORED)
-    override_pct = min(100, max(0, (ai_override + 50)))  # Normalize to 0-100
+    # AI Override INDICATOR
+    override_pct = min(100, max(0, (ai_override + 50)))
     st.markdown(f"""
     <div style="margin: 1rem 0 1.5rem 0;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
@@ -604,27 +642,27 @@ risk control and plan revision essential if consolidation occurs above zone.
     if action in ("BUY", "SHORT"):
         st.markdown("---")
         
-        # Standardized height cards
+        # Standardized height cards with blue borders
         col1, col2, col3 = st.columns(3)
         with col1:
             st.markdown(f"""
-            <div class="trade-card" style="background: linear-gradient(145deg, #1e3a2c, #1a1a1a); 
-                        border: 2px solid rgba(22, 199, 132, 0.4); 
+            <div class="trade-card" style="background: linear-gradient(145deg, rgba(91, 127, 249, 0.1), #1a1a1a); 
+                        border: 2px solid rgba(91, 127, 249, 0.4); 
                         border-radius: 16px; 
                         padding: 1.5rem;
-                        box-shadow: 0 8px 16px rgba(22, 199, 132, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
-                <div style="font-size: 10px; color: #16c784; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">ENTRY</div>
+                        box-shadow: 0 8px 16px rgba(91, 127, 249, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
+                <div style="font-size: 10px; color: #5B7FF9; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">ENTRY</div>
                 <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px;">${levels['entry']:.2f}</div>
             </div>
             """, unsafe_allow_html=True)
         
         with col2:
             st.markdown(f"""
-            <div class="trade-card" style="background: linear-gradient(145deg, #3a1e1e, #1a1a1a); 
+            <div class="trade-card" style="background: linear-gradient(145deg, rgba(234, 57, 67, 0.1), #1a1a1a); 
                         border: 2px solid rgba(234, 57, 67, 0.4); 
                         border-radius: 16px; 
                         padding: 1.5rem;
-                        box-shadow: 0 8px 16px rgba(234, 57, 67, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
+                        box-shadow: 0 8px 16px rgba(234, 57, 67, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
                 <div style="font-size: 10px; color: #ea3943; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">STOP LOSS</div>
                 <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px;">${levels['sl']:.2f}</div>
             </div>
@@ -632,11 +670,11 @@ risk control and plan revision essential if consolidation occurs above zone.
         
         with col3:
             st.markdown(f"""
-            <div class="trade-card" style="background: linear-gradient(145deg, #1e2a3a, #1a1a1a); 
+            <div class="trade-card" style="background: linear-gradient(145deg, rgba(91, 127, 249, 0.1), #1a1a1a); 
                         border: 2px solid rgba(91, 127, 249, 0.4); 
                         border-radius: 16px; 
                         padding: 1.5rem;
-                        box-shadow: 0 8px 16px rgba(91, 127, 249, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
+                        box-shadow: 0 8px 16px rgba(91, 127, 249, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
                 <div style="font-size: 10px; color: #5B7FF9; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">TP1</div>
                 <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px; margin-bottom: 0.5rem;">${levels['tp1']:.2f}</div>
                 <div style="font-size: 11px; color: #16c784; font-weight: 600;">Probability {tp1_prob}%</div>
@@ -648,11 +686,11 @@ risk control and plan revision essential if consolidation occurs above zone.
         col1, col2, col3 = st.columns(3)
         with col1:
             st.markdown(f"""
-            <div class="trade-card" style="background: linear-gradient(145deg, #1e2a3a, #1a1a1a); 
+            <div class="trade-card" style="background: linear-gradient(145deg, rgba(91, 127, 249, 0.1), #1a1a1a); 
                         border: 2px solid rgba(91, 127, 249, 0.4); 
                         border-radius: 16px; 
                         padding: 1.5rem;
-                        box-shadow: 0 8px 16px rgba(91, 127, 249, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
+                        box-shadow: 0 8px 16px rgba(91, 127, 249, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
                 <div style="font-size: 10px; color: #5B7FF9; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">TP2</div>
                 <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px; margin-bottom: 0.5rem;">${levels['tp2']:.2f}</div>
                 <div style="font-size: 11px; color: #16c784; font-weight: 600;">Probability {tp2_prob}%</div>
@@ -661,11 +699,11 @@ risk control and plan revision essential if consolidation occurs above zone.
         
         with col2:
             st.markdown(f"""
-            <div class="trade-card" style="background: linear-gradient(145deg, #1e2a3a, #1a1a1a); 
+            <div class="trade-card" style="background: linear-gradient(145deg, rgba(91, 127, 249, 0.1), #1a1a1a); 
                         border: 2px solid rgba(91, 127, 249, 0.4); 
                         border-radius: 16px; 
                         padding: 1.5rem;
-                        box-shadow: 0 8px 16px rgba(91, 127, 249, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
+                        box-shadow: 0 8px 16px rgba(91, 127, 249, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
                 <div style="font-size: 10px; color: #5B7FF9; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">TP3</div>
                 <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px; margin-bottom: 0.5rem;">${levels['tp3']:.2f}</div>
                 <div style="font-size: 11px; color: #16c784; font-weight: 600;">Probability {tp3_prob}%</div>
@@ -679,7 +717,7 @@ risk control and plan revision essential if consolidation occurs above zone.
         if rr:
             st.markdown(f"""
             <div style="background: rgba(91, 127, 249, 0.1); 
-                        border: 1px solid rgba(91, 127, 249, 0.3); 
+                        border: 2px solid rgba(91, 127, 249, 0.3); 
                         border-radius: 12px; 
                         padding: 1rem;
                         text-align: center;">
@@ -802,7 +840,7 @@ if 'user' not in st.session_state:
 if 'min_confidence_filter' not in st.session_state:
     st.session_state['min_confidence_filter'] = 60
 
-# ========= SIDEBAR with Account Window (FIXED) =========
+# ========= SIDEBAR with Account Window =========
 with st.sidebar:
     st.markdown("""
     <div style="margin-bottom: 2rem;">
@@ -827,14 +865,14 @@ with st.sidebar:
         
         pnl_color = '#16c784' if pnl >= 0 else '#ea3943'
         
-        # Account metrics
+        # Account metrics with blue border
         st.markdown(f"""
-        <div style="background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem;">
+        <div style="background: var(--surface); border: 2px solid rgba(91, 127, 249, 0.2); border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem;">
             <div style="margin-bottom: 1.5rem;">
                 <div style="font-size: 10px; color: #707070; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 0.5rem;">Current Capital</div>
                 <div style="font-size: 28px; font-weight: 700; color: #ffffff;">${current_capital:,.2f}</div>
             </div>
-            <div style="border-top: 1px solid rgba(255,255,255,0.05); padding-top: 1rem;">
+            <div style="border-top: 1px solid rgba(91, 127, 249, 0.1); padding-top: 1rem;">
                 <div style="display: flex; justify-content: space-between; margin-bottom: 0.75rem;">
                     <span style="font-size: 12px; color: #a0a0a0;">Initial Capital:</span>
                     <span style="font-size: 12px; color: #ffffff; font-weight: 600;">${initial_capital:,.2f}</span>
@@ -877,7 +915,7 @@ with st.sidebar:
         
         st.markdown("---")
         
-        # LOGOUT BUTTON (FIXED)
+        # LOGOUT BUTTON
         if st.button("Logout", use_container_width=True, key="logout_sidebar_btn"):
             clear_all_caches()
             for key in list(st.session_state.keys()):
@@ -952,7 +990,7 @@ with tabs[0]:
                     if ARXORA_DEBUG:
                         st.exception(e)
 
-# TAB 2: Portfolio (FIXED - neutral color + no emoji)
+# TAB 2: Portfolio (FIXED - show dollar amounts)
 with tabs[1]:
     st.subheader("Add to Portfolio")
     
@@ -964,10 +1002,10 @@ with tabs[1]:
         elif not db.can_add_trade(st.session_state.user['user_id'], sig["ticker"]):
             st.warning(f"Active trade already exists for {sig['ticker']}")
         else:
-            # FIXED: Neutral gray card
+            # Blue-themed card
             st.markdown(f"""
-            <div style="background: rgba(26, 26, 26, 0.8); 
-                        border: 1px solid rgba(255, 255, 255, 0.1); 
+            <div style="background: rgba(91, 127, 249, 0.08); 
+                        border: 2px solid rgba(91, 127, 249, 0.3); 
                         border-radius: 12px; 
                         padding: 1.5rem; 
                         margin: 1rem 0;">
@@ -985,6 +1023,7 @@ with tabs[1]:
                 position_pct = st.slider("Position Size (%)", 5, 50, 10, 5)
             with col2:
                 position_size = (user_info['current_capital'] * position_pct) / 100
+                # FIXED: Show dollar amount instead of percentage
                 st.metric("Position Value", f"${position_size:,.2f}")
             
             st.markdown("### Trade Parameters")
@@ -1004,11 +1043,15 @@ with tabs[1]:
                 tp_price = sig['levels'][tp_key]
                 tp_prob = int(probs.get(tp_key, 0.0) * 100) if probs else 0
                 pnl_pct = abs(tp_price - sig['levels']['entry']) / max(1e-9, sig['levels']['entry']) * 100
+                
+                # FIXED: Calculate dollar P&L instead of percentage
+                pnl_dollars = (tp_price - sig['levels']['entry']) * (position_size / sig['levels']['entry'])
+                
                 tp_data.append({
                     "Level": f"TP{i}",
                     "Price": f"${tp_price:.2f}",
                     "Probability": f"{tp_prob}%",
-                    "Potential P&L": f"{pnl_pct:.2f}%"
+                    "Potential P&L": f"${pnl_dollars:,.2f}"  # FIXED: Dollar amount
                 })
             
             if pd:
@@ -1016,10 +1059,9 @@ with tabs[1]:
             
             st.markdown("---")
             
-            # FIXED: No emoji
             st.markdown("""
             <div style="background: rgba(91, 127, 249, 0.1); 
-                        border: 1px solid rgba(91, 127, 249, 0.3); 
+                        border: 2px solid rgba(91, 127, 249, 0.3); 
                         border-radius: 12px; 
                         padding: 1rem;">
                 <div style="font-size: 13px; color: #ffffff; font-weight: 600; margin-bottom: 0.5rem;">Partial Close Strategy</div>
@@ -1050,18 +1092,15 @@ with tabs[1]:
                     
                     trade_id = db.add_trade(st.session_state.user['user_id'], data, position_pct)
                     st.success(f"Trade #{trade_id} added to portfolio!")
-                    clear_all_caches()
                     del st.session_state["last_signal"]
                     time.sleep(1)
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Error adding trade: {str(e)}")
-                    if ARXORA_DEBUG:
-                        st.exception(e)
+                    st.error(f"Error adding trade: {e}")
     else:
-        st.info("Analyze an asset first to add it to your portfolio")
+        st.info("Run analysis first to add trade to portfolio")
 
-# TAB 3: Active Trades
+# TAB 3: Active Trades (FIXED - dollar amounts)
 with tabs[2]:
     st.subheader("Active Trades")
     
@@ -1070,140 +1109,142 @@ with tabs[2]:
     if not trades:
         st.info("No active trades")
     else:
-        for t in trades:
-            with st.expander(f"**{t['ticker']}** — {t['direction']} • {t['remaining_percent']:.0f}% remaining • Conf: {t['confidence']}%"):
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Entry", f"${t['entry_price']:.2f}")
-                with col2:
-                    st.metric("Position", f"${t['position_size']:.2f}")
-                with col3:
-                    st.metric("Model", t.get('model', 'N/A'))
-                with col4:
-                    sl_status = "Breakeven" if t['sl_breakeven'] else "Active"
-                    st.metric("SL Status", sl_status)
+        for trade in trades:
+            direction_color = '#16c784' if trade['direction'] == 'LONG' else '#ea3943'
+            
+            # Blue-bordered trade card
+            st.markdown(f"""
+            <div style="background: var(--surface); 
+                        border: 2px solid rgba(91, 127, 249, 0.2); 
+                        border-radius: 16px; 
+                        padding: 1.5rem;
+                        margin-bottom: 1rem;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                    <div>
+                        <div style="font-size: 20px; font-weight: 700; color: #ffffff; margin-bottom: 0.25rem;">
+                            {trade['ticker']}
+                        </div>
+                        <div style="font-size: 12px; color: {direction_color}; text-transform: uppercase; font-weight: 600;">
+                            {trade['direction']}
+                        </div>
+                    </div>
+                    <div style="text-align: right;">
+                        <div style="font-size: 11px; color: #707070; text-transform: uppercase; margin-bottom: 0.25rem;">Trade #{trade['trade_id']}</div>
+                        <div style="font-size: 11px; color: #a0a0a0;">{trade['model']}</div>
+                    </div>
+                </div>
                 
-                st.markdown("**Take Profit Status**")
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    status = "✅ Closed" if t['tp1_closed'] else "⭕ Open"
-                    st.write(f"{status} TP1: ${t['take_profit_1']:.2f}")
-                with col2:
-                    status = "✅ Closed" if t['tp2_closed'] else "⭕ Open"
-                    st.write(f"{status} TP2: ${t['take_profit_2']:.2f}")
-                with col3:
-                    status = "✅ Closed" if t['tp3_closed'] else "⭕ Open"
-                    st.write(f"{status} TP3: ${t['take_profit_3']:.2f}")
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; margin-top: 1rem;">
+                    <div>
+                        <div style="font-size: 10px; color: #707070; text-transform: uppercase; margin-bottom: 0.25rem;">Entry</div>
+                        <div style="font-size: 16px; font-weight: 600; color: #ffffff;">${trade['entry_price']:.2f}</div>
+                    </div>
+                    <div>
+                        <div style="font-size: 10px; color: #707070; text-transform: uppercase; margin-bottom: 0.25rem;">Stop Loss</div>
+                        <div style="font-size: 16px; font-weight: 600; color: #ea3943;">${trade['stop_loss']:.2f}</div>
+                        {'<div style="font-size: 10px; color: #5B7FF9; margin-top: 0.25rem;">Break-even</div>' if trade['sl_breakeven'] else ''}
+                    </div>
+                    <div>
+                        <div style="font-size: 10px; color: #707070; text-transform: uppercase; margin-bottom: 0.25rem;">Position</div>
+                        <div style="font-size: 16px; font-weight: 600; color: #ffffff;">${trade['position_size']:,.2f}</div>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # TP Progress
+            tp_data = []
+            for i in range(1, 4):
+                tp_closed = trade[f'tp{i}_closed']
+                tp_price = trade[f'take_profit_{i}']
+                tp_prob = trade.get(f'tp{i}_prob', 0)
                 
-                st.markdown("---")
+                status = "✓ Closed" if tp_closed else "Open"
+                status_color = "#16c784" if tp_closed else "#a0a0a0"
                 
-                price = st.number_input("Current Price", float(t['entry_price']), key=f"p_{t['trade_id']}")
-                
-                tp_level, can_close_tp = get_tp_status(t, price)
-                sl_hit = check_sl_hit(t, price)
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    if tp_level and can_close_tp:
-                        if st.button(f"Close {tp_level.upper()}", key=f"{tp_level}_{t['trade_id']}", use_container_width=True):
-                            with st.spinner("Closing..."):
-                                try:
-                                    db.partial_close_trade(t['trade_id'], price, tp_level)
-                                    clear_all_caches()
-                                    st.success(f"{tp_level.upper()} closed!")
-                                    time.sleep(0.5)
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Error: {e}")
+                tp_data.append({
+                    "Level": f"TP{i}",
+                    "Price": f"${tp_price:.2f}",
+                    "Status": status,
+                    "Probability": f"{tp_prob:.0f}%"
+                })
+            
+            if pd:
+                st.dataframe(pd.DataFrame(tp_data), use_container_width=True, hide_index=True)
+            
+            # Trade Actions
+            col1, col2 = st.columns(2)
+            with col1:
+                current_price = st.number_input(
+                    f"Current Price for {trade['ticker']}", 
+                    value=float(trade['entry_price']),
+                    step=0.01,
+                    key=f"price_{trade['trade_id']}"
+                )
+            
+            with col2:
+                st.write("")
+                st.write("")
+                if st.button("Update Position", key=f"update_{trade['trade_id']}", use_container_width=True):
+                    # Check TP hits
+                    tp_target, can_close = get_tp_status(trade, current_price)
+                    if tp_target and can_close:
+                        try:
+                            db.close_tp(trade['trade_id'], tp_target, current_price)
+                            st.success(f"{tp_target.upper()} closed at ${current_price:.2f}")
+                            time.sleep(0.5)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error: {e}")
                     
-                    if sl_hit:
-                        st.error("⚠️ Stop Loss triggered!")
-                        if st.button("Close at SL", key=f"sl_{t['trade_id']}", use_container_width=True):
-                            with st.spinner("Closing..."):
-                                try:
-                                    db.full_close_trade(t['trade_id'], price, "SL_HIT")
-                                    clear_all_caches()
-                                    st.success("Closed at SL")
-                                    time.sleep(0.5)
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Error: {e}")
-                
-                with col2:
-                    if st.button("Close All (Manual)", key=f"close_{t['trade_id']}", type="secondary", use_container_width=True):
-                        with st.spinner("Closing..."):
-                            try:
-                                db.full_close_trade(t['trade_id'], price, "MANUAL")
-                                clear_all_caches()
-                                st.success("Position closed!")
-                                time.sleep(0.5)
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Error: {e}")
+                    # Check SL hit
+                    if check_sl_hit(trade, current_price):
+                        try:
+                            db.close_trade_sl(trade['trade_id'], current_price)
+                            st.warning(f"Stop loss hit at ${current_price:.2f}")
+                            time.sleep(0.5)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+            
+            st.markdown("---")
 
 # TAB 4: Statistics
 with tabs[3]:
-    st.subheader("Performance Overview")
+    st.subheader("Trading Statistics")
     
+    # Overall stats
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("Total Trades", stats['total_trades'])
     with col2:
         st.metric("Win Rate", f"{stats['win_rate']:.1f}%")
     with col3:
-        st.metric("Closed Trades", stats['closed_trades'])
-    with col4:
         st.metric("Avg P&L", f"{stats['avg_pnl']:.2f}%")
+    with col4:
+        st.metric("Closed Trades", stats['closed_trades'])
     
-    closed = db.get_closed_trades(st.session_state.user['user_id'])
-    if closed and pd:
-        df = pd.DataFrame(closed)
-        df['cumulative_pnl'] = df['total_pnl_dollars'].cumsum()
+    st.markdown("---")
+    
+    # Trade History
+    st.subheader("Trade History")
+    history = db.get_trade_history(st.session_state.user['user_id'])
+    
+    if history and pd:
+        df_history = pd.DataFrame(history)
         
-        st.markdown("### Equity Curve")
-        st.line_chart(df['cumulative_pnl'])
+        # Format for display
+        display_df = df_history[['ticker', 'direction', 'entry_price', 'exit_price', 'pnl_percent', 'status', 'opened_at']].copy()
+        display_df.columns = ['Ticker', 'Direction', 'Entry', 'Exit', 'P&L %', 'Status', 'Date']
         
-        st.markdown("### Trade History")
-        
-        # Safe dataframe handling
-        try:
-            display_cols = ['ticker', 'direction', 'entry_price', 'close_price', 'total_pnl_percent']
-            if 'close_reason' in df.columns:
-                display_cols.append('close_reason')
-            if 'close_date' in df.columns:
-                display_cols.append('close_date')
-            
-            display_df = df[display_cols].copy()
-            display_df.columns = [col.replace('_', ' ').title() for col in display_df.columns]
-            
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
-        except Exception as e:
-            st.error(f"Error displaying trade history: {e}")
-            if ARXORA_DEBUG:
-                st.exception(e)
-        
-        # Summary stats
-        st.markdown("### Performance Breakdown")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            winning_trades = len(df[df['total_pnl_percent'] > 0])
-            st.metric("Winning Trades", winning_trades)
-        with col2:
-            losing_trades = len(df[df['total_pnl_percent'] <= 0])
-            st.metric("Losing Trades", losing_trades)
-        with col3:
-            avg_win = df[df['total_pnl_percent'] > 0]['total_pnl_percent'].mean() if winning_trades > 0 else 0
-            st.metric("Avg Win", f"{avg_win:.2f}%")
+        # Color-code P&L
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            hide_index=True
+        )
     else:
-        st.info("No closed trades yet")
+        st.info("No trade history yet")
 
-# FOOTER
-st.markdown("""
-<div class="footer-text">
-    Arxora · Professional Trading Intelligence Platform combining algorithmic strategies with machine learning. 
-    Features ensemble analysis, confidence calibration, and comprehensive risk management. 
-    AI-generated signals are informational only and do not constitute investment advice; markets change rapidly, 
-    past results do not guarantee future outcomes.
-</div>
-""", unsafe_allow_html=True)
+st.markdown("<br><br>", unsafe_allow_html=True)
+st.markdown('<div class="footer-text">Arxora © 2025 • Trade Smarter</div>', unsafe_allow_html=True)
