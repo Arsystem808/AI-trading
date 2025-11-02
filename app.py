@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# app.py — Arxora Trading Platform v13.0 (Final Production - Mobile Ready)
+# app.py — Arxora Trading Platform v14.0 (FINAL PRODUCTION READY)
 
 import os
 import re
@@ -55,10 +55,10 @@ st.set_page_config(
     page_title="Arxora",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"  # Changed to expanded
 )
 
-# ========= Professional Theme with Mobile Support =========
+# ========= PRODUCTION-GRADE THEME =========
 st.markdown("""
 <style>
 :root {
@@ -86,6 +86,7 @@ html, body, .stApp {
 
 #MainMenu, footer, header {visibility: hidden !important;}
 .stDeployButton {display: none !important;}
+
 .block-container {
     padding: 2rem !important;
     max-width: 1400px !important;
@@ -109,21 +110,24 @@ html, body, .stApp {
     margin-bottom: 1rem !important;
 }
 
-/* Inputs */
-.stTextInput input, .stNumberInput input {
+/* FIXED: Input fields - clean single border */
+.stTextInput > div > div > input,
+.stNumberInput > div > div > input {
     background: var(--surface) !important;
     border: 1px solid var(--border) !important;
     border-radius: 8px !important;
     color: var(--text-primary) !important;
     padding: 0.75rem 1rem !important;
     font-size: 14px !important;
-    height: 44px !important;
+    min-height: 44px !important;
+    box-shadow: none !important;
 }
 
-.stTextInput input:focus, .stNumberInput input:focus {
-    border-color: var(--accent-primary) !important;
+.stTextInput > div > div > input:focus,
+.stNumberInput > div > div > input:focus {
+    border: 1px solid var(--accent-primary) !important;
     outline: none !important;
-    box-shadow: 0 0 0 2px rgba(22, 199, 132, 0.1) !important;
+    box-shadow: 0 0 0 1px var(--accent-primary) !important;
 }
 
 .stTextInput label, .stNumberInput label {
@@ -133,6 +137,13 @@ html, body, .stApp {
     font-size: 11px !important;
     letter-spacing: 0.5px !important;
     margin-bottom: 0.5rem !important;
+}
+
+/* Remove default Streamlit input container borders */
+.stTextInput > div,
+.stNumberInput > div {
+    border: none !important;
+    box-shadow: none !important;
 }
 
 /* Buttons */
@@ -146,7 +157,7 @@ html, body, .stApp {
     text-transform: uppercase !important;
     font-size: 13px !important;
     letter-spacing: 0.5px !important;
-    height: 44px !important;
+    min-height: 44px !important;
     transition: all 0.2s !important;
 }
 
@@ -176,7 +187,7 @@ html, body, .stApp {
     box-shadow: 0 4px 12px rgba(234, 57, 67, 0.3) !important;
 }
 
-/* Radio - HIDE default icon and gray dot */
+/* Radio - clean with blue dot */
 .stRadio > div {
     display: flex;
     gap: 0.75rem;
@@ -196,7 +207,7 @@ html, body, .stApp {
     position: relative !important;
 }
 
-/* HIDE Streamlit's default radio icon */
+/* Hide Streamlit's default radio icon */
 .stRadio > div > label > div:first-child {
     display: none !important;
 }
@@ -365,6 +376,14 @@ h3 {
     }
 }
 
+/* Info boxes - remove emoji compatibility */
+.stAlert {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 12px !important;
+    padding: 1rem !important;
+}
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -475,20 +494,8 @@ def check_sl_hit(trade: Dict, price: float) -> bool:
     else:
         return (price <= trade['stop_loss']) if is_long else (price >= trade['stop_loss'])
 
-def auto_close_trades(user_id: int):
-    """Automatically close trades when TP/SL is hit based on last price"""
-    try:
-        trades = db.get_active_trades(user_id)
-        for trade in trades:
-            # Get current price (you'd need to fetch real-time price here)
-            # For now, we'll check on manual price input
-            pass
-    except Exception as e:
-        if ARXORA_DEBUG:
-            st.error(f"Auto-close error: {e}")
-
 def render_signal_card(action: str, ticker: str, price: float, conf_pct: float, rules_conf: float, levels: Dict, output: Dict, model_name: str):
-    """Render premium signal card with model name"""
+    """Render premium signal card with AI override indicator"""
     
     asset_title = resolve_asset_title_polygon(ticker, ticker)
     ai_override = conf_pct - rules_conf
@@ -554,8 +561,22 @@ def render_signal_card(action: str, ticker: str, price: float, conf_pct: float, 
     # Show model and asset info
     st.caption(f"**{asset_title}** • Model: **{model_name}** • As-of: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     
-    # Simple AI Override
-    st.caption(f"AI override: {ai_override:+.0f}%")
+    # AI Override INDICATOR (RESTORED)
+    override_pct = min(100, max(0, (ai_override + 50)))  # Normalize to 0-100
+    st.markdown(f"""
+    <div style="margin: 1rem 0 1.5rem 0;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+            <span style="font-size: 11px; color: #a0a0a0; text-transform: uppercase; letter-spacing: 1px; font-weight: 600;">AI Override</span>
+            <span style="font-size: 13px; color: #ffffff; font-weight: 700;">{ai_override:+.0f}%</span>
+        </div>
+        <div style="height: 8px; background: rgba(255, 255, 255, 0.05); border-radius: 4px; overflow: hidden;">
+            <div style="height: 100%; width: {override_pct}%; background: linear-gradient(90deg, #16c784, #5B7FF9); transition: width 0.6s ease;"></div>
+        </div>
+        <div style="font-size: 10px; color: #707070; margin-top: 0.25rem; font-family: 'SF Mono', monospace;">
+            Rules: {rules_conf:.0f}% → ML: {conf_pct:.0f}%
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
     
     # Signal Description
     if action in ("BUY", "SHORT"):
@@ -781,7 +802,7 @@ if 'user' not in st.session_state:
 if 'min_confidence_filter' not in st.session_state:
     st.session_state['min_confidence_filter'] = 60
 
-# ========= SIDEBAR with Account Window =========
+# ========= SIDEBAR with Account Window (FIXED) =========
 with st.sidebar:
     st.markdown("""
     <div style="margin-bottom: 2rem;">
@@ -799,8 +820,8 @@ with st.sidebar:
         # Account Window
         st.subheader("Account")
         
-        current_capital = user_info['current_capital']
-        initial_capital = user_info['initial_capital']
+        current_capital = float(user_info['current_capital'])
+        initial_capital = float(user_info['initial_capital'])
         pnl = current_capital - initial_capital
         pnl_pct = (pnl / max(1e-9, initial_capital)) * 100
         
@@ -856,8 +877,8 @@ with st.sidebar:
         
         st.markdown("---")
         
-        # LOGOUT BUTTON - FIXED
-        if st.button("🚪 Logout", use_container_width=True, key="logout_btn"):
+        # LOGOUT BUTTON (FIXED)
+        if st.button("Logout", use_container_width=True, key="logout_sidebar_btn"):
             clear_all_caches()
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
@@ -931,7 +952,7 @@ with tabs[0]:
                     if ARXORA_DEBUG:
                         st.exception(e)
 
-# TAB 2: Portfolio
+# TAB 2: Portfolio (FIXED - neutral color + no emoji)
 with tabs[1]:
     st.subheader("Add to Portfolio")
     
@@ -943,7 +964,21 @@ with tabs[1]:
         elif not db.can_add_trade(st.session_state.user['user_id'], sig["ticker"]):
             st.warning(f"Active trade already exists for {sig['ticker']}")
         else:
-            st.success(f"**{sig['ticker']}** — {sig['action']} ({sig['confidence']:.0f}% confidence) • Model: **{sig['model']}**")
+            # FIXED: Neutral gray card
+            st.markdown(f"""
+            <div style="background: rgba(26, 26, 26, 0.8); 
+                        border: 1px solid rgba(255, 255, 255, 0.1); 
+                        border-radius: 12px; 
+                        padding: 1.5rem; 
+                        margin: 1rem 0;">
+                <div style="font-size: 18px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem;">
+                    {sig['ticker']} — {sig['action']} ({sig['confidence']:.0f}% confidence)
+                </div>
+                <div style="font-size: 13px; color: #a0a0a0;">
+                    Model: {sig['model']}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
             
             col1, col2 = st.columns(2)
             with col1:
@@ -981,7 +1016,18 @@ with tabs[1]:
             
             st.markdown("---")
             
-            st.info("💡 **Partial Close Strategy:** TP1 (50%), TP2 (30%), TP3 (20%). Stop-loss moves to breakeven after TP1.")
+            # FIXED: No emoji
+            st.markdown("""
+            <div style="background: rgba(91, 127, 249, 0.1); 
+                        border: 1px solid rgba(91, 127, 249, 0.3); 
+                        border-radius: 12px; 
+                        padding: 1rem;">
+                <div style="font-size: 13px; color: #ffffff; font-weight: 600; margin-bottom: 0.5rem;">Partial Close Strategy</div>
+                <div style="font-size: 12px; color: #a0a0a0;">TP1 (50%), TP2 (30%), TP3 (20%). Stop-loss moves to breakeven after TP1.</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.markdown("<br>", unsafe_allow_html=True)
             
             if st.button("Add Trade to Portfolio", type="primary", use_container_width=True):
                 try:
@@ -1003,7 +1049,7 @@ with tabs[1]:
                     }
                     
                     trade_id = db.add_trade(st.session_state.user['user_id'], data, position_pct)
-                    st.success(f"✅ Trade #{trade_id} added to portfolio!")
+                    st.success(f"Trade #{trade_id} added to portfolio!")
                     clear_all_caches()
                     del st.session_state["last_signal"]
                     time.sleep(1)
@@ -1013,9 +1059,9 @@ with tabs[1]:
                     if ARXORA_DEBUG:
                         st.exception(e)
     else:
-        st.info("📊 Analyze an asset first to add it to your portfolio")
+        st.info("Analyze an asset first to add it to your portfolio")
 
-# TAB 3: Active Trades with AUTO-CLOSE
+# TAB 3: Active Trades
 with tabs[2]:
     st.subheader("Active Trades")
     
@@ -1056,7 +1102,6 @@ with tabs[2]:
                 tp_level, can_close_tp = get_tp_status(t, price)
                 sl_hit = check_sl_hit(t, price)
                 
-                # AUTO-CLOSE functionality
                 col1, col2 = st.columns(2)
                 
                 with col1:
