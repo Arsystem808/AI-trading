@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# app.py — Arxora Trading Platform v14.1 (STANDARDIZED UI FIX)
+# app.py — Arxora Trading Platform v15.0 (PRODUCTION - FIXED UI)
 
 import os
 import re
@@ -58,7 +58,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ========= STANDARDIZED PRODUCTION THEME (FIXED) =========
+# ========= PRODUCTION-GRADE THEME (v15 - FIXED) =========
 st.markdown("""
 <style>
 :root {
@@ -75,13 +75,13 @@ st.markdown("""
     --text-primary: #ffffff;
     --text-secondary: #a0a0a0;
     --text-tertiary: #707070;
-    --border: rgba(91, 127, 249, 0.2);
-    --border-light: rgba(91, 127, 249, 0.1);
+    --border-color: #5B7FF9;
+    --border-light: rgba(91, 127, 249, 0.15);
 }
 
 html, body, .stApp {
-    background: var(--bg-primary) !important;
-    color: var(--text-primary) !important;
+    background: #000000 !important;
+    color: #ffffff !important;
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif !important;
 }
 
@@ -94,51 +94,50 @@ html, body, .stApp {
     margin: 0 auto !important;
 }
 
-/* Mobile responsive */
 @media (max-width: 768px) {
     .block-container {
         padding: 1rem !important;
     }
-    h1 {
-        font-size: 24px !important;
-    }
-    h2 {
-        font-size: 18px !important;
-    }
+    h1 {font-size: 24px !important;}
+    h2 {font-size: 18px !important;}
 }
 
-.element-container {
-    margin-bottom: 1rem !important;
-}
-
-/* FIXED: Input fields - standardized blue border */
+/* ============= FIXED: INPUT FIELDS - COMPLETE BLUE BORDER ============= */
 .stTextInput > div > div > input,
 .stNumberInput > div > div > input,
 .stPasswordInput > div > div > input {
-    background: var(--surface) !important;
-    border: 2px solid var(--border) !important;
+    background: #1a1a1a !important;
+    border: 2px solid #5B7FF9 !important;
     border-radius: 12px !important;
-    color: var(--text-primary) !important;
+    color: #ffffff !important;
     padding: 0.875rem 1.25rem !important;
     font-size: 14px !important;
-    min-height: 50px !important;
-    box-shadow: none !important;
-    transition: all 0.2s ease !important;
+    min-height: 48px !important;
+    box-shadow: 0 0 0 0 transparent !important;
+    transition: all 0.3s ease !important;
 }
 
 .stTextInput > div > div > input:focus,
 .stNumberInput > div > div > input:focus,
 .stPasswordInput > div > div > input:focus {
-    border: 2px solid var(--accent-primary) !important;
+    border: 2px solid #5B7FF9 !important;
     outline: none !important;
-    box-shadow: 0 0 0 3px rgba(91, 127, 249, 0.15) !important;
-    background: rgba(91, 127, 249, 0.05) !important;
+    box-shadow: 0 0 12px rgba(91, 127, 249, 0.4) !important;
+    background: rgba(91, 127, 249, 0.03) !important;
 }
 
-.stTextInput label, 
+.stTextInput > div > div,
+.stNumberInput > div > div,
+.stPasswordInput > div > div {
+    border: none !important;
+    box-shadow: none !important;
+    background: transparent !important;
+}
+
+.stTextInput label,
 .stNumberInput label,
 .stPasswordInput label {
-    color: var(--text-secondary) !important;
+    color: #a0a0a0 !important;
     font-weight: 600 !important;
     text-transform: uppercase !important;
     font-size: 11px !important;
@@ -146,53 +145,33 @@ html, body, .stApp {
     margin-bottom: 0.5rem !important;
 }
 
-/* Remove default Streamlit input container styling */
-.stTextInput > div,
-.stNumberInput > div,
-.stPasswordInput > div {
-    border: none !important;
-    box-shadow: none !important;
-    background: transparent !important;
-}
-
-/* FIXED: Buttons - standardized blue accent */
+/* ============= FIXED: BUTTONS - SOLID BLUE ============= */
 .stButton > button {
-    padding: 0.875rem 1.5rem !important;
-    background: var(--accent-primary) !important;
+    background: #5B7FF9 !important;
     color: #ffffff !important;
-    border: 2px solid var(--accent-primary) !important;
+    border: none !important;
     border-radius: 12px !important;
+    padding: 0.875rem 1.5rem !important;
     font-weight: 700 !important;
     text-transform: uppercase !important;
     font-size: 13px !important;
     letter-spacing: 0.5px !important;
-    min-height: 50px !important;
+    min-height: 48px !important;
     transition: all 0.2s ease !important;
-    box-shadow: 0 4px 12px rgba(91, 127, 249, 0.2) !important;
+    box-shadow: 0 4px 12px rgba(91, 127, 249, 0.25) !important;
 }
 
 .stButton > button:hover {
     background: #4a6df0 !important;
-    border-color: #4a6df0 !important;
-    transform: translateY(-2px);
     box-shadow: 0 6px 16px rgba(91, 127, 249, 0.4) !important;
+    transform: translateY(-1px);
 }
 
 .stButton > button:active {
     transform: translateY(0px);
 }
 
-.stButton > button[kind="secondary"] {
-    background: transparent !important;
-    color: var(--accent-primary) !important;
-    border: 2px solid var(--accent-primary) !important;
-}
-
-.stButton > button[kind="secondary"]:hover {
-    background: rgba(91, 127, 249, 0.1) !important;
-}
-
-/* FIXED: Radio buttons - blue dot indicator */
+/* ============= FIXED: RADIO BUTTONS - BLUE DOT & BORDER ============= */
 .stRadio > div {
     display: flex;
     gap: 1rem;
@@ -200,27 +179,25 @@ html, body, .stApp {
 }
 
 .stRadio > div > label {
-    background: var(--surface) !important;
-    border: 2px solid var(--border) !important;
+    background: #1a1a1a !important;
+    border: 2px solid #5B7FF9 !important;
     border-radius: 12px !important;
     padding: 0.75rem 1.25rem 0.75rem 2.75rem !important;
-    color: var(--text-secondary) !important;
+    color: #a0a0a0 !important;
     font-size: 14px !important;
     font-weight: 600 !important;
     transition: all 0.2s ease !important;
     cursor: pointer !important;
     position: relative !important;
-    min-height: 50px !important;
+    min-height: 48px !important;
     display: flex !important;
     align-items: center !important;
 }
 
-/* Hide default radio button */
 .stRadio > div > label > div:first-child {
     display: none !important;
 }
 
-/* Blue dot indicator */
 .stRadio > div > label::before {
     content: '';
     position: absolute;
@@ -231,64 +208,63 @@ html, body, .stApp {
     height: 10px;
     border-radius: 50%;
     background: transparent;
-    border: 2px solid var(--text-tertiary);
+    border: 2px solid #5B7FF9;
     transition: all 0.2s ease;
 }
 
 .stRadio > div > label:hover {
-    border-color: var(--accent-primary) !important;
+    border-color: #5B7FF9 !important;
     background: rgba(91, 127, 249, 0.05) !important;
 }
 
 .stRadio > div > label[data-checked="true"] {
     background: rgba(91, 127, 249, 0.1) !important;
-    border-color: var(--accent-primary) !important;
-    color: var(--accent-primary) !important;
+    border-color: #5B7FF9 !important;
+    color: #ffffff !important;
 }
 
 .stRadio > div > label[data-checked="true"]::before {
-    background: var(--accent-primary);
-    border-color: var(--accent-primary);
+    background: #5B7FF9;
+    border-color: #5B7FF9;
     box-shadow: 0 0 12px rgba(91, 127, 249, 0.8);
 }
 
-/* Tabs */
+/* ============= TABS ============= */
 .stTabs [data-baseweb="tab-list"] {
     gap: 2rem;
-    border-bottom: 2px solid var(--border-light);
+    border-bottom: 2px solid rgba(91, 127, 249, 0.2);
     padding-bottom: 0 !important;
 }
 
 .stTabs [data-baseweb="tab"] {
-    color: var(--text-tertiary);
+    color: #707070;
     font-weight: 600;
     text-transform: uppercase;
     font-size: 11px;
     letter-spacing: 1px;
     padding: 1rem 0 !important;
     background: transparent !important;
-    border-bottom: 2px solid transparent !important;
 }
 
 .stTabs [data-baseweb="tab"]:hover {
-    color: var(--text-secondary);
+    color: #a0a0a0;
 }
 
 .stTabs [aria-selected="true"] {
-    color: var(--accent-primary) !important;
-    border-bottom: 2px solid var(--accent-primary) !important;
+    color: #5B7FF9 !important;
+    border-bottom: 2px solid #5B7FF9 !important;
 }
 
-/* Metrics */
+/* ============= METRICS ============= */
 [data-testid="stMetric"] {
-    background: var(--surface);
-    border: 2px solid var(--border);
+    background: #1a1a1a;
+    border: 2px solid rgba(91, 127, 249, 0.2);
     border-radius: 12px;
     padding: 1.25rem;
 }
 
 [data-testid="stMetric"] label {
-    color: var(--text-tertiary) !important;
+    color: #707070 !important;
     text-transform: uppercase !important;
     font-size: 10px !important;
     letter-spacing: 0.5px !important;
@@ -298,85 +274,76 @@ html, body, .stApp {
 [data-testid="stMetric"] [data-testid="stMetricValue"] {
     font-size: 24px !important;
     font-weight: 700 !important;
-    color: var(--text-primary) !important;
+    color: #ffffff !important;
 }
 
-/* Slider */
+/* ============= SLIDER ============= */
 .stSlider {
     padding: 0.5rem 0 !important;
 }
 
-.stSlider > div > div > div > div {
-    background: var(--accent-primary) !important;
-}
-
-/* Expander */
+/* ============= EXPANDER ============= */
 .streamlit-expanderHeader {
-    background: var(--surface) !important;
-    border: 2px solid var(--border) !important;
-    color: var(--text-primary) !important;
+    background: #1a1a1a !important;
+    border: 2px solid rgba(91, 127, 249, 0.2) !important;
+    color: #ffffff !important;
     border-radius: 12px !important;
     padding: 1rem !important;
     font-weight: 600 !important;
 }
 
 .streamlit-expanderHeader:hover {
-    background: var(--surface-hover) !important;
-    border-color: var(--accent-primary) !important;
+    background: #252525 !important;
+    border-color: #5B7FF9 !important;
 }
 
 .streamlit-expanderContent {
-    background: var(--surface) !important;
-    border: 2px solid var(--border) !important;
+    background: #1a1a1a !important;
+    border: 2px solid rgba(91, 127, 249, 0.2) !important;
     border-top: none !important;
     border-radius: 0 0 12px 12px !important;
     padding: 1.5rem !important;
 }
 
-/* Headings */
+/* ============= HEADINGS ============= */
 h1 {
     font-size: 32px !important;
     font-weight: 700 !important;
     margin-bottom: 0.5rem !important;
     letter-spacing: -0.5px !important;
+    color: #ffffff !important;
 }
 
 h2 {
     font-size: 20px !important;
     font-weight: 700 !important;
     margin: 1.5rem 0 1rem 0 !important;
+    color: #ffffff !important;
 }
 
 h3 {
     font-size: 16px !important;
     font-weight: 600 !important;
     margin: 1rem 0 0.5rem 0 !important;
+    color: #ffffff !important;
 }
 
-/* Captions */
-.caption {
-    font-size: 12px !important;
-    color: var(--text-tertiary) !important;
-    line-height: 1.5 !important;
+/* ============= ALERT ============= */
+.stAlert {
+    background: #1a1a1a !important;
+    border: 2px solid rgba(91, 127, 249, 0.2) !important;
+    border-radius: 12px !important;
+    padding: 1rem !important;
 }
 
-/* Dataframe */
+/* ============= DATAFRAME ============= */
 .stDataFrame {
-    background: var(--surface) !important;
-    border: 2px solid var(--border) !important;
+    background: #1a1a1a !important;
+    border: 2px solid rgba(91, 127, 249, 0.2) !important;
     border-radius: 12px !important;
 }
 
-/* Footer */
-.footer-text {
-    text-align: center;
-    color: var(--text-tertiary);
-    font-size: 12px;
-    padding: 2rem 0 1rem 0;
-    border-top: 1px solid var(--border-light);
-}
-
-/* Standardized card height */
+/* ============= TRADE CARD ============= */
 .trade-card {
     min-height: 160px;
     height: 100%;
@@ -391,35 +358,22 @@ h3 {
     }
 }
 
-/* Info boxes */
-.stAlert {
-    background: var(--surface) !important;
-    border: 2px solid var(--border) !important;
-    border-radius: 12px !important;
-    padding: 1rem !important;
-}
-
-/* Select box */
+/* ============= SELECT BOX ============= */
 .stSelectbox > div > div > div {
-    background: var(--surface) !important;
-    border: 2px solid var(--border) !important;
+    background: #1a1a1a !important;
+    border: 2px solid #5B7FF9 !important;
     border-radius: 12px !important;
-    color: var(--text-primary) !important;
-    min-height: 50px !important;
+    color: #ffffff !important;
+    min-height: 48px !important;
 }
 
-/* Text area */
-.stTextArea > div > div > textarea {
-    background: var(--surface) !important;
-    border: 2px solid var(--border) !important;
-    border-radius: 12px !important;
-    color: var(--text-primary) !important;
-    padding: 1rem !important;
-}
-
-.stTextArea > div > div > textarea:focus {
-    border-color: var(--accent-primary) !important;
-    box-shadow: 0 0 0 3px rgba(91, 127, 249, 0.15) !important;
+/* ============= FOOTER ============= */
+.footer-text {
+    text-align: center;
+    color: #707070;
+    font-size: 12px;
+    padding: 2rem 0 1rem 0;
+    border-top: 1px solid rgba(91, 127, 249, 0.1);
 }
 
 </style>
@@ -538,13 +492,11 @@ def render_signal_card(action: str, ticker: str, price: float, conf_pct: float, 
     asset_title = resolve_asset_title_polygon(ticker, ticker)
     ai_override = conf_pct - rules_conf
     
-    # Extract probabilities
     probs = output.get('probs') or {}
     tp1_prob = int(probs.get('tp1', 0.0) * 100) if probs else 0
     tp2_prob = int(probs.get('tp2', 0.0) * 100) if probs else 0
     tp3_prob = int(probs.get('tp3', 0.0) * 100) if probs else 0
     
-    # Main signal card
     if action == "BUY":
         st.markdown(f"""
         <div style="background: linear-gradient(135deg, rgba(22, 199, 132, 0.2), rgba(22, 199, 132, 0.05)); 
@@ -553,12 +505,8 @@ def render_signal_card(action: str, ticker: str, price: float, conf_pct: float, 
                     padding: 2rem; 
                     margin: 1.5rem 0;
                     box-shadow: 0 8px 24px rgba(22, 199, 132, 0.2);">
-            <div style="font-size: 24px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem; letter-spacing: -0.3px;">
-                Long • Buy Limit
-            </div>
-            <div style="font-size: 14px; color: #b0b0b0;">
-                {int(conf_pct)}% confidence
-            </div>
+            <div style="font-size: 24px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem;">Long • Buy Limit</div>
+            <div style="font-size: 14px; color: #b0b0b0;">{int(conf_pct)}% confidence</div>
         </div>
         """, unsafe_allow_html=True)
         
@@ -570,15 +518,10 @@ def render_signal_card(action: str, ticker: str, price: float, conf_pct: float, 
                     padding: 2rem; 
                     margin: 1.5rem 0;
                     box-shadow: 0 8px 24px rgba(234, 57, 67, 0.2);">
-            <div style="font-size: 24px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem; letter-spacing: -0.3px;">
-                Short • Sell Limit
-            </div>
-            <div style="font-size: 14px; color: #b0b0b0;">
-                {int(conf_pct)}% confidence
-            </div>
+            <div style="font-size: 24px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem;">Short • Sell Limit</div>
+            <div style="font-size: 14px; color: #b0b0b0;">{int(conf_pct)}% confidence</div>
         </div>
         """, unsafe_allow_html=True)
-        
     else:
         st.markdown(f"""
         <div style="background: linear-gradient(135deg, rgba(255, 169, 77, 0.2), rgba(255, 169, 77, 0.05)); 
@@ -587,19 +530,13 @@ def render_signal_card(action: str, ticker: str, price: float, conf_pct: float, 
                     padding: 2rem; 
                     margin: 1.5rem 0;
                     box-shadow: 0 8px 24px rgba(255, 169, 77, 0.2);">
-            <div style="font-size: 24px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem; letter-spacing: -0.3px;">
-                Wait
-            </div>
-            <div style="font-size: 14px; color: #b0b0b0;">
-                {int(conf_pct)}% confidence
-            </div>
+            <div style="font-size: 24px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem;">Wait</div>
+            <div style="font-size: 14px; color: #b0b0b0;">{int(conf_pct)}% confidence</div>
         </div>
         """, unsafe_allow_html=True)
     
-    # Show model and asset info
     st.caption(f"**{asset_title}** • Model: **{model_name}** • As-of: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     
-    # AI Override INDICATOR
     override_pct = min(100, max(0, (ai_override + 50)))
     st.markdown(f"""
     <div style="margin: 1rem 0 1.5rem 0;">
@@ -610,30 +547,17 @@ def render_signal_card(action: str, ticker: str, price: float, conf_pct: float, 
         <div style="height: 8px; background: rgba(255, 255, 255, 0.05); border-radius: 4px; overflow: hidden;">
             <div style="height: 100%; width: {override_pct}%; background: linear-gradient(90deg, #16c784, #5B7FF9); transition: width 0.6s ease;"></div>
         </div>
-        <div style="font-size: 10px; color: #707070; margin-top: 0.25rem; font-family: 'SF Mono', monospace;">
-            Rules: {rules_conf:.0f}% → ML: {conf_pct:.0f}%
-        </div>
+        <div style="font-size: 10px; color: #707070; margin-top: 0.25rem;">Rules: {rules_conf:.0f}% → ML: {conf_pct:.0f}%</div>
     </div>
     """, unsafe_allow_html=True)
     
-    # Signal Description
     if action in ("BUY", "SHORT"):
         risk_pct = abs(levels['entry'] - levels['sl']) / max(1e-9, abs(levels['entry'])) * 100
         
         if action == "BUY":
-            description = f"""
-Price at buyer demand level. Optimal entry via AI-analyzed order with growth focus; 
-risk control and plan revision essential if consolidation occurs below zone.
-
-**Stop-loss:** ${levels['sl']:.2f}. Potential risk ~{risk_pct:.1f}% from entry.
-            """
-        else:  # SHORT
-            description = f"""
-Price at resistance level. Optimal entry via AI-analyzed order with downside focus; 
-risk control and plan revision essential if consolidation occurs above zone.
-
-**Stop-loss:** ${levels['sl']:.2f}. Potential risk ~{risk_pct:.1f}% from entry.
-            """
+            description = f"Price at buyer demand level. Optimal entry via AI-analyzed order with growth focus; risk control and plan revision essential if consolidation occurs below zone.\n\n**Stop-loss:** ${levels['sl']:.2f}. Potential risk ~{risk_pct:.1f}% from entry."
+        else:
+            description = f"Price at resistance level. Optimal entry via AI-analyzed order with downside focus; risk control and plan revision essential if consolidation occurs above zone.\n\n**Stop-loss:** ${levels['sl']:.2f}. Potential risk ~{risk_pct:.1f}% from entry."
         
         st.markdown(description)
     
@@ -642,42 +566,29 @@ risk control and plan revision essential if consolidation occurs above zone.
     if action in ("BUY", "SHORT"):
         st.markdown("---")
         
-        # Standardized height cards with blue borders
         col1, col2, col3 = st.columns(3)
         with col1:
             st.markdown(f"""
-            <div class="trade-card" style="background: linear-gradient(145deg, rgba(91, 127, 249, 0.1), #1a1a1a); 
-                        border: 2px solid rgba(91, 127, 249, 0.4); 
-                        border-radius: 16px; 
-                        padding: 1.5rem;
-                        box-shadow: 0 8px 16px rgba(91, 127, 249, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
+            <div class="trade-card" style="background: rgba(91, 127, 249, 0.08); border: 2px solid rgba(91, 127, 249, 0.4); border-radius: 16px; padding: 1.5rem; box-shadow: 0 8px 16px rgba(91, 127, 249, 0.1);">
                 <div style="font-size: 10px; color: #5B7FF9; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">ENTRY</div>
-                <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px;">${levels['entry']:.2f}</div>
+                <div style="font-size: 28px; font-weight: 700; color: #ffffff;">${levels['entry']:.2f}</div>
             </div>
             """, unsafe_allow_html=True)
         
         with col2:
             st.markdown(f"""
-            <div class="trade-card" style="background: linear-gradient(145deg, rgba(234, 57, 67, 0.1), #1a1a1a); 
-                        border: 2px solid rgba(234, 57, 67, 0.4); 
-                        border-radius: 16px; 
-                        padding: 1.5rem;
-                        box-shadow: 0 8px 16px rgba(234, 57, 67, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
+            <div class="trade-card" style="background: rgba(234, 57, 67, 0.08); border: 2px solid rgba(234, 57, 67, 0.4); border-radius: 16px; padding: 1.5rem; box-shadow: 0 8px 16px rgba(234, 57, 67, 0.1);">
                 <div style="font-size: 10px; color: #ea3943; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">STOP LOSS</div>
-                <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px;">${levels['sl']:.2f}</div>
+                <div style="font-size: 28px; font-weight: 700; color: #ffffff;">${levels['sl']:.2f}</div>
             </div>
             """, unsafe_allow_html=True)
         
         with col3:
             st.markdown(f"""
-            <div class="trade-card" style="background: linear-gradient(145deg, rgba(91, 127, 249, 0.1), #1a1a1a); 
-                        border: 2px solid rgba(91, 127, 249, 0.4); 
-                        border-radius: 16px; 
-                        padding: 1.5rem;
-                        box-shadow: 0 8px 16px rgba(91, 127, 249, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
+            <div class="trade-card" style="background: rgba(91, 127, 249, 0.08); border: 2px solid rgba(91, 127, 249, 0.4); border-radius: 16px; padding: 1.5rem; box-shadow: 0 8px 16px rgba(91, 127, 249, 0.1);">
                 <div style="font-size: 10px; color: #5B7FF9; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">TP1</div>
-                <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px; margin-bottom: 0.5rem;">${levels['tp1']:.2f}</div>
-                <div style="font-size: 11px; color: #16c784; font-weight: 600;">Probability {tp1_prob}%</div>
+                <div style="font-size: 28px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem;">${levels['tp1']:.2f}</div>
+                <div style="font-size: 11px; color: #5B7FF9; font-weight: 600;">Probability {tp1_prob}%</div>
             </div>
             """, unsafe_allow_html=True)
         
@@ -686,48 +597,35 @@ risk control and plan revision essential if consolidation occurs above zone.
         col1, col2, col3 = st.columns(3)
         with col1:
             st.markdown(f"""
-            <div class="trade-card" style="background: linear-gradient(145deg, rgba(91, 127, 249, 0.1), #1a1a1a); 
-                        border: 2px solid rgba(91, 127, 249, 0.4); 
-                        border-radius: 16px; 
-                        padding: 1.5rem;
-                        box-shadow: 0 8px 16px rgba(91, 127, 249, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
+            <div class="trade-card" style="background: rgba(91, 127, 249, 0.08); border: 2px solid rgba(91, 127, 249, 0.4); border-radius: 16px; padding: 1.5rem; box-shadow: 0 8px 16px rgba(91, 127, 249, 0.1);">
                 <div style="font-size: 10px; color: #5B7FF9; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">TP2</div>
-                <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px; margin-bottom: 0.5rem;">${levels['tp2']:.2f}</div>
-                <div style="font-size: 11px; color: #16c784; font-weight: 600;">Probability {tp2_prob}%</div>
+                <div style="font-size: 28px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem;">${levels['tp2']:.2f}</div>
+                <div style="font-size: 11px; color: #5B7FF9; font-weight: 600;">Probability {tp2_prob}%</div>
             </div>
             """, unsafe_allow_html=True)
         
         with col2:
             st.markdown(f"""
-            <div class="trade-card" style="background: linear-gradient(145deg, rgba(91, 127, 249, 0.1), #1a1a1a); 
-                        border: 2px solid rgba(91, 127, 249, 0.4); 
-                        border-radius: 16px; 
-                        padding: 1.5rem;
-                        box-shadow: 0 8px 16px rgba(91, 127, 249, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.05);">
+            <div class="trade-card" style="background: rgba(91, 127, 249, 0.08); border: 2px solid rgba(91, 127, 249, 0.4); border-radius: 16px; padding: 1.5rem; box-shadow: 0 8px 16px rgba(91, 127, 249, 0.1);">
                 <div style="font-size: 10px; color: #5B7FF9; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 0.75rem;">TP3</div>
-                <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px; margin-bottom: 0.5rem;">${levels['tp3']:.2f}</div>
-                <div style="font-size: 11px; color: #16c784; font-weight: 600;">Probability {tp3_prob}%</div>
+                <div style="font-size: 28px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem;">${levels['tp3']:.2f}</div>
+                <div style="font-size: 11px; color: #5B7FF9; font-weight: 600;">Probability {tp3_prob}%</div>
             </div>
             """, unsafe_allow_html=True)
         
         st.markdown("---")
         
-        # R/R in WHITE
         rr = rr_line(levels)
         if rr:
             st.markdown(f"""
-            <div style="background: rgba(91, 127, 249, 0.1); 
-                        border: 2px solid rgba(91, 127, 249, 0.3); 
-                        border-radius: 12px; 
-                        padding: 1rem;
-                        text-align: center;">
+            <div style="background: rgba(91, 127, 249, 0.1); border: 2px solid rgba(91, 127, 249, 0.3); border-radius: 12px; padding: 1rem; text-align: center;">
                 <div style="font-size: 14px; font-weight: 700; color: #ffffff;">RR ≈ {rr}</div>
             </div>
             """, unsafe_allow_html=True)
 
 # ========= Strategy Loading =========
 try:
-    import services.data  # noqa
+    import services.data
 except Exception:
     try:
         import core.data as _core_data
@@ -782,7 +680,7 @@ def show_auth_page():
     with col2:
         st.markdown("""
         <div style="text-align: center; margin-bottom: 3rem;">
-            <div style="font-size: 36px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem; letter-spacing: -0.5px;">Arxora</div>
+            <div style="font-size: 36px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem;">Arxora</div>
             <div style="font-size: 13px; color: #707070; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 500;">Trade Smarter</div>
         </div>
         """, unsafe_allow_html=True)
@@ -840,7 +738,7 @@ if 'user' not in st.session_state:
 if 'min_confidence_filter' not in st.session_state:
     st.session_state['min_confidence_filter'] = 60
 
-# ========= SIDEBAR with Account Window =========
+# ========= SIDEBAR =========
 with st.sidebar:
     st.markdown("""
     <div style="margin-bottom: 2rem;">
@@ -855,7 +753,6 @@ with st.sidebar:
     stats = db.get_statistics(st.session_state.user['user_id'])
     
     if user_info:
-        # Account Window
         st.subheader("Account")
         
         current_capital = float(user_info['current_capital'])
@@ -865,14 +762,13 @@ with st.sidebar:
         
         pnl_color = '#16c784' if pnl >= 0 else '#ea3943'
         
-        # Account metrics with blue border
         st.markdown(f"""
-        <div style="background: var(--surface); border: 2px solid rgba(91, 127, 249, 0.2); border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem;">
+        <div style="background: #1a1a1a; border: 2px solid #5B7FF9; border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem;">
             <div style="margin-bottom: 1.5rem;">
                 <div style="font-size: 10px; color: #707070; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 0.5rem;">Current Capital</div>
                 <div style="font-size: 28px; font-weight: 700; color: #ffffff;">${current_capital:,.2f}</div>
             </div>
-            <div style="border-top: 1px solid rgba(91, 127, 249, 0.1); padding-top: 1rem;">
+            <div style="border-top: 1px solid rgba(91, 127, 249, 0.2); padding-top: 1rem;">
                 <div style="display: flex; justify-content: space-between; margin-bottom: 0.75rem;">
                     <span style="font-size: 12px; color: #a0a0a0;">Initial Capital:</span>
                     <span style="font-size: 12px; color: #ffffff; font-weight: 600;">${initial_capital:,.2f}</span>
@@ -891,7 +787,6 @@ with st.sidebar:
         
         st.markdown("---")
         
-        # Statistics
         st.subheader("Statistics")
         col1, col2 = st.columns(2)
         with col1:
@@ -903,7 +798,6 @@ with st.sidebar:
         
         st.markdown("---")
         
-        # Settings
         st.subheader("Settings")
         new_conf = st.slider(
             "Min. Confidence (%)", 
@@ -915,17 +809,19 @@ with st.sidebar:
         
         st.markdown("---")
         
-        # LOGOUT BUTTON
-        if st.button("Logout", use_container_width=True, key="logout_sidebar_btn"):
-            clear_all_caches()
-            for key in list(st.session_state.keys()):
-                del st.session_state[key]
-            st.rerun()
+        # FIXED: LOGOUT BUTTON - VISIBLE AND WORKING
+        logout_col1, logout_col2 = st.columns([1, 1])
+        with logout_col1:
+            if st.button("Logout", use_container_width=True, key="logout_btn"):
+                clear_all_caches()
+                for key in list(st.session_state.keys()):
+                    del st.session_state[key]
+                st.rerun()
 
 # ========= MAIN CONTENT =========
 st.markdown("""
 <div style="margin-bottom: 2rem;">
-    <div style="font-size: 32px; font-weight: 700; color: #ffffff; margin-bottom: 0.25rem; letter-spacing: -0.5px;">Arxora</div>
+    <div style="font-size: 32px; font-weight: 700; color: #ffffff; margin-bottom: 0.25rem;">Arxora</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -990,7 +886,7 @@ with tabs[0]:
                     if ARXORA_DEBUG:
                         st.exception(e)
 
-# TAB 2: Portfolio (FIXED - show dollar amounts)
+# TAB 2: Portfolio
 with tabs[1]:
     st.subheader("Add to Portfolio")
     
@@ -1002,13 +898,8 @@ with tabs[1]:
         elif not db.can_add_trade(st.session_state.user['user_id'], sig["ticker"]):
             st.warning(f"Active trade already exists for {sig['ticker']}")
         else:
-            # Blue-themed card
             st.markdown(f"""
-            <div style="background: rgba(91, 127, 249, 0.08); 
-                        border: 2px solid rgba(91, 127, 249, 0.3); 
-                        border-radius: 12px; 
-                        padding: 1.5rem; 
-                        margin: 1rem 0;">
+            <div style="background: rgba(91, 127, 249, 0.1); border: 2px solid #5B7FF9; border-radius: 12px; padding: 1.5rem; margin: 1rem 0;">
                 <div style="font-size: 18px; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem;">
                     {sig['ticker']} — {sig['action']} ({sig['confidence']:.0f}% confidence)
                 </div>
@@ -1023,7 +914,6 @@ with tabs[1]:
                 position_pct = st.slider("Position Size (%)", 5, 50, 10, 5)
             with col2:
                 position_size = (user_info['current_capital'] * position_pct) / 100
-                # FIXED: Show dollar amount instead of percentage
                 st.metric("Position Value", f"${position_size:,.2f}")
             
             st.markdown("### Trade Parameters")
@@ -1042,16 +932,13 @@ with tabs[1]:
             for i, tp_key in enumerate(['tp1', 'tp2', 'tp3'], 1):
                 tp_price = sig['levels'][tp_key]
                 tp_prob = int(probs.get(tp_key, 0.0) * 100) if probs else 0
-                pnl_pct = abs(tp_price - sig['levels']['entry']) / max(1e-9, sig['levels']['entry']) * 100
-                
-                # FIXED: Calculate dollar P&L instead of percentage
                 pnl_dollars = (tp_price - sig['levels']['entry']) * (position_size / sig['levels']['entry'])
                 
                 tp_data.append({
                     "Level": f"TP{i}",
                     "Price": f"${tp_price:.2f}",
                     "Probability": f"{tp_prob}%",
-                    "Potential P&L": f"${pnl_dollars:,.2f}"  # FIXED: Dollar amount
+                    "Potential P&L": f"${pnl_dollars:,.2f}"
                 })
             
             if pd:
@@ -1060,10 +947,7 @@ with tabs[1]:
             st.markdown("---")
             
             st.markdown("""
-            <div style="background: rgba(91, 127, 249, 0.1); 
-                        border: 2px solid rgba(91, 127, 249, 0.3); 
-                        border-radius: 12px; 
-                        padding: 1rem;">
+            <div style="background: rgba(91, 127, 249, 0.1); border: 2px solid #5B7FF9; border-radius: 12px; padding: 1rem;">
                 <div style="font-size: 13px; color: #ffffff; font-weight: 600; margin-bottom: 0.5rem;">Partial Close Strategy</div>
                 <div style="font-size: 12px; color: #a0a0a0;">TP1 (50%), TP2 (30%), TP3 (20%). Stop-loss moves to breakeven after TP1.</div>
             </div>
@@ -1100,7 +984,7 @@ with tabs[1]:
     else:
         st.info("Run analysis first to add trade to portfolio")
 
-# TAB 3: Active Trades (FIXED - dollar amounts)
+# TAB 3: Active Trades
 with tabs[2]:
     st.subheader("Active Trades")
     
@@ -1112,13 +996,8 @@ with tabs[2]:
         for trade in trades:
             direction_color = '#16c784' if trade['direction'] == 'LONG' else '#ea3943'
             
-            # Blue-bordered trade card
             st.markdown(f"""
-            <div style="background: var(--surface); 
-                        border: 2px solid rgba(91, 127, 249, 0.2); 
-                        border-radius: 16px; 
-                        padding: 1.5rem;
-                        margin-bottom: 1rem;">
+            <div style="background: #1a1a1a; border: 2px solid #5B7FF9; border-radius: 16px; padding: 1.5rem; margin-bottom: 1rem;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
                     <div>
                         <div style="font-size: 20px; font-weight: 700; color: #ffffff; margin-bottom: 0.25rem;">
@@ -1152,7 +1031,6 @@ with tabs[2]:
             </div>
             """, unsafe_allow_html=True)
             
-            # TP Progress
             tp_data = []
             for i in range(1, 4):
                 tp_closed = trade[f'tp{i}_closed']
@@ -1172,7 +1050,6 @@ with tabs[2]:
             if pd:
                 st.dataframe(pd.DataFrame(tp_data), use_container_width=True, hide_index=True)
             
-            # Trade Actions
             col1, col2 = st.columns(2)
             with col1:
                 current_price = st.number_input(
@@ -1186,7 +1063,6 @@ with tabs[2]:
                 st.write("")
                 st.write("")
                 if st.button("Update Position", key=f"update_{trade['trade_id']}", use_container_width=True):
-                    # Check TP hits
                     tp_target, can_close = get_tp_status(trade, current_price)
                     if tp_target and can_close:
                         try:
@@ -1197,7 +1073,6 @@ with tabs[2]:
                         except Exception as e:
                             st.error(f"Error: {e}")
                     
-                    # Check SL hit
                     if check_sl_hit(trade, current_price):
                         try:
                             db.close_trade_sl(trade['trade_id'], current_price)
@@ -1213,7 +1088,6 @@ with tabs[2]:
 with tabs[3]:
     st.subheader("Trading Statistics")
     
-    # Overall stats
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("Total Trades", stats['total_trades'])
@@ -1226,18 +1100,14 @@ with tabs[3]:
     
     st.markdown("---")
     
-    # Trade History
     st.subheader("Trade History")
     history = db.get_trade_history(st.session_state.user['user_id'])
     
     if history and pd:
         df_history = pd.DataFrame(history)
-        
-        # Format for display
         display_df = df_history[['ticker', 'direction', 'entry_price', 'exit_price', 'pnl_percent', 'status', 'opened_at']].copy()
         display_df.columns = ['Ticker', 'Direction', 'Entry', 'Exit', 'P&L %', 'Status', 'Date']
         
-        # Color-code P&L
         st.dataframe(
             display_df,
             use_container_width=True,
