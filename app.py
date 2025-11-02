@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-# Arxora v19.0 — PROFESSIONAL TRADING PLATFORM
-# Like Interactive Brokers: Portfolio table + Live positions + Market data
+# Arxora v19.1 — FIXED
+# Professional Trading Platform
 
 import os, re, sys, time, threading, queue, importlib, traceback, sqlite3
 from pathlib import Path
@@ -72,6 +72,12 @@ html, body, .stApp { background: var(--bg) !important; color: var(--text) !impor
   min-height: 36px !important;
 }
 
+.stTextInput > div > div > input:focus,
+.stNumberInput > div > div > input:focus {
+  border: 1px solid var(--accent) !important;
+  box-shadow: 0 0 0 2px rgba(22,199,132,0.2) !important;
+}
+
 .stButton > button {
   background: var(--accent-blue) !important;
   color: #fff !important;
@@ -99,15 +105,7 @@ html, body, .stApp { background: var(--bg) !important; color: var(--text) !impor
 }
 
 [data-testid="stMetric"] { background: var(--surface); border: 1px solid var(--border); padding: 12px; border-radius: 6px; }
-
-/* Tables styling */
-.stDataFrame, [data-testid="stDataFrame"] {
-  background: var(--surface) !important;
-}
-
-table { background: var(--surface) !important; }
-th { background: var(--surface-light) !important; color: var(--text) !important; }
-td { color: var(--text) !important; }
+[data-testid="stDataFrame"] { background: var(--surface) !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -295,7 +293,7 @@ def show_auth_page():
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
         st.title("Arxora")
-        st.caption("🚀 Professional Trading")
+        st.caption("🚀 Trading Intelligence")
         
         tab1, tab2 = st.tabs(["Login", "Register"])
         
@@ -447,7 +445,8 @@ with tabs[0]:
                         
             except Exception as e:
                 st.error(f"❌ {str(e)}")
-                if ARXORA_DEBUG: st.exception(e)
+                if ARXORA_DEBUG:
+                    st.exception(e)
             finally:
                 st.session_state['analyzing'] = False
 
@@ -522,7 +521,7 @@ with tabs[2]:
         if not trades:
             st.info("No positions")
         else:
-            # Build table like Interactive Brokers
+            # Build table
             table_data = []
             for t in trades:
                 table_data.append({
@@ -581,4 +580,4 @@ with tabs[3]:
         st.error(f"Error: {e}")
 
 st.markdown("---")
-st.caption("Arxora v19.0 • Professional Trading Intelligence")
+st.caption("Arxora v19.1 • Professional Trading Intelligence")
