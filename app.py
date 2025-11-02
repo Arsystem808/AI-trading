@@ -1207,4 +1207,3 @@ st.markdown("""
     past results do not guarantee future outcomes.
 </div>
 """, unsafe_allow_html=True)
-
