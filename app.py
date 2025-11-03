@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
-# app.py — Arxora Trading Platform v14.1 (PRODUCTION READY - ALL BUGS FIXED)
-# ✅ UPDATED: TP Status HTML fixed, Market Order live price, Order Type validation, SL breakeven check
+# app.py — Arxora Trading Platform v14.0 (FINAL PRODUCTION READY)
 
 import os
 import re
@@ -56,7 +55,7 @@ st.set_page_config(
     page_title="Arxora",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded"  # Changed to expanded
 )
 
 # ========= PRODUCTION-GRADE THEME =========
@@ -94,6 +93,7 @@ html, body, .stApp {
     margin: 0 auto !important;
 }
 
+/* Mobile responsive */
 @media (max-width: 768px) {
     .block-container {
         padding: 1rem !important;
@@ -110,10 +110,9 @@ html, body, .stApp {
     margin-bottom: 1rem !important;
 }
 
-/* FIXED: Input fields - full border on focus */
+/* FIXED: Input fields - clean single border */
 .stTextInput > div > div > input,
-.stNumberInput > div > div > input,
-.stPasswordInput > div > div > input {
+.stNumberInput > div > div > input {
     background: var(--surface) !important;
     border: 1px solid var(--border) !important;
     border-radius: 8px !important;
@@ -125,14 +124,13 @@ html, body, .stApp {
 }
 
 .stTextInput > div > div > input:focus,
-.stNumberInput > div > div > input:focus,
-.stPasswordInput > div > div > input:focus {
-    border: 2px solid var(--accent-primary) !important;
+.stNumberInput > div > div > input:focus {
+    border: 1px solid var(--accent-primary) !important;
     outline: none !important;
-    box-shadow: none !important;
+    box-shadow: 0 0 0 1px var(--accent-primary) !important;
 }
 
-.stTextInput label, .stNumberInput label, .stPasswordInput label {
+.stTextInput label, .stNumberInput label {
     color: var(--text-secondary) !important;
     font-weight: 600 !important;
     text-transform: uppercase !important;
@@ -141,9 +139,9 @@ html, body, .stApp {
     margin-bottom: 0.5rem !important;
 }
 
+/* Remove default Streamlit input container borders */
 .stTextInput > div,
-.stNumberInput > div,
-.stPasswordInput > div {
+.stNumberInput > div {
     border: none !important;
     box-shadow: none !important;
 }
@@ -209,6 +207,7 @@ html, body, .stApp {
     position: relative !important;
 }
 
+/* Hide Streamlit's default radio icon */
 .stRadio > div > label > div:first-child {
     display: none !important;
 }
@@ -362,6 +361,7 @@ h3 {
     border-top: 1px solid var(--border-light);
 }
 
+/* Standardized card height */
 .trade-card {
     min-height: 150px;
     height: 100%;
@@ -376,6 +376,7 @@ h3 {
     }
 }
 
+/* Info boxes - remove emoji compatibility */
 .stAlert {
     background: var(--surface) !important;
     border: 1px solid var(--border) !important;
@@ -471,7 +472,7 @@ def resolve_asset_title_polygon(raw_symbol: str, normalized: str) -> str:
 def get_tp_status(trade: Dict, price: float) -> Tuple[Optional[str], bool]:
     """Get which TP can be closed"""
     is_long = trade['direction'] == 'LONG'
-
+    
     if not trade['tp1_closed']:
         can_close = (price >= trade['take_profit_1']) if is_long else (price <= trade['take_profit_1'])
         return ('tp1', can_close)
@@ -481,13 +482,13 @@ def get_tp_status(trade: Dict, price: float) -> Tuple[Optional[str], bool]:
     elif not trade['tp3_closed']:
         can_close = (price >= trade['take_profit_3']) if is_long else (price <= trade['take_profit_3'])
         return ('tp3', can_close)
-
+    
     return (None, False)
 
 def check_sl_hit(trade: Dict, price: float) -> bool:
     """Check if stop loss is hit"""
     is_long = trade['direction'] == 'LONG'
-
+    
     if trade['sl_breakeven']:
         return (price <= trade['entry_price']) if is_long else (price >= trade['entry_price'])
     else:
@@ -495,15 +496,17 @@ def check_sl_hit(trade: Dict, price: float) -> bool:
 
 def render_signal_card(action: str, ticker: str, price: float, conf_pct: float, rules_conf: float, levels: Dict, output: Dict, model_name: str):
     """Render premium signal card with AI override indicator"""
-
+    
     asset_title = resolve_asset_title_polygon(ticker, ticker)
     ai_override = conf_pct - rules_conf
-
+    
+    # Extract probabilities
     probs = output.get('probs') or {}
     tp1_prob = int(probs.get('tp1', 0.0) * 100) if probs else 0
     tp2_prob = int(probs.get('tp2', 0.0) * 100) if probs else 0
     tp3_prob = int(probs.get('tp3', 0.0) * 100) if probs else 0
-
+    
+    # Main signal card
     if action == "BUY":
         st.markdown(f"""
         <div style="background: linear-gradient(135deg, rgba(22, 199, 132, 0.25), rgba(22, 199, 132, 0.05)); 
@@ -520,7 +523,7 @@ def render_signal_card(action: str, ticker: str, price: float, conf_pct: float, 
             </div>
         </div>
         """, unsafe_allow_html=True)
-
+        
     elif action == "SHORT":
         st.markdown(f"""
         <div style="background: linear-gradient(135deg, rgba(234, 57, 67, 0.25), rgba(234, 57, 67, 0.05)); 
@@ -537,7 +540,7 @@ def render_signal_card(action: str, ticker: str, price: float, conf_pct: float, 
             </div>
         </div>
         """, unsafe_allow_html=True)
-
+        
     else:
         st.markdown(f"""
         <div style="background: linear-gradient(135deg, rgba(255, 169, 77, 0.25), rgba(255, 169, 77, 0.05)); 
@@ -554,27 +557,31 @@ def render_signal_card(action: str, ticker: str, price: float, conf_pct: float, 
             </div>
         </div>
         """, unsafe_allow_html=True)
-
+    
+    # Show model and asset info
     st.caption(f"**{asset_title}** • Model: **{model_name}** • As-of: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-
-    override_pct = min(100, max(0, (ai_override + 50)))
-    override_color = "#16c784" if ai_override > 0 else "#ea3943"
-
+    
+    # AI Override INDICATOR (RESTORED)
+    override_pct = min(100, max(0, (ai_override + 50)))  # Normalize to 0-100
     st.markdown(f"""
     <div style="margin: 1rem 0 1.5rem 0;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
             <span style="font-size: 11px; color: #a0a0a0; text-transform: uppercase; letter-spacing: 1px; font-weight: 600;">AI Override</span>
-            <span style="font-size: 13px; color: {override_color}; font-weight: 700;">{ai_override:+.0f}%</span>
+            <span style="font-size: 13px; color: #ffffff; font-weight: 700;">{ai_override:+.0f}%</span>
         </div>
         <div style="height: 8px; background: rgba(255, 255, 255, 0.05); border-radius: 4px; overflow: hidden;">
             <div style="height: 100%; width: {override_pct}%; background: linear-gradient(90deg, #16c784, #5B7FF9); transition: width 0.6s ease;"></div>
         </div>
+        <div style="font-size: 10px; color: #707070; margin-top: 0.25rem; font-family: 'SF Mono', monospace;">
+            Rules: {rules_conf:.0f}% → ML: {conf_pct:.0f}%
+        </div>
     </div>
     """, unsafe_allow_html=True)
-
+    
+    # Signal Description
     if action in ("BUY", "SHORT"):
         risk_pct = abs(levels['entry'] - levels['sl']) / max(1e-9, abs(levels['entry'])) * 100
-
+        
         if action == "BUY":
             description = f"""
 Price at buyer demand level. Optimal entry via AI-analyzed order with growth focus; 
@@ -582,21 +589,22 @@ risk control and plan revision essential if consolidation occurs below zone.
 
 **Stop-loss:** ${levels['sl']:.2f}. Potential risk ~{risk_pct:.1f}% from entry.
             """
-        else:
+        else:  # SHORT
             description = f"""
 Price at resistance level. Optimal entry via AI-analyzed order with downside focus; 
 risk control and plan revision essential if consolidation occurs above zone.
 
 **Stop-loss:** ${levels['sl']:.2f}. Potential risk ~{risk_pct:.1f}% from entry.
             """
-
+        
         st.markdown(description)
-
+    
     st.markdown(f"### ${price:,.2f}")
-
+    
     if action in ("BUY", "SHORT"):
         st.markdown("---")
-
+        
+        # Standardized height cards
         col1, col2, col3 = st.columns(3)
         with col1:
             st.markdown(f"""
@@ -609,7 +617,7 @@ risk control and plan revision essential if consolidation occurs above zone.
                 <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px;">${levels['entry']:.2f}</div>
             </div>
             """, unsafe_allow_html=True)
-
+        
         with col2:
             st.markdown(f"""
             <div class="trade-card" style="background: linear-gradient(145deg, #3a1e1e, #1a1a1a); 
@@ -621,7 +629,7 @@ risk control and plan revision essential if consolidation occurs above zone.
                 <div style="font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px;">${levels['sl']:.2f}</div>
             </div>
             """, unsafe_allow_html=True)
-
+        
         with col3:
             st.markdown(f"""
             <div class="trade-card" style="background: linear-gradient(145deg, #1e2a3a, #1a1a1a); 
@@ -634,9 +642,9 @@ risk control and plan revision essential if consolidation occurs above zone.
                 <div style="font-size: 11px; color: #16c784; font-weight: 600;">Probability {tp1_prob}%</div>
             </div>
             """, unsafe_allow_html=True)
-
+        
         st.markdown("<br>", unsafe_allow_html=True)
-
+        
         col1, col2, col3 = st.columns(3)
         with col1:
             st.markdown(f"""
@@ -650,7 +658,7 @@ risk control and plan revision essential if consolidation occurs above zone.
                 <div style="font-size: 11px; color: #16c784; font-weight: 600;">Probability {tp2_prob}%</div>
             </div>
             """, unsafe_allow_html=True)
-
+        
         with col2:
             st.markdown(f"""
             <div class="trade-card" style="background: linear-gradient(145deg, #1e2a3a, #1a1a1a); 
@@ -663,9 +671,10 @@ risk control and plan revision essential if consolidation occurs above zone.
                 <div style="font-size: 11px; color: #16c784; font-weight: 600;">Probability {tp3_prob}%</div>
             </div>
             """, unsafe_allow_html=True)
-
+        
         st.markdown("---")
-
+        
+        # R/R in WHITE
         rr = rr_line(levels)
         if rr:
             st.markdown(f"""
@@ -680,7 +689,7 @@ risk control and plan revision essential if consolidation occurs above zone.
 
 # ========= Strategy Loading =========
 try:
-    import services.data
+    import services.data  # noqa
 except Exception:
     try:
         import core.data as _core_data
@@ -730,7 +739,7 @@ except Exception:
 # ========= AUTH PAGE =========
 def show_auth_page():
     st.markdown("<br><br>", unsafe_allow_html=True)
-
+    
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.markdown("""
@@ -739,14 +748,14 @@ def show_auth_page():
             <div style="font-size: 13px; color: #707070; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 500;">Trade Smarter</div>
         </div>
         """, unsafe_allow_html=True)
-
+        
         tab1, tab2 = st.tabs(["Login", "Register"])
-
+        
         with tab1:
             st.subheader("Sign In")
             username = st.text_input("Username", key="login_user")
             password = st.text_input("Password", type="password", key="login_pass")
-
+            
             if st.button("Sign In", type="primary", use_container_width=True):
                 if not username or not password:
                     st.error("Enter username and password")
@@ -758,13 +767,13 @@ def show_auth_page():
                         st.rerun()
                     else:
                         st.error("Invalid credentials")
-
+        
         with tab2:
             st.subheader("Create Account")
             new_user = st.text_input("Username", key="reg_user")
             new_pass = st.text_input("Password", type="password", key="reg_pass")
             capital = st.number_input("Initial Capital", min_value=1000, value=10000, step=1000)
-
+            
             if st.button("Create Account", type="primary", use_container_width=True):
                 if len((new_user or "").strip()) < 3:
                     st.error("Username: min 3 characters")
@@ -793,7 +802,7 @@ if 'user' not in st.session_state:
 if 'min_confidence_filter' not in st.session_state:
     st.session_state['min_confidence_filter'] = 60
 
-# ========= SIDEBAR with Account Window =========
+# ========= SIDEBAR with Account Window (FIXED) =========
 with st.sidebar:
     st.markdown("""
     <div style="margin-bottom: 2rem;">
@@ -801,22 +810,24 @@ with st.sidebar:
         <div style="font-size: 11px; color: #707070; text-transform: uppercase; letter-spacing: 1.2px;">Trade Smarter</div>
     </div>
     """, unsafe_allow_html=True)
-
+    
     st.markdown("---")
-
+    
     user_info = db.get_user_info(st.session_state.user['user_id'])
     stats = db.get_statistics(st.session_state.user['user_id'])
-
+    
     if user_info:
+        # Account Window
         st.subheader("Account")
-
+        
         current_capital = float(user_info['current_capital'])
         initial_capital = float(user_info['initial_capital'])
         pnl = current_capital - initial_capital
         pnl_pct = (pnl / max(1e-9, initial_capital)) * 100
-
+        
         pnl_color = '#16c784' if pnl >= 0 else '#ea3943'
-
+        
+        # Account metrics
         st.markdown(f"""
         <div style="background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem;">
             <div style="margin-bottom: 1.5rem;">
@@ -839,9 +850,10 @@ with st.sidebar:
             </div>
         </div>
         """, unsafe_allow_html=True)
-
+        
         st.markdown("---")
-
+        
+        # Statistics
         st.subheader("Statistics")
         col1, col2 = st.columns(2)
         with col1:
@@ -850,9 +862,10 @@ with st.sidebar:
         with col2:
             st.metric("Win Rate", f"{stats['win_rate']:.1f}%")
             st.metric("Avg P&L", f"{stats['avg_pnl']:.2f}%")
-
+        
         st.markdown("---")
-
+        
+        # Settings
         st.subheader("Settings")
         new_conf = st.slider(
             "Min. Confidence (%)", 
@@ -861,9 +874,10 @@ with st.sidebar:
             5
         )
         st.session_state['min_confidence_filter'] = new_conf
-
+        
         st.markdown("---")
-
+        
+        # LOGOUT BUTTON (FIXED)
         if st.button("Logout", use_container_width=True, key="logout_sidebar_btn"):
             clear_all_caches()
             for key in list(st.session_state.keys()):
@@ -879,21 +893,21 @@ st.markdown("""
 
 tabs = st.tabs(["AI Signals", "Portfolio", "Active Trades", "Statistics"])
 
-# ========= TAB 1: AI Signals =========
+# TAB 1: AI Signals
 with tabs[0]:
     st.subheader("Trading Agent Analysis")
-
+    
     st.write("**Model**")
     models = get_available_models()
     model = st.radio("Select Model", models, horizontal=True, label_visibility="collapsed", key="model_radio")
-
+    
     st.write("**Symbol**")
     col1, col2 = st.columns([4, 1])
     with col1:
         ticker = st.text_input("Enter Symbol", placeholder="AAPL, TSLA, BTCUSD, ETHUSD", label_visibility="collapsed")
     with col2:
         analyze_btn = st.button("Analyze", type="primary", use_container_width=True)
-
+    
     if analyze_btn:
         if not ticker:
             st.warning("Enter symbol")
@@ -906,14 +920,14 @@ with tabs[0]:
                     action = str(rec.get("action", "WAIT"))
                     conf = float(rec.get("confidence", 0.0))
                     conf_pct = conf * 100 if conf <= 1 else conf
-
+                    
                     price = float(output.get("last_price", 0.0) or 0.0)
                     lv = {k: float(output.get("levels", {}).get(k, 0.0)) for k in ("entry", "sl", "tp1", "tp2", "tp3")}
-
+                    
                     if action in ("BUY", "SHORT"):
                         tp1, tp2, tp3 = sanitize_targets(action, lv["entry"], lv["tp1"], lv["tp2"], lv["tp3"])
                         lv["tp1"], lv["tp2"], lv["tp3"] = tp1, tp2, tp3
-
+                    
                     st.session_state["last_signal"] = {
                         "ticker": ticker.upper(),
                         "symbol": symbol,
@@ -922,35 +936,35 @@ with tabs[0]:
                         "model": model,
                         "output": output,
                         "price": price,
-                        "levels": lv,
-                        "timestamp": datetime.now(timezone.utc)
+                        "levels": lv
                     }
-
+                    
                     rules_conf = float(output.get("rules_confidence", 44.0))
                     render_signal_card(action, ticker.upper(), price, conf_pct, rules_conf, lv, output, model)
-
+                    
                     try:
                         log_agent_performance(model, ticker, datetime.today(), 0.0)
                     except:
                         pass
-
+                        
                 except Exception as e:
                     st.error(f"Error: {e}")
                     if ARXORA_DEBUG:
                         st.exception(e)
 
-# ========= TAB 2: Portfolio (FIXED - Market Orders) =========
+# TAB 2: Portfolio (FIXED - neutral color + no emoji)
 with tabs[1]:
     st.subheader("Add to Portfolio")
-
+    
     if "last_signal" in st.session_state:
         sig = st.session_state["last_signal"]
-
+        
         if sig["action"] not in ("BUY", "SHORT"):
             st.warning("Signal was WAIT - cannot add to portfolio")
         elif not db.can_add_trade(st.session_state.user['user_id'], sig["ticker"]):
             st.warning(f"Active trade already exists for {sig['ticker']}")
         else:
+            # FIXED: Neutral gray card
             st.markdown(f"""
             <div style="background: rgba(26, 26, 26, 0.8); 
                         border: 1px solid rgba(255, 255, 255, 0.1); 
@@ -965,14 +979,14 @@ with tabs[1]:
                 </div>
             </div>
             """, unsafe_allow_html=True)
-
+            
             col1, col2 = st.columns(2)
             with col1:
                 position_pct = st.slider("Position Size (%)", 5, 50, 10, 5)
             with col2:
                 position_size = (user_info['current_capital'] * position_pct) / 100
                 st.metric("Position Value", f"${position_size:,.2f}")
-
+            
             st.markdown("### Trade Parameters")
             col1, col2, col3 = st.columns(3)
             with col1:
@@ -982,66 +996,7 @@ with tabs[1]:
             with col3:
                 risk_pct = abs(sig['levels']['entry'] - sig['levels']['sl']) / max(1e-9, sig['levels']['entry']) * 100
                 st.write(f"**Risk:** {risk_pct:.2f}%")
-
-            # ========= FIXED #1 + #3: MARKET ORDERS + LIVE PRICE =========
-            st.markdown("### Order Type Selection")
-            order_type = st.radio(
-                "Select Order Type", 
-                ["Limit Order", "Market Order"], 
-                horizontal=True,
-                label_visibility="collapsed",
-                key="order_type_selection"
-            )
-
-            if order_type == "Market Order":
-                st.markdown("""
-                <div style="background: rgba(22, 199, 132, 0.1); 
-                            border: 1px solid rgba(22, 199, 132, 0.3); 
-                            border-radius: 12px; 
-                            padding: 1rem; 
-                            margin-bottom: 1rem;">
-                    <div style="font-size: 13px; color: #16c784; font-weight: 600; margin-bottom: 0.5rem;">Market Order</div>
-                    <div style="font-size: 12px; color: #a0a0a0;">Immediate execution at current market price. No limit constraints.</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-                # FIXED: Show current price from signal timestamp + real-time indication
-                signal_time = sig.get('timestamp', datetime.now(timezone.utc))
-                current_time = datetime.now(timezone.utc)
-                time_diff = (current_time - signal_time).total_seconds()
-
-                market_entry = sig['price']
-
-                st.markdown(f"""
-                <div style="background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1rem; margin-bottom: 1rem;">
-                    <div style="font-size: 11px; color: #a0a0a0; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 0.5rem;">Market Entry Price</div>
-                    <div style="font-size: 24px; font-weight: 700; color: #16c784; margin-bottom: 0.5rem;">${market_entry:.2f}</div>
-                    <div style="font-size: 11px; color: #707070;">
-                        Signal from {signal_time.strftime('%H:%M UTC')} ({int(time_diff)}s ago)
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-
-                st.info("Note: Price shown is from signal analysis. Actual market price may differ. Order executes at current market price.")
-                execution_entry = market_entry
-
-            else:
-                st.markdown("""
-                <div style="background: rgba(91, 127, 249, 0.1); 
-                            border: 1px solid rgba(91, 127, 249, 0.3); 
-                            border-radius: 12px; 
-                            padding: 1rem; 
-                            margin-bottom: 1rem;">
-                    <div style="font-size: 13px; color: #5B7FF9; font-weight: 600; margin-bottom: 0.5rem;">Limit Order</div>
-                    <div style="font-size: 12px; color: #a0a0a0;">Execution only if price reaches limit level. More control, slower fills.</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-                execution_entry = sig['levels']['entry']
-
-            st.session_state['order_type'] = order_type
-            st.session_state['execution_price'] = execution_entry
-
+            
             st.markdown("### Take Profit Levels")
             tp_data = []
             probs = sig["output"].get('probs') or {}
@@ -1055,12 +1010,13 @@ with tabs[1]:
                     "Probability": f"{tp_prob}%",
                     "Potential P&L": f"{pnl_pct:.2f}%"
                 })
-
+            
             if pd:
                 st.dataframe(pd.DataFrame(tp_data), use_container_width=True, hide_index=True)
-
+            
             st.markdown("---")
-
+            
+            # FIXED: No emoji
             st.markdown("""
             <div style="background: rgba(91, 127, 249, 0.1); 
                         border: 1px solid rgba(91, 127, 249, 0.3); 
@@ -1070,28 +1026,17 @@ with tabs[1]:
                 <div style="font-size: 12px; color: #a0a0a0;">TP1 (50%), TP2 (30%), TP3 (20%). Stop-loss moves to breakeven after TP1.</div>
             </div>
             """, unsafe_allow_html=True)
-
+            
             st.markdown("<br>", unsafe_allow_html=True)
-
-            # ========= FIXED #4: ORDER TYPE VALIDATION =========
+            
             if st.button("Add Trade to Portfolio", type="primary", use_container_width=True):
                 try:
-                    # FIXED: Validate order type before adding
-                    if st.session_state.get('order_type') not in ['Limit Order', 'Market Order']:
-                        st.warning("Order type not selected. Using Limit Order.")
-                        selected_order_type = 'Limit Order'
-                    else:
-                        selected_order_type = st.session_state.get('order_type', 'Limit Order')
-
-                    # Explicit confirmation
-                    st.info(f"Adding {selected_order_type.lower()} trade for {sig['ticker']}")
-
                     probs = sig["output"].get('probs') or {}
-
+                    
                     data = {
                         'ticker': sig["ticker"],
                         'direction': 'LONG' if sig["action"] == 'BUY' else 'SHORT',
-                        'entry_price': execution_entry,
+                        'entry_price': sig["levels"]['entry'],
                         'stop_loss': sig["levels"]['sl'],
                         'tp1': sig["levels"]['tp1'],
                         'tp2': sig["levels"]['tp2'],
@@ -1100,12 +1045,11 @@ with tabs[1]:
                         'tp2_prob': float(probs.get('tp2', 0.0)) * 100 if probs else 0.0,
                         'tp3_prob': float(probs.get('tp3', 0.0)) * 100 if probs else 0.0,
                         'confidence': int(sig["confidence"]),
-                        'model': sig["model"],
-                        'order_type': selected_order_type
+                        'model': sig["model"]
                     }
-
+                    
                     trade_id = db.add_trade(st.session_state.user['user_id'], data, position_pct)
-                    st.success(f"Trade #{trade_id} added to portfolio as {selected_order_type.lower()}!")
+                    st.success(f"Trade #{trade_id} added to portfolio!")
                     clear_all_caches()
                     del st.session_state["last_signal"]
                     time.sleep(1)
@@ -1117,173 +1061,52 @@ with tabs[1]:
     else:
         st.info("Analyze an asset first to add it to your portfolio")
 
-# ========= TAB 3: Active Trades (FIXED - TP/SL HTML + Model Name + SL Breakeven) =========
+# TAB 3: Active Trades
 with tabs[2]:
     st.subheader("Active Trades")
-
+    
     trades = db.get_active_trades(st.session_state.user['user_id'])
-
+    
     if not trades:
         st.info("No active trades")
     else:
         for t in trades:
-            model_name = t.get('model', 'N/A')
-
-            with st.expander(f"**{t['ticker']}** — {t['direction']} • {t['remaining_percent']:.0f}% remaining • Conf: {t['confidence']}% • Model: {model_name}"):
-
+            with st.expander(f"**{t['ticker']}** — {t['direction']} • {t['remaining_percent']:.0f}% remaining • Conf: {t['confidence']}%"):
                 col1, col2, col3, col4 = st.columns(4)
                 with col1:
-                    st.markdown(f"""
-                    <div style="background: linear-gradient(145deg, #1a2a1a, #1a1a1a); 
-                                border: 1px solid rgba(22, 199, 132, 0.3); 
-                                border-radius: 12px; 
-                                padding: 1rem; 
-                                text-align: center;">
-                        <div style="font-size: 10px; color: #16c784; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 0.5rem;">Entry</div>
-                        <div style="font-size: 18px; font-weight: 700; color: #ffffff;">${t['entry_price']:.2f}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
+                    st.metric("Entry", f"${t['entry_price']:.2f}")
                 with col2:
-                    # FIXED #5: Check SL breakeven status
-                    if t['sl_breakeven']:
-                        sl_display = f"${t['entry_price']:.2f}"
-                        sl_label = "Stop Loss (BE)"
-                    else:
-                        sl_display = f"${t['stop_loss']:.2f}"
-                        sl_label = "Stop Loss"
-
-                    st.markdown(f"""
-                    <div style="background: linear-gradient(145deg, #3a1a1a, #1a1a1a); 
-                                border: 1px solid rgba(234, 57, 67, 0.3); 
-                                border-radius: 12px; 
-                                padding: 1rem; 
-                                text-align: center;">
-                        <div style="font-size: 10px; color: #ea3943; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 0.5rem;">{sl_label}</div>
-                        <div style="font-size: 18px; font-weight: 700; color: #ffffff;">{sl_display}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
+                    st.metric("Position", f"${t['position_size']:.2f}")
                 with col3:
-                    st.markdown(f"""
-                    <div style="background: linear-gradient(145deg, #1a2a3a, #1a1a1a); 
-                                border: 1px solid rgba(91, 127, 249, 0.3); 
-                                border-radius: 12px; 
-                                padding: 1rem; 
-                                text-align: center;">
-                        <div style="font-size: 10px; color: #5B7FF9; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 0.5rem;">Position</div>
-                        <div style="font-size: 18px; font-weight: 700; color: #ffffff;">${t['position_size']:.2f}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
+                    st.metric("Model", t.get('model', 'N/A'))
                 with col4:
-                    st.markdown(f"""
-                    <div style="background: linear-gradient(145deg, #2a2a1a, #1a1a1a); 
-                                border: 1px solid rgba(255, 169, 77, 0.3); 
-                                border-radius: 12px; 
-                                padding: 1rem; 
-                                text-align: center;">
-                        <div style="font-size: 10px; color: #ffa94d; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 0.5rem;">Model</div>
-                        <div style="font-size: 16px; font-weight: 700; color: #ffffff;">{model_name}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                st.markdown("<br>", unsafe_allow_html=True)
-
-                sl_status = "Breakeven" if t['sl_breakeven'] else "Active"
-                sl_badge_color = "#ffa94d" if t['sl_breakeven'] else "#16c784"
-
-                st.markdown(f"""
-                <div style="display: flex; gap: 1rem; margin-bottom: 1.5rem;">
-                    <div style="background: rgba(255, 169, 77, 0.2) if '{sl_status}' == 'Breakeven' else rgba(22, 199, 132, 0.2); 
-                                border: 1px solid {sl_badge_color}; 
-                                border-radius: 8px; 
-                                padding: 0.75rem 1.25rem; 
-                                text-align: center;">
-                        <div style="font-size: 11px; color: {sl_badge_color}; text-transform: uppercase; letter-spacing: 1px; font-weight: 700;">TP/SL Status</div>
-                        <div style="font-size: 13px; color: #ffffff; font-weight: 600; margin-top: 0.25rem;">{sl_status}</div>
-                    </div>
-                    <div style="background: rgba(22, 199, 132, 0.2); 
-                                border: 1px solid #16c784; 
-                                border-radius: 8px; 
-                                padding: 0.75rem 1.25rem; 
-                                text-align: center;">
-                        <div style="font-size: 11px; color: #16c784; text-transform: uppercase; letter-spacing: 1px; font-weight: 700;">Auto-Execution</div>
-                        <div style="font-size: 13px; color: #ffffff; font-weight: 600; margin-top: 0.25rem;">Active</div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-
-                st.markdown("---")
-
-                st.markdown("### Take Profit Levels")
+                    sl_status = "Breakeven" if t['sl_breakeven'] else "Active"
+                    st.metric("SL Status", sl_status)
+                
+                st.markdown("**Take Profit Status**")
                 col1, col2, col3 = st.columns(3)
-
-                # FIXED #1 + #2: CORRECT TP STATUS HTML - compute colors BEFORE f-string
                 with col1:
-                    tp1_status = "Closed" if t['tp1_closed'] else "Pending"
-                    tp1_color = "#16c784" if t['tp1_closed'] else "#5B7FF9"
-                    tp1_bg = "rgba(22, 199, 132, 0.15)" if t['tp1_closed'] else "rgba(91, 127, 249, 0.15)"
-
-                    st.markdown(f"""
-                    <div style="background: {tp1_bg}; 
-                                border: 1px solid {tp1_color}; 
-                                border-radius: 12px; 
-                                padding: 1rem; 
-                                text-align: center;">
-                        <div style="font-size: 11px; color: #a0a0a0; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 0.5rem;">TP1</div>
-                        <div style="font-size: 16px; font-weight: 700; color: #ffffff; margin-bottom: 0.75rem;">${t['take_profit_1']:.2f}</div>
-                        <div style="font-size: 12px; color: {tp1_color}; font-weight: 600;">{tp1_status}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
+                    status = "✅ Closed" if t['tp1_closed'] else "⭕ Open"
+                    st.write(f"{status} TP1: ${t['take_profit_1']:.2f}")
                 with col2:
-                    tp2_status = "Closed" if t['tp2_closed'] else "Pending"
-                    tp2_color = "#16c784" if t['tp2_closed'] else "#5B7FF9"
-                    tp2_bg = "rgba(22, 199, 132, 0.15)" if t['tp2_closed'] else "rgba(91, 127, 249, 0.15)"
-
-                    st.markdown(f"""
-                    <div style="background: {tp2_bg}; 
-                                border: 1px solid {tp2_color}; 
-                                border-radius: 12px; 
-                                padding: 1rem; 
-                                text-align: center;">
-                        <div style="font-size: 11px; color: #a0a0a0; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 0.5rem;">TP2</div>
-                        <div style="font-size: 16px; font-weight: 700; color: #ffffff; margin-bottom: 0.75rem;">${t['take_profit_2']:.2f}</div>
-                        <div style="font-size: 12px; color: {tp2_color}; font-weight: 600;">{tp2_status}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
+                    status = "✅ Closed" if t['tp2_closed'] else "⭕ Open"
+                    st.write(f"{status} TP2: ${t['take_profit_2']:.2f}")
                 with col3:
-                    tp3_status = "Closed" if t['tp3_closed'] else "Pending"
-                    tp3_color = "#16c784" if t['tp3_closed'] else "#5B7FF9"
-                    tp3_bg = "rgba(22, 199, 132, 0.15)" if t['tp3_closed'] else "rgba(91, 127, 249, 0.15)"
-
-                    st.markdown(f"""
-                    <div style="background: {tp3_bg}; 
-                                border: 1px solid {tp3_color}; 
-                                border-radius: 12px; 
-                                padding: 1rem; 
-                                text-align: center;">
-                        <div style="font-size: 11px; color: #a0a0a0; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 0.5rem;">TP3</div>
-                        <div style="font-size: 16px; font-weight: 700; color: #ffffff; margin-bottom: 0.75rem;">${t['take_profit_3']:.2f}</div>
-                        <div style="font-size: 12px; color: {tp3_color}; font-weight: 600;">{tp3_status}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
+                    status = "✅ Closed" if t['tp3_closed'] else "⭕ Open"
+                    st.write(f"{status} TP3: ${t['take_profit_3']:.2f}")
+                
                 st.markdown("---")
-
-                st.markdown("### Manual Control")
+                
                 price = st.number_input("Current Price", float(t['entry_price']), key=f"p_{t['trade_id']}")
-
+                
                 tp_level, can_close_tp = get_tp_status(t, price)
                 sl_hit = check_sl_hit(t, price)
-
-                col1, col2, col3 = st.columns(3)
-
+                
+                col1, col2 = st.columns(2)
+                
                 with col1:
                     if tp_level and can_close_tp:
-                        if st.button(f"Close {tp_level.upper()}", key=f"{tp_level}_{t['trade_id']}", use_container_width=True, type="primary"):
+                        if st.button(f"Close {tp_level.upper()}", key=f"{tp_level}_{t['trade_id']}", use_container_width=True):
                             with st.spinner("Closing..."):
                                 try:
                                     db.partial_close_trade(t['trade_id'], price, tp_level)
@@ -1293,10 +1116,10 @@ with tabs[2]:
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"Error: {e}")
-
-                with col2:
+                    
                     if sl_hit:
-                        if st.button("Close at SL", key=f"sl_{t['trade_id']}", use_container_width=True, type="secondary"):
+                        st.error("⚠️ Stop Loss triggered!")
+                        if st.button("Close at SL", key=f"sl_{t['trade_id']}", use_container_width=True):
                             with st.spinner("Closing..."):
                                 try:
                                     db.full_close_trade(t['trade_id'], price, "SL_HIT")
@@ -1306,9 +1129,9 @@ with tabs[2]:
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"Error: {e}")
-
-                with col3:
-                    if st.button("Close All (Manual)", key=f"close_{t['trade_id']}", use_container_width=True):
+                
+                with col2:
+                    if st.button("Close All (Manual)", key=f"close_{t['trade_id']}", type="secondary", use_container_width=True):
                         with st.spinner("Closing..."):
                             try:
                                 db.full_close_trade(t['trade_id'], price, "MANUAL")
@@ -1319,10 +1142,10 @@ with tabs[2]:
                             except Exception as e:
                                 st.error(f"Error: {e}")
 
-# ========= TAB 4: Statistics =========
+# TAB 4: Statistics
 with tabs[3]:
     st.subheader("Performance Overview")
-
+    
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("Total Trades", stats['total_trades'])
@@ -1332,33 +1155,35 @@ with tabs[3]:
         st.metric("Closed Trades", stats['closed_trades'])
     with col4:
         st.metric("Avg P&L", f"{stats['avg_pnl']:.2f}%")
-
+    
     closed = db.get_closed_trades(st.session_state.user['user_id'])
     if closed and pd:
         df = pd.DataFrame(closed)
         df['cumulative_pnl'] = df['total_pnl_dollars'].cumsum()
-
+        
         st.markdown("### Equity Curve")
         st.line_chart(df['cumulative_pnl'])
-
+        
         st.markdown("### Trade History")
-
+        
+        # Safe dataframe handling
         try:
             display_cols = ['ticker', 'direction', 'entry_price', 'close_price', 'total_pnl_percent']
             if 'close_reason' in df.columns:
                 display_cols.append('close_reason')
             if 'close_date' in df.columns:
                 display_cols.append('close_date')
-
+            
             display_df = df[display_cols].copy()
             display_df.columns = [col.replace('_', ' ').title() for col in display_df.columns]
-
+            
             st.dataframe(display_df, use_container_width=True, hide_index=True)
         except Exception as e:
             st.error(f"Error displaying trade history: {e}")
             if ARXORA_DEBUG:
                 st.exception(e)
-
+        
+        # Summary stats
         st.markdown("### Performance Breakdown")
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -1373,7 +1198,7 @@ with tabs[3]:
     else:
         st.info("No closed trades yet")
 
-# ========= FOOTER =========
+# FOOTER
 st.markdown("""
 <div class="footer-text">
     Arxora · Professional Trading Intelligence Platform combining algorithmic strategies with machine learning. 
