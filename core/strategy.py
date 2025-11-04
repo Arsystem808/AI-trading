@@ -387,160 +387,26 @@ def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный
     }
 
 # -------------------- M7 (rules + optional ML overlay) --------------------
-# Calibrated confidence (post-hoc), adaptive SL via MAE quantiles, preserved level logic and thresholds.
-
-from pathlib import Path
-from typing import Optional, Tuple, Dict, Any
-import numpy as np
-import pandas as pd
-import math
-
 try:
     from core.model_loader import load_model_for
 except Exception:
     def load_model_for(*args, **kwargs):
         return None
 
-# Expect these utilities to exist in your codebase:
-# - logger
-# - PolygonClient
-# - _atr_like(df, n)
-# - _clip01(x)
-# - _monotone_tp_probs({"tp1":p1,"tp2":p2,"tp3":p3})
-# - log_agent_performance(...)
+class _M7IdentityCalibrator:
+    def __call__(self, p: float) -> float:
+        return float(max(0.0, min(1.0, p)))
 
-# ---------------- calibration loaders ----------------
-
-class _IdentityCal:
-    def __call__(self, x: float) -> float:
-        return float(max(0.0, min(1.0, x)))
-
-def _safe_call(cal, x: float) -> float:
-    try:
-        return float(max(0.0, min(1.0, cal(float(x)))))
-    except Exception:
-        return float(max(0.0, min(1.0, x)))
-
-_M7_CALS: Optional[Dict[str, Any]] = None
-
-def _m7_cals() -> Dict[str, Any]:
-    """
-    CAL_CONF is expected to define:
-      - "M7_RULE": callable(score)->prob for rule-based path (score in [0,1])
-      - "M7_ML":   callable(p_raw)->p_cal for ML path probabilities
-      - "M7_TP":   dict {"tp1": callable(p)->p, "tp2": ..., "tp3": ...} for TPk prob calibration (optional)
-    Falls back to identity mapping if not provided.
-    """
-    global _M7_CALS
-    if _M7_CALS is None:
+_M7_CAL = None
+def _m7_cal():
+    global _M7_CAL
+    if _M7_CAL is None:
         try:
             from core.strategy import CAL_CONF as CC
-            c_rule = CC.get("M7_RULE", _IdentityCal())
-            c_ml   = CC.get("M7_ML", _IdentityCal())
-            c_tp   = CC.get("M7_TP", {"tp1": _IdentityCal(), "tp2": _IdentityCal(), "tp3": _IdentityCal()})
-            # normalize
-            if not isinstance(c_tp, dict):
-                c_tp = {"tp1": _IdentityCal(), "tp2": _IdentityCal(), "tp3": _IdentityCal()}
-            for k in ("tp1","tp2","tp3"):
-                if k not in c_tp or not callable(c_tp[k]):
-                    c_tp[k] = _IdentityCal()
-            _M7_CALS = {"M7_RULE": c_rule, "M7_ML": c_ml, "M7_TP": c_tp}
+            _M7_CAL = CC
         except Exception:
-            _M7_CALS = {"M7_RULE": _IdentityCal(), "M7_ML": _IdentityCal(),
-                        "M7_TP": {"tp1": _IdentityCal(), "tp2": _IdentityCal(), "tp3": _IdentityCal()}}
-    return _M7_CALS
-
-# ---------------- adaptive SL via MAE quantiles ----------------
-
-class _M7SLCalibrator:
-    """
-    Adaptive SL distance estimator using MAE quantiles learned offline.
-    Expects an artifact 'artifacts/m7_sl_mae_quantiles.joblib' with flexible structure, e.g.:
-      {
-        "BUY":  {"global": 1.3, "atr_regime": {"low": 1.0, "mid": 1.3, "high": 1.8}},
-        "SHORT":{"global": 1.4, "atr_regime": {"low": 1.1, "mid": 1.4, "high": 1.9}},
-        "meta": {"q": 0.80}
-      }
-    Values are ATR multipliers k so that SL distance = k * ATR_current.
-    """
-    def __init__(self, table_path: str = "artifacts/m7_sl_mae_quantiles.joblib",
-                 fallback_q: float = 0.80, min_k: float = 0.8, max_k: float = 3.5, lookback: int = 120):
-        self.table = None
-        self.min_k = float(min_k)
-        self.max_k = float(max_k)
-        self.fallback_q = float(fallback_q)
-        self.lookback = int(lookback)
-        try:
-            import joblib  # noqa: F401
-            p = Path(table_path)
-            if p.exists():
-                import joblib
-                self.table = joblib.load(str(p))
-        except Exception:
-            self.table = None
-
-    def _bin_atr_regime(self, atr_series: pd.Series) -> str:
-        # Define ATR regime bins by rolling quantiles on recent window
-        s = atr_series.tail(self.lookback).replace([np.inf, -np.inf], np.nan).dropna()
-        if len(s) < 16:
-            return "mid"
-        q33, q66 = np.quantile(s.values, [0.33, 0.66])
-        cur = float(s.iloc[-1])
-        if cur <= q33:
-            return "low"
-        if cur >= q66:
-            return "high"
-        return "mid"
-
-    def _clip_k(self, k: float) -> float:
-        return float(max(self.min_k, min(self.max_k, float(k))))
-
-    def _table_lookup(self, side: str, regime: str) -> Optional[float]:
-        try:
-            if not isinstance(self.table, dict):
-                return None
-            dside = self.table.get(side.upper())
-            if not isinstance(dside, dict):
-                return None
-            # prefer regime-specific, else global
-            if "atr_regime" in dside and isinstance(dside["atr_regime"], dict):
-                if regime in dside["atr_regime"]:
-                    return float(dside["atr_regime"][regime])
-            if "global" in dside:
-                return float(dside["global"])
-            # flat number
-            if isinstance(dside, (int, float)):
-                return float(dside)
-            return None
-        except Exception:
-            return None
-
-    def estimate(self, df: pd.DataFrame, side: str, atr_current: float) -> float:
-        # Try artifact first
-        if self.table is not None and "atr" in df.columns:
-            regime = self._bin_atr_regime(df["atr"])
-            k = self._table_lookup(side, regime)
-            if k is not None and k > 0:
-                return float(self._clip_k(k) * max(1e-9, atr_current))
-        # Fallback: robust quantile of adverse excursion per-bar as proxy (until MAE artifact is available)
-        atr_series = df["atr"] if "atr" in df.columns else _atr_like(df, 14)
-        atr_series = atr_series.replace([np.inf, -np.inf], np.nan).fillna(method="ffill").fillna(method="bfill")
-        atr_series = atr_series.replace(0.0, np.nan).fillna(1e-9)
-        tail = df.tail(self.lookback).copy()
-        tail["atr"] = atr_series.reindex(tail.index).fillna(method="ffill").fillna(method="bfill")
-        if side.upper() == "BUY":
-            adverse = (tail["close"] - tail["low"]) / tail["atr"]
-        else:
-            adverse = (tail["high"] - tail["close"]) / tail["atr"]
-        vals = adverse.replace([np.inf, -np.inf], np.nan).dropna().values
-        if len(vals) >= 8:
-            k = float(np.quantile(vals, self.fallback_q))
-        else:
-            k = 1.2
-        k = self._clip_k(k)
-        return float(k * max(1e-9, atr_current))
-
-# ---------------- ML predictor (unchanged behavior, calibrated prob output) ----------------
+            _M7_CAL = {"M7": _M7IdentityCalibrator()}
+    return _M7_CAL
 
 class _M7Predictor:
     def __init__(self, ticker: str, agent="arxora_m7pro"):
@@ -555,18 +421,17 @@ class _M7Predictor:
             logger.warning("M7 ML: model not found for %s (%s)", self.ticker, self.agent)
             return False
         self.model = md["model"]
-        # optional external scaler
+        # опциональный внешний скейлер
         try:
             import joblib  # noqa: F401
             meta = md.get("metadata", {}) or {}
             sp = meta.get("scaler_artifact")
             if sp:
                 p = Path(sp)
-                if not p.is_absolute():
-                    p = Path(".") / p
+                if not p.is_absolute(): p = Path(".")/p
                 if p.exists():
                     import joblib
-                    self.scaler = joblib.load(str(p))
+                    self.scaler = joblib.load(p)
         except Exception as e:
             logger.warning("M7 ML: scaler load failed: %s", e)
         return True
@@ -580,10 +445,11 @@ class _M7Predictor:
             hi = float(df['high'].rolling(20).max().iloc[-1])
             lo = float(df['low'].rolling(20).min().iloc[-1])
             pos = (price - lo) / max(1e-9, hi - lo)
-        x = np.array([[r, vol, pos, atr / max(1e-9, price)]], dtype=float)
+        x = np.array([[r, vol, pos, atr/max(1e-9, price)]], dtype=float)
         return np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
 
     def _predict_proba_safe(self, X: np.ndarray, df_last_row: Optional[pd.DataFrame]=None) -> Optional[np.ndarray]:
+        # Сначала пробуем на одном признаковом векторе, затем fallback на df.tail(1) для ColumnTransformer/пайплайнов
         try:
             return self.model.predict_proba(X)
         except Exception as e1:
@@ -614,10 +480,12 @@ class _M7Predictor:
             if proba is None:
                 return ("WAIT", 0.5)
 
-            # binary -> class 1 = LONG; apply ML calibrator to probability
+            # бинарный случай -> класс 1 трактуем как LONG
             if proba.shape[1] == 2:
-                p_long_raw = float(proba[0, 1])
-                p_long_cal = _safe_call(_m7_cals()["M7_ML"], p_long_raw)
+                p_long = float(proba[0, 1])
+                cal = _m7_cal()["M7"]
+                p_long_cal = float(cal(p_long))
+                # явные пороги
                 if p_long_cal >= 0.55:
                     return ("BUY", p_long_cal)
                 elif p_long_cal <= 0.45:
@@ -625,36 +493,30 @@ class _M7Predictor:
                 else:
                     return ("WAIT", p_long_cal)
 
-            # multiclass
-            acts = ["BUY", "SHORT", "WAIT"]
+            # многокласс
+            acts = ["BUY","SHORT","WAIT"]
             idx = int(np.argmax(proba[0]))
-            p_raw = float(proba[0, idx])
-            p_cal = _safe_call(_m7_cals()["M7_ML"], p_raw)
-            return (acts[idx], p_cal)
+            conf = float(proba[0, idx])
+            cal = _m7_cal()["M7"]
+            return (acts[idx], float(cal(conf)))
         except Exception as e:
             logger.warning("M7 ML: predict failed: %s", e)
             return ("WAIT", 0.5)
 
-# ---------------- rules engine with adaptive SL ----------------
-
 class M7TradingStrategy:
-    def __init__(self, atr_period=14, atr_multiplier=1.5, pivot_period='D', fib_levels=None,
-                 sl_q: float = 0.80, sl_min_k: float = 0.8, sl_max_k: float = 3.5,
-                 sl_table_path: str = "artifacts/m7_sl_mae_quantiles.joblib"):
+    def __init__(self, atr_period=14, atr_multiplier=1.5, pivot_period='D', fib_levels=None):
         self.atr_period = atr_period
         self.atr_multiplier = atr_multiplier
         self.pivot_period = pivot_period
-        self.fib_levels = fib_levels or [0.236, 0.382, 0.5, 0.618, 0.786]
-        self.sl_cal = _M7SLCalibrator(table_path=sl_table_path, fallback_q=sl_q,
-                                      min_k=sl_min_k, max_k=sl_max_k)
+        self.fib_levels = fib_levels or [0.236,0.382,0.5,0.618,0.786]
 
-    def calculate_pivot_points(self, h, l, c):
+    def calculate_pivot_points(self, h,l,c):
         pivot = (h + l + c) / 3
         r1 = (2 * pivot) - l; r2 = pivot + (h - l); r3 = h + 2 * (pivot - l)
         s1 = (2 * pivot) - h; s2 = pivot - (h - l); s3 = l - 2 * (h - pivot)
         return {'pivot': pivot, 'r1': r1, 'r2': r2, 'r3': r3, 's1': s1, 's2': s2, 's3': s3}
 
-    def calculate_fib_levels(self, h, l):
+    def calculate_fib_levels(self, h,l):
         diff = h - l
         fib = {}
         for level in self.fib_levels:
@@ -667,20 +529,18 @@ class M7TradingStrategy:
         for _, g in grouped:
             if len(g) > 0:
                 h = g['high'].max(); l = g['low'].min(); c = g['close'].iloc[-1]
-                key.update(self.calculate_pivot_points(h, l, c))
-                key.update(self.calculate_fib_levels(h, l))
+                key.update(self.calculate_pivot_points(h,l,c))
+                key.update(self.calculate_fib_levels(h,l))
         return key
 
     def generate_signals(self, data: pd.DataFrame):
         sigs = []
-        req = ['high', 'low', 'close']
-        if not all(c in data.columns for c in req):
-            return sigs
+        req = ['high','low','close']
+        if not all(c in data.columns for c in req): return sigs
         data = data.copy()
         data['atr'] = _atr_like(data, self.atr_period)
         cur_atr = float(data['atr'].iloc[-1])
-        if cur_atr <= 0:
-            return sigs
+        if cur_atr <= 0: return sigs
         key = self.identify_key_levels(data)
         price = float(data['close'].iloc[-1])
         ts = data.index[-1]
@@ -688,166 +548,126 @@ class M7TradingStrategy:
             dist = abs(price - val) / max(1e-9, cur_atr)
             if dist < self.atr_multiplier:
                 is_res = val > price
-                side = 'SHORT' if is_res else 'BUY'
-
-                # Entry: small offset from level (preserved behavior)
-                entry = float(val * 0.998) if is_res else float(val * 1.002)
-
-                # Adaptive SL distance via MAE-quantile artifact (k * ATR)
-                sl_dist = float(self.sl_cal.estimate(data, side, cur_atr))
-                sl = entry + (+sl_dist if is_res else -sl_dist)
-
+                if is_res:
+                    typ='SELL_LIMIT'; entry=float(val*0.998); sl=float(val*1.02)
+                else:
+                    typ='BUY_LIMIT';  entry=float(val*1.002); sl=float(val*0.98)
                 risk = abs(entry - sl)
-                # TP geometry preserved
-                tp = entry - 2.0 * risk if is_res else entry + 2.0 * risk
-
-                # Rule score in [0,1] from proximity to level (monotone)
-                rule_score = float(_clip01(1.0 - (dist / self.atr_multiplier)))
-                # Calibrate rule score -> probability
-                conf = _safe_call(_m7_cals()["M7_RULE"], rule_score)
-
+                tp = entry + (2.0*risk if not is_res else -2.0*risk)
+                conf = 1.0 - (dist / self.atr_multiplier)
                 sigs.append({
-                    'type': ('SELL_LIMIT' if is_res else 'BUY_LIMIT'),
-                    'price': round(entry, 4),
-                    'stop_loss': round(sl, 4),
-                    'take_profit': round(tp, 4),
-                    'confidence': round(conf, 3),
-                    'level': name,
-                    'level_value': round(val, 4),
-                    'timestamp': ts
+                    'type':typ,'price':round(entry,4),'stop_loss':round(sl,4),'take_profit':round(tp,4),
+                    'confidence':round(conf,2),'level':name,'level_value':round(val,4),'timestamp':ts
                 })
         return sigs
-
-# ---------------- top-level analysis ----------------
 
 def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False):
     cli = PolygonClient()
     df = cli.daily_ohlc(ticker, days=120)
     if df is None or df.empty:
-        return {"last_price": 0.0, "recommendation": {"action": "WAIT", "confidence": 0.5},
-                "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
-                "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
-                "context": ["Нет данных для M7"],
-                "note_html": "<div>M7: ожидание</div>", "alt": "Ожидание",
-                "entry_kind": "wait", "entry_label": "WAIT",
-                "meta": {"source": "M7", "grey_zone": True}}
+        return {"last_price": 0.0, "recommendation": {"action":"WAIT","confidence":0.5},
+                "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
+                "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0}, "context":["Нет данных для M7"],
+                "note_html":"<div>M7: ожидание</div>", "alt":"Ожидание", "entry_kind":"wait","entry_label":"WAIT",
+                "meta":{"source":"M7","grey_zone":True}}
 
     df = df.sort_values("timestamp")
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     df = df.set_index("timestamp")
     price = float(df['close'].iloc[-1])
-    df["atr"] = _atr_like(df, n=14)
-    atr14 = float(df["atr"].iloc[-1]) or 1e-9
+    atr14 = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
 
     if use_ml:
         pred = _M7Predictor(ticker)
         if pred.load():
-            ml_action, ml_p_cal = pred.predict(df, price, atr14)
+            ml_action, ml_conf = pred.predict(df, price, atr14)
             strategy = M7TradingStrategy()
             signals = strategy.generate_signals(df)
             if ml_action == "WAIT" or not signals:
-                return {"last_price": price, "recommendation": {"action": "WAIT", "confidence": ml_p_cal},
-                        "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
-                        "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
-                        "context": [f"ML: нет сильного сигнала ({ml_p_cal:.2f})"],
-                        "note_html": "<div>M7 ML: ожидание</div>", "alt": "ML wait",
-                        "entry_kind": "wait", "entry_label": "WAIT",
-                        "meta": {"source": "M7", "ml_used": True, "ml_action": ml_action, "ml_conf_raw": ml_p_cal}}
-            side = ml_action if ml_action in ("BUY", "SHORT") else None
+                return {"last_price": price, "recommendation": {"action":"WAIT","confidence":ml_conf},
+                        "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
+                        "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
+                        "context":[f"ML: нет сильного сигнала ({ml_conf:.2f})"],
+                        "note_html":"<div>M7 ML: ожидание</div>", "alt":"ML wait",
+                        "entry_kind":"wait","entry_label":"WAIT",
+                        "meta":{"source":"M7","ml_used":True,"ml_action":ml_action,"ml_conf_raw": ml_conf}}
+            side = ml_action if ml_action in ("BUY","SHORT") else None
             if side:
-                filt = [s for s in signals if (side == "BUY" and s["type"].startswith("BUY")) or
-                                         (side == "SHORT" and s["type"].startswith("SELL"))]
-                best = max(filt, key=lambda x: x["confidence"]) if filt else max(signals, key=lambda x: x["confidence"])
+                filt = [s for s in signals if (side=="BUY" and s["type"].startswith("BUY")) or (side=="SHORT" and s["type"].startswith("SELL"))]
+                best = max(filt, key=lambda x:x["confidence"]) if filt else max(signals, key=lambda x:x["confidence"])
             else:
-                best = max(signals, key=lambda x: x["confidence"])
+                best = max(signals, key=lambda x:x["confidence"])
                 side = "BUY" if best["type"].startswith("BUY") else "SHORT"
             entry = float(best['price'])
             sl = float(best['stop_loss'])
             risk = abs(entry - sl)
             if side == "BUY":
-                tp1, tp2, tp3 = entry + 1.5 * risk, entry + 2.5 * risk, entry + 4.0 * risk
+                tp1,tp2,tp3 = entry + 1.5*risk, entry + 2.5*risk, entry + 4.0*risk
             else:
-                tp1, tp2, tp3 = entry - 1.5 * risk, entry - 2.5 * risk, entry - 4.0 * risk
-
-            # Base TP-k scores (monotone in u), then calibrate TP-k probabilities
-            u1, u2, u3 = abs(tp1 - entry) / atr14, abs(tp2 - entry) / atr14, abs(tp3 - entry) / atr14
-            k_decay = 0.18
-            b1, b2, b3 = ml_p_cal, max(0.50, ml_p_cal - 0.08), max(0.45, ml_p_cal - 0.16)
-            s1 = _clip01(b1 * math.exp(-k_decay * (u1 - 1.0)))
-            s2 = _clip01(b2 * math.exp(-k_decay * (u2 - 1.5)))
-            s3 = _clip01(b3 * math.exp(-k_decay * (u3 - 2.2)))
-            ctp = _m7_cals()["M7_TP"]
-            p1 = _safe_call(ctp["tp1"], s1)
-            p2 = _safe_call(ctp["tp2"], s2)
-            p3 = _safe_call(ctp["tp3"], s3)
-            probs = _monotone_tp_probs({"tp1": p1, "tp2": p2, "tp3": p3})
-
-            return {"last_price": price, "recommendation": {"action": side, "confidence": ml_p_cal},
+                tp1,tp2,tp3 = entry - 1.5*risk, entry - 2.5*risk, entry - 4.0*risk
+            u1,u2,u3 = abs(tp1-entry)/atr14, abs(tp2-entry)/atr14, abs(tp3-entry)/atr14
+            k=0.18
+            b1,b2,b3 = ml_conf, max(0.50, ml_conf-0.08), max(0.45, ml_conf-0.16)
+            p1=_clip01(b1*np.exp(-k*(u1-1.0))); p2=_clip01(b2*np.exp(-k*(u2-1.5))); p3=_clip01(b3*np.exp(-k*(u3-2.2)))
+            probs=_monotone_tp_probs({"tp1":p1,"tp2":p2,"tp3":p3})
+            return {"last_price": price, "recommendation": {"action": side, "confidence": ml_conf},
                     "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3}, "probs": probs,
-                    "context": [f"ML {side} + уровни M7: {best['level']}"],
-                    "note_html": f"<div>M7 ML: {side} у {best['level_value']}</div>",
-                    "alt": "ML‑enhanced M7", "entry_kind": "limit", "entry_label": best["type"],
-                    "meta": {"source": "M7", "ml_used": True, "ml_action": ml_action, "ml_conf_raw": ml_p_cal}}
+                    "context": [f"ML {side} + уровни M7: {best['level']}"], "note_html": f"<div>M7 ML: {side} у {best['level_value']}</div>",
+                    "alt": "ML‑enhanced M7", "entry_kind":"limit", "entry_label": best["type"],
+                    "meta":{"source":"M7","ml_used":True,"ml_action":ml_action,"ml_conf_raw": ml_conf}}
 
-    # Pure rules path
     strategy = M7TradingStrategy()
     signals = strategy.generate_signals(df)
     if not signals:
-        res = {"last_price": price, "recommendation": {"action": "WAIT", "confidence": 0.5},
-               "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
-               "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0}, "context": ["Нет сигналов по стратегии M7"],
-               "note_html": "<div>M7: ожидание</div>", "alt": "Ожидание сигналов от уровней",
-               "entry_kind": "wait", "entry_label": "WAIT", "meta": {"source": "M7", "grey_zone": True}}
+        res = {"last_price": price, "recommendation": {"action":"WAIT","confidence":0.5},
+               "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
+               "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0}, "context":["Нет сигналов по стратегии M7"],
+               "note_html":"<div>M7: ожидание</div>", "alt":"Ожидание сигналов от уровней",
+               "entry_kind":"wait","entry_label":"WAIT", "meta":{"source":"M7","grey_zone":True}}
         try:
             log_agent_performance(agent="M7", ticker=ticker, horizon=horizon, action="WAIT", confidence=0.50,
-                                  levels=res["levels"], probs=res["probs"], meta={"probs_debug": {"u": [], "p": []}},
+                                  levels=res["levels"], probs=res["probs"], meta={"probs_debug":{"u":[],"p":[]}},
                                   ts=pd.Timestamp.utcnow().isoformat())
         except Exception:
             pass
         return res
 
     best = max(signals, key=lambda x: x['confidence'])
+    raw_conf = float(_clip01(best['confidence']))
     entry = float(best['price'])
     sl = float(best['stop_loss'])
     risk = abs(entry - sl)
-    # confidence already calibrated in generate_signals via M7_RULE
-    conf = float(best['confidence'])
+    vol = float(df['close'].pct_change().std() * np.sqrt(252))
+    conf_base = 0.50 + 0.34*math.tanh((raw_conf - 0.65)/0.20)
+    penalty = (0.05 if vol > 0.35 else 0.0) + (0.04 if risk/atr14 < 0.8 else 0.0) + (0.03 if risk/atr14 > 3.5 else 0.0)
+    conf = float(max(0.52, min(0.82, conf_base*(1.0 - penalty))))
+    conf = float(_m7_cal()["M7"](conf))
     if best['type'].startswith('BUY'):
-        tp1, tp2, tp3 = entry + 1.5 * risk, entry + 2.5 * risk, entry + 4.0 * risk
-        act = "BUY"
+        tp1,tp2,tp3 = entry + 1.5*risk, entry + 2.5*risk, entry + 4.0*risk
+        act="BUY"
     else:
-        tp1, tp2, tp3 = entry - 1.5 * risk, entry - 2.5 * risk, entry - 4.0 * risk
-        act = "SHORT"
-
-    # Calibrated TP-k probabilities on rules path as well
-    u1, u2, u3 = abs(tp1 - entry) / atr14, abs(tp2 - entry) / atr14, abs(tp3 - entry) / atr14
-    k_decay = 0.18
-    b1, b2, b3 = conf, max(0.50, conf - 0.08), max(0.45, conf - 0.16)
-    s1 = _clip01(b1 * math.exp(-k_decay * (u1 - 1.0)))
-    s2 = _clip01(b2 * math.exp(-k_decay * (u2 - 1.5)))
-    s3 = _clip01(b3 * math.exp(-k_decay * (u3 - 2.2)))
-    ctp = _m7_cals()["M7_TP"]
-    p1 = _safe_call(ctp["tp1"], s1)
-    p2 = _safe_call(ctp["tp2"], s2)
-    p3 = _safe_call(ctp["tp3"], s3)
-    probs = _monotone_tp_probs({"tp1": p1, "tp2": p2, "tp3": p3})
-
+        tp1,tp2,tp3 = entry - 1.5*risk, entry - 2.5*risk, entry - 4.0*risk
+        act="SHORT"
+    u1,u2,u3 = abs(tp1-entry)/atr14, abs(tp2-entry)/atr14, abs(tp3-entry)/atr14
+    k=0.18
+    b1,b2,b3 = conf, max(0.50, conf-0.08), max(0.45, conf-0.16)
+    p1=_clip01(b1*np.exp(-k*(u1-1.0))); p2=_clip01(b2*np.exp(-k*(u2-1.5))); p3=_clip01(b3*np.exp(-k*(u3-2.2)))
+    probs=_monotone_tp_probs({"tp1":p1,"tp2":p2,"tp3":p3})
     try:
         log_agent_performance(agent="M7", ticker=ticker, horizon=horizon, action=act, confidence=float(conf),
                               levels={"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
                               probs={"tp1": float(probs["tp1"]), "tp2": float(probs["tp2"]), "tp3": float(probs["tp3"])},
-                              meta={"probs_debug": {"u": [float(u1), float(u2), float(u3)],
-                                                    "p": [float(probs["tp1"]), float(probs["tp2"]), float(probs["tp3"])]}},
+                              meta={"probs_debug":{"u":[float(u1),float(u2),float(u3)],
+                                                   "p":[float(probs["tp1"]),float(probs["tp2"]),float(probs["tp3"])]}},
                               ts=pd.Timestamp.utcnow().isoformat())
     except Exception:
         pass
-
     return {"last_price": price, "recommendation": {"action": act, "confidence": float(conf)},
             "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
             "probs": probs, "context": [f"Сигнал от уровня {best['level']}"],
             "note_html": f"<div>M7: {best['type']} на уровне {best['level_value']}</div>",
             "alt": "Торговля по M7", "entry_kind": "limit", "entry_label": best['type'],
-            "meta": {"source": "M7", "grey_zone": bool(0.48 <= conf <= 0.58)}}
+            "meta":{"source":"M7","grey_zone": bool(0.48 <= conf <= 0.58)}}
 
 # -------------------- W7 --------------------
 def analyze_asset_w7(ticker: str, horizon: str):
