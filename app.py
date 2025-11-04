@@ -71,7 +71,6 @@ def _user_exists_in_current_db(username: str) -> bool:
 
 def show_auth_page():
     render_arxora_header()
-    st.title("Вход в систему")
     tab1, tab2 = st.tabs(["Вход", "Регистрация"])
     with tab1:
         st.subheader("Войти в аккаунт")
