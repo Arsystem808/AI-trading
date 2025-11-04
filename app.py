@@ -190,7 +190,7 @@ def rr_line(levels: Dict[str, float]) -> str:
 
 def card_html(title: str, value: str, sub: Optional[str]=None, color: Optional[str]=None) -> str:
     bg = "#141a20"
-    if color == "green": bg = "#5386F8"
+    if color == "green": bg = "#011645"
     elif color == "red": bg = "#b41037"
     return f"""
         <div style="background:{bg}; padding:12px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.06); margin:6px 0;">
