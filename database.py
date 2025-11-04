@@ -132,11 +132,29 @@ class TradingDatabase:
                 ('tp3_order_id','TEXT'),
                 ('oco_group_id','TEXT'),
                 ('sl_triggered_at','TEXT'),
-                ('closed_by','TEXT')  # TP | SL | MANUAL
+                ('closed_by','TEXT'),  # TP | SL | MANUAL
+                ('last_close_reason','TEXT'),  # Для аудита частичных закрытий
+                ('last_close_at','TEXT')  # Время последнего закрытия
             ]
             for col, typ in add_cols:
                 if self._col_missing(cur, 'trades', col):
                     cur.execute(f'ALTER TABLE trades ADD COLUMN {col} {typ}')
+            # Добавить CHECK на remaining_percent (SQLite поддерживает с 3.37+)
+            if self._col_missing(cur, 'trades', 'remaining_percent_check'):
+                cur.execute('ALTER TABLE trades ADD COLUMN remaining_percent_check REAL')
+                cur.execute('''
+                    CREATE TRIGGER IF NOT EXISTS check_remaining_percent
+                    BEFORE UPDATE ON trades
+                    FOR EACH ROW
+                    WHEN NEW.remaining_percent < 0
+                    BEGIN
+                        SELECT RAISE(ABORT, 'remaining_percent cannot be negative');
+                    END
+                ''')
+            # Индексы для производительности
+            cur.execute('CREATE INDEX IF NOT EXISTS idx_trades_user_status ON trades(user_id, status)')
+            cur.execute('CREATE INDEX IF NOT EXISTS idx_trades_ticker_status ON trades(ticker, status)')
+            cur.execute('CREATE INDEX IF NOT EXISTS idx_idempotency_key ON idempotency(key)')
             conn.commit()
         finally:
             conn.close()
@@ -365,12 +383,19 @@ class TradingDatabase:
     def _dec(self, x):
         return Decimal(str(x)).quantize(Decimal('0.00000001'), rounding=ROUND_HALF_UP)
 
-    def partial_close_trade(self, trade_id, close_price, tp_level):
+    def partial_close_trade(self, trade_id, close_price, tp_level, idempotency_key=None):
+        """
+        Частичное закрытие с защитой от дублей и аудитом.
+        Вызывается извне (из воркера) с ключом для идемпотентности.
+        """
+        if idempotency_key and self.has_idempotency(idempotency_key):
+            return 0.0  # Уже обработано
         conn = self._connect()
         try:
             cur = conn.cursor()
             conn.execute("BEGIN IMMEDIATE;")
-            cur.execute('SELECT * FROM trades WHERE trade_id = ?', (trade_id,))
+            # Перечитываем свежие данные в транзакции для атомарности
+            cur.execute('SELECT * FROM trades WHERE trade_id = ? AND status = "ACTIVE"', (trade_id,))
             row = cur.fetchone()
             if not row:
                 conn.rollback()
@@ -378,6 +403,12 @@ class TradingDatabase:
 
             cols = [d[0] for d in cur.description]
             trade = dict(zip(cols, row))
+
+            # Проверка, не закрыто ли уже это TP-уровень
+            closed_key = f"{tp_level}_closed"
+            if trade.get(closed_key, 0) > 0:
+                conn.rollback()
+                return 0.0
 
             entry = self._dec(trade['entry_price'])
             price = self._dec(close_price)
@@ -391,13 +422,19 @@ class TradingDatabase:
             part_size = self._dec(trade['position_size']) * percent_to_close / self._dec(100)
             part_pnl_dollars = part_size * pnl_percent / self._dec(100)
 
+            # Обновление с защитой от отрицательного remaining_percent
+            new_remaining = self._dec(trade['remaining_percent']) - percent_to_close
             cur.execute(f'''
                 UPDATE trades 
-                SET {tp_level}_closed = ?, 
-                    remaining_percent = remaining_percent - ?,
-                    total_pnl_dollars = total_pnl_dollars + ?
+                SET {closed_key} = ?, 
+                    remaining_percent = GREATEST(?, 0),
+                    total_pnl_dollars = total_pnl_dollars + ?,
+                    last_close_reason = ?,
+                    last_close_at = ?,
+                    total_pnl_percent = (total_pnl_dollars + ?) / position_size * 100
                 WHERE trade_id = ?
-            ''', (float(percent_to_close), float(percent_to_close), float(part_pnl_dollars), trade_id))
+            ''', (float(percent_to_close), float(new_remaining), float(part_pnl_dollars),
+                  tp_level, datetime.now().isoformat(), float(part_pnl_dollars), trade_id))
 
             if tp_level == 'tp1':
                 cur.execute('UPDATE trades SET sl_breakeven = 1, stop_loss = entry_price WHERE trade_id = ?', (trade_id,))
@@ -410,6 +447,10 @@ class TradingDatabase:
             new_capital = (r[0] or 0.0) + float(part_pnl_dollars)
             cur.execute("UPDATE users SET current_capital = ? WHERE user_id = ?", (new_capital, trade['user_id']))
 
+            # Запись идемпотентности после успеха
+            if idempotency_key:
+                cur.execute('INSERT INTO idempotency (key, op, trade_id) VALUES (?, ?, ?)',
+                            (idempotency_key, "PARTIAL_CLOSE", trade_id))
             conn.commit()
             return float(part_pnl_dollars)
         except Exception:
@@ -418,15 +459,21 @@ class TradingDatabase:
         finally:
             conn.close()
 
-    def full_close_trade(self, trade_id, close_price, close_reason):
-        # close_reason должен быть одной из строк: TP, SL, MANUAL
+    def full_close_trade(self, trade_id, close_price, close_reason, idempotency_key=None):
+        """
+        Полное закрытие с защитой от дублей, заполнением sl_triggered_at и корректным PnL.
+        close_reason: TP | SL | MANUAL
+        """
         if close_reason not in (TP, SL, MANUAL):
             close_reason = MANUAL
+        if idempotency_key and self.has_idempotency(idempotency_key):
+            return
         conn = self._connect()
         try:
             cur = conn.cursor()
             conn.execute("BEGIN IMMEDIATE;")
-            cur.execute('SELECT * FROM trades WHERE trade_id = ?', (trade_id,))
+            # Перечитываем свежие данные
+            cur.execute('SELECT * FROM trades WHERE trade_id = ? AND status = "ACTIVE"', (trade_id,))
             row = cur.fetchone()
             if not row:
                 conn.rollback()
@@ -435,7 +482,7 @@ class TradingDatabase:
             cols = [d[0] for d in cur.description]
             trade = dict(zip(cols, row))
 
-            remaining_percent = trade['remaining_percent']
+            remaining_percent = self._dec(trade['remaining_percent'])
             if remaining_percent > 0:
                 entry = self._dec(trade['entry_price'])
                 price = self._dec(close_price)
@@ -444,8 +491,13 @@ class TradingDatabase:
                 else:
                     pnl_percent = (entry - price) / entry * self._dec(100)
 
-                remaining_size = self._dec(trade['position_size']) * self._dec(remaining_percent) / self._dec(100)
+                remaining_size = self._dec(trade['position_size']) * remaining_percent / self._dec(100)
                 remaining_pnl = remaining_size * pnl_percent / self._dec(100)
+                total_pnl_dollars = self._dec(trade['total_pnl_dollars']) + remaining_pnl
+                total_pnl_percent = (total_pnl_dollars / self._dec(trade['position_size'])) * self._dec(100)
+
+                sl_triggered_at = datetime.now().isoformat() if close_reason == SL else trade.get('sl_triggered_at')
+                closed_by = close_reason
 
                 cur.execute('''
                     UPDATE trades 
@@ -453,12 +505,16 @@ class TradingDatabase:
                         close_reason = ?,
                         close_price = ?,
                         total_pnl_percent = ?,
-                        total_pnl_dollars = total_pnl_dollars + ?,
+                        total_pnl_dollars = ?,
                         close_date = ?,
-                        closed_by = ?
+                        closed_by = ?,
+                        sl_triggered_at = ?,
+                        last_close_reason = ?,
+                        last_close_at = ?
                     WHERE trade_id = ?
-                ''', (close_reason, float(price), float(pnl_percent), float(remaining_pnl),
-                      datetime.now().isoformat(), close_reason, trade_id))
+                ''', (close_reason, float(price), float(total_pnl_percent), float(total_pnl_dollars),
+                      datetime.now().isoformat(), closed_by, sl_triggered_at, close_reason,
+                      datetime.now().isoformat(), trade_id))
 
                 cur.execute("SELECT current_capital FROM users WHERE user_id = ?", (trade['user_id'],))
                 r = cur.fetchone()
@@ -468,6 +524,10 @@ class TradingDatabase:
                 new_capital = (r[0] or 0.0) + float(remaining_pnl)
                 cur.execute("UPDATE users SET current_capital = ? WHERE user_id = ?", (new_capital, trade['user_id']))
 
+            # Идемпотентность после успеха
+            if idempotency_key:
+                cur.execute('INSERT INTO idempotency (key, op, trade_id) VALUES (?, ?, ?)',
+                            (idempotency_key, "FULL_CLOSE", trade_id))
             conn.commit()
         except Exception:
             conn.rollback()
