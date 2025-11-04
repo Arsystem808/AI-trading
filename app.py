@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# app.py — Arxora UI (production-рефакторинг, компактный header)
+# app.py — Arxora UI (production, без эмодзи, всё сохранено)
 
 import os
 import re
@@ -28,28 +28,30 @@ except Exception: requests = None
 
 st.set_page_config(page_title="Arxora — трейд‑ИИ (MVP)", page_icon="assets/arxora_favicon_512.png", layout="centered")
 
-# --- Стили для хедеров ---
-def render_arxora_login_header():
-    st.markdown("""
-    <div style="border-radius:8px;overflow:hidden;box-shadow:0 0 0 1px rgba(0,0,0,.06),0 12px 32px rgba(0,0,0,.18); margin-bottom:20px;">
-      <div style="background:#5B5BF7;padding:18px 14px 18px 18px;">
-        <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
-                    color:#fff;font-weight:700;letter-spacing:0.04em;
-                    font-size:clamp(30px,6vw,52px);line-height:1.05;">
-          Arxora
+def render_arxora_header():
+    hero_path = "assets/arxora_logo_hero.png"
+    if os.path.exists(hero_path):
+        st.image(hero_path, use_container_width=True)
+    else:
+        st.markdown("""
+        <div style="border-radius:8px;overflow:hidden;
+                    box-shadow:0 0 0 1px rgba(0,0,0,.06),0 12px 32px rgba(0,0,0,.18);">
+          <div style="background:#5B5BF7;padding:28px 16px;">
+            <div style="max-width:1120px;margin:0 auto;">
+              <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
+                          color:#fff;font-weight:700;letter-spacing:.4px;
+                          font-size:clamp(36px,7vw,72px);line-height:1.05;">
+                Arxora
+              </div>
+            </div>
+          </div>
+          <div style="background:#000;padding:12px 16px 16px 16px;">
+            <div style="max-width:1120px;margin:0 auto;">
+              <div style="color:#fff;font-size:clamp(16px,2.4vw,28px);opacity:.92;">trade smarter.</div>
+            </div>
+          </div>
         </div>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-def render_arxora_main_header():
-    st.markdown("""
-    <div style="background:#000; padding:14px 0px 10px 10px;">
-      <span style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
-                   color:#fff;font-weight:700;letter-spacing:0.04em;
-                   font-size:clamp(28px,5vw,44px);line-height:1.08;">Arxora</span>
-    </div>
-    """, unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
 
 def _user_exists_in_current_db(username: str) -> bool:
     name = (username or "").strip()
@@ -68,8 +70,8 @@ def _user_exists_in_current_db(username: str) -> bool:
         except Exception: pass
 
 def show_auth_page():
-    render_arxora_login_header()
-    st.header("Вход в систему")
+    render_arxora_header()
+    st.title("Вход в систему")
     tab1, tab2 = st.tabs(["Вход", "Регистрация"])
     with tab1:
         st.subheader("Войти в аккаунт")
@@ -121,9 +123,6 @@ if 'user' not in st.session_state:
 user_info = db.get_user_info(st.session_state.user['user_id'])
 stats = db.get_statistics(st.session_state.user['user_id'])
 
-# --- Обычный основной header на всех страницах ---
-render_arxora_main_header()
-
 st.sidebar.title(user_info['username'])
 st.sidebar.metric("Текущий капитал", f"${user_info['current_capital']:,.2f}")
 st.sidebar.metric("Начальный капитал", f"${user_info['initial_capital']:,.2f}")
@@ -137,7 +136,7 @@ if st.sidebar.button("Выйти"):
     del st.session_state.user
     st.rerun()
 min_confidence_filter = st.sidebar.slider("Мин. Confidence для добавления", 0, 100, 60)
-render_arxora_main_header()
+render_arxora_header()
 
 try:
     from core.performance_tracker import log_agent_performance, get_agent_performance
