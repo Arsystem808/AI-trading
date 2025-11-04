@@ -165,8 +165,8 @@ def sanitize_targets(action: str, entry: float, tp1: float, tp2: float, tp3: flo
 def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
     if action not in ("BUY", "SHORT"): return "WAIT", "Entry"
     if abs(entry - last_price) <= eps * max(1.0, abs(last_price)): return "Market price", "Entry"
-    if action == "BUY":  return ("Buy Stop","Entry (Buy Stop)") if entry > last_price else ("Buy Limit","Entry")
-    else:                return ("Sell Stop","Entry (Sell Stop)") if entry < last_price else ("Sell Limit","Entry")
+    if action == "BUY":  return ("Buy Stop","Entry") if entry > last_price else ("Buy Limit","Entry")
+    else:                return ("Sell Stop","Entry") if entry < last_price else ("Sell Limit","Entry")
 
 def normalize_for_polygon(symbol: str) -> str:
     s = (symbol or "").strip().upper().replace(" ", "")
