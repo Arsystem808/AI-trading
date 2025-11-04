@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# app.py — Arxora UI (финальный, стабильный, все фразы)
+# app.py — Arxora UI (production, без эмодзи, всё сохранено)
 
 import os
 import re
@@ -17,7 +17,7 @@ try:
     from database import TradingDatabase
     db = TradingDatabase()
 except Exception as e:
-    st.error(f"⚠️ Не удалось загрузить database.py: {e}")
+    st.error(f"Не удалось загрузить database.py: {e}")
     st.stop()
 try: import pandas as pd
 except Exception: pd = None
@@ -71,7 +71,7 @@ def _user_exists_in_current_db(username: str) -> bool:
 
 def show_auth_page():
     render_arxora_header()
-    st.title("🔐 Вход в систему")
+    st.title("Вход в систему")
     tab1, tab2 = st.tabs(["Вход", "Регистрация"])
     with tab1:
         st.subheader("Войти в аккаунт")
@@ -81,10 +81,10 @@ def show_auth_page():
             user = db.login_user(username, password)
             if user:
                 st.session_state.user = user
-                st.success("✅ Успешный вход!")
+                st.success("Успешный вход!")
                 st.rerun()
             else:
-                st.error("❌ Неверное имя пользователя или пароль")
+                st.error("Неверное имя пользователя или пароль")
                 if username:
                     exists = _user_exists_in_current_db(username)
                     if not exists:
@@ -100,21 +100,21 @@ def show_auth_page():
         )
         if st.button("Зарегистрироваться", type="primary"):
             if len((new_username or "").strip()) < 3:
-                st.error("❌ Имя пользователя должно быть минимум 3 символа")
+                st.error("Имя пользователя должно быть минимум 3 символа")
             elif len((new_password or "").strip()) < 6:
-                st.error("❌ Пароль должен быть минимум 6 символов")
+                st.error("Пароль должен быть минимум 6 символов")
             else:
                 user_id = db.register_user(new_username, new_password, initial_capital)
                 if user_id:
                     user = db.login_user(new_username, new_password)
                     if user:
                         st.session_state.user = user
-                        st.success("✅ Аккаунт создан и вход выполнен")
+                        st.success("Аккаунт создан и вход выполнен")
                         st.rerun()
                     else:
-                        st.success("✅ Регистрация успешна! Теперь войдите в систему")
+                        st.success("Регистрация успешна! Теперь войдите в систему")
                 else:
-                    st.error("❌ Это имя пользователя уже занято")
+                    st.error("Это имя пользователя уже занято")
 
 if 'user' not in st.session_state:
     show_auth_page()
@@ -123,7 +123,7 @@ if 'user' not in st.session_state:
 user_info = db.get_user_info(st.session_state.user['user_id'])
 stats = db.get_statistics(st.session_state.user['user_id'])
 
-st.sidebar.title(f"👤 {user_info['username']}")
+st.sidebar.title(user_info['username'])
 st.sidebar.metric("Текущий капитал", f"${user_info['current_capital']:,.2f}")
 st.sidebar.metric("Начальный капитал", f"${user_info['initial_capital']:,.2f}")
 
@@ -132,7 +132,7 @@ pnl_percent = (pnl_change / max(1e-9, user_info['initial_capital'])) * 100
 st.sidebar.metric("Общий P&L", f"${pnl_change:,.2f}", f"{pnl_percent:.2f}%")
 
 st.sidebar.divider()
-if st.sidebar.button("🚪 Выйти"):
+if st.sidebar.button("Выйти"):
     del st.session_state.user
     st.rerun()
 min_confidence_filter = st.sidebar.slider("Мин. Confidence для добавления", 0, 100, 60)
@@ -282,7 +282,7 @@ def render_confidence_breakdown_inline(ticker: str, conf_pct: float):
     st.markdown(html, unsafe_allow_html=True)
 
 tab_signals, tab_portfolio, tab_active, tab_stats = st.tabs([
-    "AI Сигналы", "💼 Портфель", "📋 Активные сделки", "📈 Статистика"
+    "AI Сигналы", "Портфель", "Активные сделки", "Статистика"
 ])
 
 # === TAB 1: AI Сигналы ===
@@ -326,7 +326,6 @@ with tab_signals:
                 tp1, tp2, tp3 = lv["tp1"], lv["tp2"], lv["tp3"]
                 t1, t2, t3 = sanitize_targets(action, lv["entry"], tp1, tp2, tp3)
                 lv["tp1"], lv["tp2"], lv["tp3"] = float(t1), float(t2), float(t3)
-            # Цветная шапка:
             mode_text, entry_title = entry_mode_labels(action, lv.get("entry", last_price), last_price, ENTRY_MARKET_EPS)
             header_text = "WAIT"
             if action == "BUY": header_text = f"Long • {mode_text}"
@@ -357,7 +356,6 @@ with tab_signals:
                 rr = rr_line(lv)
                 if rr:
                     st.markdown(f"<div style='margin-top:6px; color:#FFA94D; font-weight:600;'>{rr}</div>", unsafe_allow_html=True)
-            # --- все фразы ---
             CUSTOM_PHRASES = {
                 "CONTEXT": {
                     "support":["Цена у уровня покупательской активности. Оптимально — вход по ордеру из AI‑анализа с акцентом на рост; важен контроль риска и пересмотр плана при закреплении ниже зоны."],
@@ -383,7 +381,7 @@ with tab_signals:
 
 # === TAB 2: Портфель ===
 with tab_portfolio:
-    st.header("💼 Добавить сигнал в портфель")
+    st.header("Добавить сигнал в портфель")
     if "last_signal" in st.session_state:
         sig = st.session_state["last_signal"]
         ticker = sig["ticker"]
@@ -391,13 +389,13 @@ with tab_portfolio:
         conf = sig["confidence"]
         out = sig["output"]
         if action not in ("BUY", "SHORT"):
-            st.warning("⚠️ Последний сигнал — WAIT. Добавление в портфель недоступно.")
+            st.warning("Последний сигнал — WAIT. Добавление в портфель недоступно.")
         elif not db.can_add_trade(st.session_state.user['user_id'], ticker):
-            st.warning(f"⚠️ По {ticker} уже есть активная сделка! Закройте её перед добавлением новой.")
+            st.warning(f"По {ticker} уже есть активная сделка! Закройте её перед добавлением новой.")
         else:
-            st.success(f"✅ Сигнал: **{ticker}** — **{action}** (Confidence: {conf:.0f}%)")
+            st.success(f"Сигнал: {ticker} — {action} (Confidence: {conf:.0f}%)")
             lv = {k: float(out.get("levels", {}).get(k, 0.0)) for k in ("entry","sl","tp1","tp2","tp3")}
-            st.write("**Параметры сделки:**")
+            st.write("Параметры сделки:")
             st.write(f"- Entry: ${lv['entry']:.2f}")
             st.write(f"- Stop Loss: ${lv['sl']:.2f}")
             st.write(f"- TP1: ${lv['tp1']:.2f} (30% закрытие + SL в безубыток)")
@@ -405,15 +403,15 @@ with tab_portfolio:
             st.write(f"- TP3: ${lv['tp3']:.2f} (остаток 40%)")
             position_percent = st.slider("% от капитала", min_value=5, max_value=50, value=10, step=5)
             position_size = (user_info['current_capital'] * position_percent) / 100
-            st.info(f"Размер позиции: **${position_size:,.2f}** ({position_percent}% от капитала)")
+            st.info(f"Размер позиции: ${position_size:,.2f} ({position_percent}% от капитала)")
             potential_profit = position_size * abs(lv['tp1'] - lv['entry']) / max(1e-9, abs(lv['entry']))
             potential_loss = position_size * abs(lv['entry'] - lv['sl']) / max(1e-9, abs(lv['entry']))
             col1, col2 = st.columns(2)
-            col1.success(f"Потенциальная прибыль (TP1): **${potential_profit:.2f}**")
-            col2.error(f"Потенциальный убыток (SL): **${potential_loss:.2f}**")
+            col1.success(f"Потенциальная прибыль (TP1): ${potential_profit:.2f}")
+            col2.error(f"Потенциальный убыток (SL): ${potential_loss:.2f}")
             if conf < min_confidence_filter:
-                st.warning(f"⚠️ Confidence ({conf:.0f}%) ниже фильтра ({min_confidence_filter}%). Рекомендуется не добавлять.")
-            if st.button("✅ ДОБАВИТЬ В ПОРТФЕЛЬ", type="primary", use_container_width=True):
+                st.warning(f"Confidence ({conf:.0f}%) ниже фильтра ({min_confidence_filter}%). Рекомендуется не добавлять.")
+            if st.button("ДОБАВИТЬ В ПОРТФЕЛЬ", type="primary", use_container_width=True):
                 try:
                     signal_data = {
                         'ticker': ticker,
@@ -430,25 +428,25 @@ with tab_portfolio:
                         'model': sig['model']
                     }
                     trade_id = db.add_trade(st.session_state.user['user_id'], signal_data, position_percent)
-                    st.success(f"🎉 Сделка добавлена в портфель! Trade ID: #{trade_id}")
+                    st.success(f"Сделка добавлена в портфель! Trade ID: #{trade_id}")
                     st.balloons()
                     del st.session_state["last_signal"]
                     st.rerun()
                 except ValueError as e:
                     st.error(str(e))
     else:
-        st.info("📊 Сначала проанализируйте тикер во вкладке 'AI Сигналы', затем добавьте сигнал в портфель здесь.")
+        st.info("Сначала проанализируйте тикер во вкладке 'AI Сигналы', затем добавьте сигнал в портфель здесь.")
 
 # === TAB 3: Активные сделки ===
 with tab_active:
-    st.header("📋 Активные сделки")
+    st.header("Активные сделки")
     active_trades = db.get_active_trades(st.session_state.user['user_id'])
     if not active_trades:
         st.info("У вас пока нет активных сделок. Добавьте сигнал во вкладке 'Портфель'!")
     else:
         for trade in active_trades:
             sl_status = "Безубыток" if trade['sl_breakeven'] else f"${trade['stop_loss']:.2f}"
-            with st.expander(f"🔹 {trade['ticker']} — {trade['direction']} | Остаток: {trade['remaining_percent']:.0f}% | SL: {sl_status}"):
+            with st.expander(f"{trade['ticker']} — {trade['direction']} | Остаток: {trade['remaining_percent']:.0f}% | SL: {sl_status}"):
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     st.metric("Entry", f"${trade['entry_price']:.2f}")
@@ -457,7 +455,7 @@ with tab_active:
                     st.metric("Model", trade['model_used'])
                     st.metric("Confidence", f"{trade['confidence']}%")
                 with col3:
-                    st.write("**Progress:**")
+                    st.write("Progress:")
                     st.write(f"TP1: {'✅' if trade['tp1_closed'] else '⏳'} (30%)")
                     st.write(f"TP2: {'✅' if trade['tp2_closed'] else '⏳'} (30%)")
                     st.write(f"TP3: {'✅' if trade['tp3_closed'] else '⏳'} (40%)")
@@ -470,55 +468,55 @@ with tab_active:
                 # Логика частичного закрытия
                 if trade['direction'] == 'LONG':
                     if not trade['tp1_closed'] and current_price >= trade['take_profit_1']:
-                        st.success("🎯 TP1 достигнут! Закрыть 30% + перенести SL в безубыток?")
+                        st.success("TP1 достигнут! Закрыть 30% + перенести SL в безубыток?")
                         if st.button("Закрыть TP1", key=f"tp1_{trade['trade_id']}"):
                             db.partial_close_trade(trade['trade_id'], current_price, 'tp1')
                             st.rerun()
                     elif trade['tp1_closed'] and not trade['tp2_closed'] and current_price >= trade['take_profit_2']:
-                        st.success("🎯 TP2 достигнут! Закрыть ещё 30%?")
+                        st.success("TP2 достигнут! Закрыть ещё 30%?")
                         if st.button("Закрыть TP2", key=f"tp2_{trade['trade_id']}"):
                             db.partial_close_trade(trade['trade_id'], current_price, 'tp2')
                             st.rerun()
                     elif trade['tp2_closed'] and not trade['tp3_closed'] and current_price >= trade['take_profit_3']:
-                        st.success("🎯 TP3 достигнут! Закрыть остаток (40%)?")
+                        st.success("TP3 достигнут! Закрыть остаток (40%)?")
                         if st.button("Закрыть TP3", key=f"tp3_{trade['trade_id']}"):
                             db.partial_close_trade(trade['trade_id'], current_price, 'tp3')
                             st.rerun()
                     elif (trade['sl_breakeven'] and current_price <= trade['entry_price']) or \
                          (not trade['sl_breakeven'] and current_price <= trade['stop_loss']):
-                        st.error("⚠️ Stop Loss сработал!")
+                        st.error("Stop Loss сработал!")
                         if st.button("Закрыть по SL", key=f"sl_{trade['trade_id']}"):
                             db.full_close_trade(trade['trade_id'], current_price, "SL_HIT")
                             st.rerun()
                 elif trade['direction'] == 'SHORT':
                     if not trade['tp1_closed'] and current_price <= trade['take_profit_1']:
-                        st.success("🎯 TP1 достигнут! Закрыть 30% + перенести SL в безубыток?")
+                        st.success("TP1 достигнут! Закрыть 30% + перенести SL в безубыток?")
                         if st.button("Закрыть TP1", key=f"tp1_{trade['trade_id']}"):
                             db.partial_close_trade(trade['trade_id'], current_price, 'tp1')
                             st.rerun()
                     elif trade['tp1_closed'] and not trade['tp2_closed'] and current_price <= trade['take_profit_2']:
-                        st.success("🎯 TP2 достигнут! Закрыть ещё 30%?")
+                        st.success("TP2 достигнут! Закрыть ещё 30%?")
                         if st.button("Закрыть TP2", key=f"tp2_{trade['trade_id']}"):
                             db.partial_close_trade(trade['trade_id'], current_price, 'tp2')
                             st.rerun()
                     elif trade['tp2_closed'] and not trade['tp3_closed'] and current_price <= trade['take_profit_3']:
-                        st.success("🎯 TP3 достигнут! Закрыть остаток (40%)?")
+                        st.success("TP3 достигнут! Закрыть остаток (40%)?")
                         if st.button("Закрыть TP3", key=f"tp3_{trade['trade_id']}"):
                             db.partial_close_trade(trade['trade_id'], current_price, 'tp3')
                             st.rerun()
                     elif (trade['sl_breakeven'] and current_price >= trade['entry_price']) or \
                          (not trade['sl_breakeven'] and current_price >= trade['stop_loss']):
-                        st.error("⚠️ Stop Loss сработал!")
+                        st.error("Stop Loss сработал!")
                         if st.button("Закрыть по SL", key=f"sl_{trade['trade_id']}"):
                             db.full_close_trade(trade['trade_id'], current_price, "SL_HIT")
                             st.rerun()
-                if st.button("🔴 Закрыть всю позицию вручную", key=f"manual_{trade['trade_id']}"):
+                if st.button("Закрыть всю позицию вручную", key=f"manual_{trade['trade_id']}"):
                     db.full_close_trade(trade['trade_id'], current_price, "MANUAL")
                     st.rerun()
 
 # === TAB 4: Статистика ===
 with tab_stats:
-    st.header("📈 Статистика портфеля")
+    st.header("Статистика портфеля")
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Всего сделок", stats['total_trades'])
     col2.metric("Win Rate", f"{stats['win_rate']:.1f}%")
