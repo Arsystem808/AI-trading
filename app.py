@@ -190,8 +190,8 @@ def rr_line(levels: Dict[str, float]) -> str:
 
 def card_html(title: str, value: str, sub: Optional[str]=None, color: Optional[str]=None) -> str:
     bg = "#141a20"
-    if color == "green": bg = "#6CCF58"
-    elif color == "red": bg = "#E95A54"
+    if color == "green": bg = "#37b410"
+    elif color == "red": bg = "#b41037"
     return f"""
         <div style="background:{bg}; padding:12px 16px; border-radius:14px; border:1px solid rgba(255,255,255,0.06); margin:6px 0;">
             <div style="font-size:0.9rem; opacity:0.85;">{title}</div>
@@ -334,8 +334,8 @@ with tab_signals:
             bg = "#eb9414"
             txt = "#fff"
             border = "rgba(255,255,255,0.06)"
-            if action == "BUY": bg = "linear-gradient(98deg, #6CCF58, #6CCF58)"
-            elif action == "SHORT": bg = "linear-gradient(98deg, #E95A54, #E95A54)"
+            if action == "BUY": bg = "linear-gradient(98deg, #37b410, #37b410)"
+            elif action == "SHORT": bg = "linear-gradient(98deg, #b41037, #b41037)"
             st.markdown(f"""
             <div style="background:{bg}; padding:14px 16px; border-radius:16px; border:1px solid {border}; margin-bottom:10px; color:{txt};">
               <div style="font-size:1.15rem; font-weight:700;">{header_text}</div>
