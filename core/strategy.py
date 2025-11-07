@@ -702,9 +702,10 @@ def analyze_asset_w7(ticker: str, horizon: str):
             price = None
     price = float(price) if price is not None else 0.0
 
-    # --- core series & indicators ---
-    closes = df["close"] if "close" in df.columns else pd.Series(dtype=float)
+    # --- series & indicators ---
+    closes  = df["close"]  if "close"  in df.columns else pd.Series(dtype=float)
     volumes = df["volume"] if "volume" in df.columns else pd.Series(dtype=float)
+
     tail = df.tail(cfg["look"]) if not df.empty else df
     rng_low  = float(tail["low"].min())  if not tail.empty else 0.0
     rng_high = float(tail["high"].max()) if not tail.empty else 0.0
@@ -717,8 +718,6 @@ def analyze_asset_w7(ticker: str, horizon: str):
     atr_d = float(_atr_like(df, n=cfg["atr"]).iloc[-1]) if not df.empty else 0.0
     atr_w = _weekly_atr(df) if (not df.empty and cfg.get("use_weekly_atr")) else atr_d
     vol_ratio = (atr_d / max(1e-9, float(_atr_like(df, n=cfg["atr"] * 2).iloc[-1]))) if not df.empty else 1.0
-
-    # volatility regime: low <0.8, mid 0.8-1.2, high >1.2
     atr_regime = 'low' if vol_ratio < 0.8 else ('mid' if vol_ratio <= 1.2 else 'high')
 
     ha = _heikin_ashi(df) if not df.empty else pd.DataFrame(columns=["ha_close"])
@@ -733,7 +732,7 @@ def analyze_asset_w7(ticker: str, horizon: str):
     last_row = df.iloc[-1] if not df.empty else pd.Series({"open":0,"high":0,"low":0,"close":price, "volume":0})
     body, up_wick, dn_wick = _wick_profile(last_row)
     avg_volume = float(volumes.tail(20).mean()) if not volumes.empty else 0.0
-    volume_confirm = (last_row.get("volume", 0) > 1.2 * avg_volume) if not volumes.empty else True  # filter by volume
+    volume_confirm = (last_row.get("volume", 0) > 1.2 * avg_volume) if not volumes.empty else True
 
     hlc = _last_period_hlc(df, cfg["pivot_rule"]) if not df.empty else None
     if not hlc and not df.empty:
@@ -744,20 +743,17 @@ def analyze_asset_w7(ticker: str, horizon: str):
     piv = _fib_pivots(H, L, C)
     P, R1, R2, S1, S2 = piv["P"], piv["R1"], piv.get("R2"), piv["S1"], piv.get("S2")
 
-    # --- regime & near-level logic (unchanged) ---
+    # --- regime & near-level logic (исходная логика) ---
     tol_k = {"ST": 0.18, "MID": 0.22, "LT": 0.28}[hz]
     step_d, step_w = atr_d, atr_w
     buf = tol_k * (step_w if hz != "ST" else step_d)
-
     def _near_from_below(level: float) -> bool: return (level is not None) and (0 <= level - price <= buf)
     def _near_from_above(level: float) -> bool: return (level is not None) and (0 <= price - level <= buf)
-
     thr_ha   = {"ST": 4, "MID": 5, "LT": 6}[hz]
     thr_macd = {"ST": 4, "MID": 6, "LT": 8}[hz]
     long_up   = (ha_up_run >= thr_ha)  or (macd_pos_run >= thr_macd)
     long_down = (ha_down_run >= thr_ha) or (macd_neg_run >= thr_macd)
 
-    # --- classify bands & preliminary action (unchanged) ---
     if long_up and (_near_from_below(S1) or _near_from_below(R1) or _near_from_below(R2)):
         action = "WAIT"
     elif long_down and (_near_from_above(R1) or _near_from_above(S1) or _near_from_above(S2)):
@@ -778,37 +774,39 @@ def analyze_asset_w7(ticker: str, horizon: str):
             else:
                 action = "BUY" if band <= -2 else "WAIT"
 
-    # --- ATR-aware entry policy: dynamic buffers & anti-chase ---
+    # --- helpers ---
     def _is_crypto(sym: str) -> bool:
         s = sym.upper()
-        crypto_keys = ["BTC", "ETH", "SOL", "DOGE", "ADA", "XRP"]  # exclude forex like EURUSD/XAUUSD
-        return any(k in s for k in crypto_keys) or (s.endswith("USDT") or s.endswith("USDC"))
+        crypto_keys = ["BTC","ETH","SOL","DOGE","ADA","XRP"]
+        return any(k in s for k in crypto_keys) or s.endswith("USDT") or s.endswith("USDC")
 
     u_base = step_w if hz != "ST" else step_d
-    # dynamic base buffer: regime-adjusted + crypto uplift
     base_buf = {"ST": 0.25, "MID": 0.30, "LT": 0.35}[hz]
     regime_adj = {"low": -0.05, "mid": 0.0, "high": +0.10}[atr_regime]
     if _is_crypto(ticker): base_buf += 0.05; regime_adj += 0.05 if atr_regime == 'high' else 0.0
     k_buf = max(0.2, base_buf + regime_adj + 0.05 * _clip01(vol_ratio - 1.0))
     atr_buf = k_buf * u_base
 
-    # dynamic anti-chase thresholds: stricter in high vol/crypto
     base_thr = {"ST": 0.60, "MID": 0.80, "LT": 1.00}[hz]
-    regime_adj_thr = {"low": +0.1, "mid": 0.0, "high": -0.1}[atr_regime]
+    regime_adj_thr = {"low": +0.10, "mid": 0.0, "high": -0.10}[atr_regime]
     thr_far = base_thr + regime_adj_thr
     if _is_crypto(ticker):
         thr_far = {"ST": 0.50, "MID": 0.70, "LT": 0.90}[hz] + regime_adj_thr
 
-    # extreme ATR% check (>5% of price -> WAIT)
     atr_pct = (atr_d / price) * 100 if price > 0 else 0.0
     if atr_pct > 5.0:
         action = "WAIT"
         alt = "Экстремальная волатильность (>5% ATR) — ждём стабилизации"
+    else:
+        alt = ""
 
-    alert_entry = entry  # placeholder for far case
+    # --- default-safe init to avoid UnboundLocalError ---
+    entry = price
+    sl    = price - 0.90 * step_d
+    tp1, tp2, tp3 = entry + 0.7*step_d, entry + 1.4*step_d, entry + 2.1*step_d
+    alert_entry = entry
 
-    # --- levels & risk targets (with volume confirm) ---
-    alt = ""
+    # --- levels & risk targets ---
     if action == "BUY" and volume_confirm:
         ref = S1 if (price < P) else P
         entry = max(price, (ref if ref is not None else price) + atr_buf)
@@ -816,8 +814,9 @@ def analyze_asset_w7(ticker: str, horizon: str):
             sl = max(price * 0.95, (S1 if S1 is not None else price) - (0.60 if atr_regime != 'high' else 0.80) * step_w)
         else:
             sl = max(price * 0.95, (P if P is not None else price) - (0.60 if atr_regime != 'high' else 0.80) * step_w)
-        tp1 = entry + 0.9*step_w; tp2 = entry + 1.6*step_w; tp3 = entry + 2.3*step_w
+        tp1, tp2, tp3 = entry + 0.9*step_w, entry + 1.6*step_w, entry + 2.3*step_w
         alt = "Если продавят ниже и не вернут — ждём возврата"
+        alert_entry = entry
     elif action == "SHORT" and volume_confirm:
         if price >= R1:
             k_short_buf = 0.1 if atr_regime == 'low' else 0.2
@@ -826,12 +825,12 @@ def analyze_asset_w7(ticker: str, horizon: str):
         else:
             entry = price + 0.10*step_d
             sl = price + (1.00 if atr_regime != 'high' else 1.20) * step_d
-        tp1 = entry - 0.9*step_w; tp2 = entry - 1.6*step_w; tp3 = entry - 2.3*step_w
+        tp1, tp2, tp3 = entry - 0.9*step_w, entry - 1.6*step_w, entry - 2.3*step_w
         alt = "Если протолкнут выше и удержат — без погони"
+        alert_entry = entry
     else:
-        entry, sl = price, price - 0.90*step_d
-        tp1, tp2, tp3 = entry + 0.7*step_d, entry + 1.4*step_d, entry + 2.1*step_d
-        alt = "Ждать пробоя/ретеста"
+        # WAIT: оставить нейтральные уровни, alert_entry = текущий сигнал/цена
+        alert_entry = entry
 
     # --- clamp / floors / sanity ---
     tp1, tp2, tp3 = _clamp_tp_by_trend(action, hz, tp1, tp2, tp3, piv, step_w, slope_norm, macd_pos_run, macd_neg_run)
@@ -852,7 +851,6 @@ def analyze_asset_w7(ticker: str, horizon: str):
         if u < 0.80: return "mid"
         return "far"
 
-    # adaptive confidence: regime-based penalty for far
     base = 0.55 + 0.12*_clip01(abs(slope_norm)*1800) + 0.08*_clip01((vol_ratio - 0.9)/0.6)
     if action == "WAIT": base -= 0.07
     if action in ("BUY","SHORT") and ue >= 0.80:
@@ -860,14 +858,11 @@ def analyze_asset_w7(ticker: str, horizon: str):
         base -= penalty
     conf = float(max(0.55, min(0.90, base))); conf = float(CAL_CONF["W7"](conf))
 
-    # hard gate: preserve alert_entry for UI
-    far_wait_alt = ""
     if action in ("BUY","SHORT") and ue > thr_far:
-        alert_entry = entry  # save original far entry
+        # keep alert_entry as far trigger, convert to WAIT levels
         action = "WAIT"
         far_wait_alt = f"Entry слишком далеко: {ue:.2f} ATR > {thr_far:.2f} ATR — ждём ретеста/сужения"
-        alt += " " + far_wait_alt if alt else far_wait_alt
-        # neutral levels around price
+        alt = (alt + " " + far_wait_alt).strip()
         entry, sl = price, price - 0.90*step_d
         tp1, tp2, tp3 = entry + 0.7*step_d, entry + 1.4*step_d, entry + 2.1*step_d
         tp1, tp2, tp3 = _order_targets(entry, tp1, tp2, tp3, action)
@@ -883,7 +878,7 @@ def analyze_asset_w7(ticker: str, horizon: str):
              "tp3": float(_clip01(0.28 + 0.13*(conf - 0.55)/0.35))}
     probs = _monotone_tp_probs(probs)
 
-    # enhanced meta/debug
+    # meta/debug
     u1,u2,u3 = abs(tp1-entry)/u_base, abs(tp2-entry)/u_base, abs(tp3-entry)/u_base
     meta_debug = {
         "atr_d": float(atr_d), "atr_w": float(atr_w),
@@ -898,14 +893,14 @@ def analyze_asset_w7(ticker: str, horizon: str):
         "atr_regime": atr_regime,
         "volume_confirm": bool(volume_confirm),
         "atr_pct": float(atr_pct),
-        "alert_entry": float(alert_entry) if 'alert_entry' in locals() else float(entry)
+        "alert_entry": float(alert_entry)
     }
     try:
         log_agent_performance(
             agent="W7", ticker=ticker, horizon=horizon,
             action=action, confidence=float(conf),
             levels={"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3),
-                    "alert_entry": meta_debug["alert_entry"]},
+                    "alert_entry": float(alert_entry)},
             probs={"tp1": float(probs["tp1"]), "tp2": float(probs["tp2"]), "tp3": float(probs["tp3"])},
             meta={"probs_debug": meta_debug}, ts=pd.Timestamp.utcnow().isoformat()
         )
@@ -916,10 +911,9 @@ def analyze_asset_w7(ticker: str, horizon: str):
         "last_price": float(price),
         "recommendation": {"action": action, "confidence": float(round(conf, 4))},
         "levels": {"entry": float(entry), "sl": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3),
-                   "alert_entry": meta_debug["alert_entry"]},
-        "probs": probs,
-        "context": [],
-        "note_html": "<div>W7: adaptive ATR-pivots breakout w/ regime & volume filter</div>",
+                   "alert_entry": float(alert_entry)},
+        "probs": probs, "context": [],
+        "note_html": "<div>W7: adaptive ATR-pivots breakout w/ regime & volume</div>",
         "alt": alt, "entry_kind": entry_kind, "entry_label": entry_label,
         "meta": {"source":"W7","grey_zone": bool(0.48 <= conf <= 0.58), "probs_debug": meta_debug}
     }
