@@ -1147,7 +1147,7 @@ except Exception:
         return res
 
 # -------------------- Оркестратор Octopus --------------------
-OCTO_WEIGHTS: Dict[str, float] = {"Global": 0.25, "M7": 0.20, "W7": 0.30, "AlphaPulse": 0.25}  # как и было
+OCTO_WEIGHTS: Dict[str, float] = {"Global": 0.25, "M7": 0.00, "W7": 0.30, "AlphaPulse": 0.25}  # как и было
 
 def _act_to_num(a: str) -> int:  # без изменений
     return 1 if a == "BUY" else (-1 if a == "SHORT" else 0)
