@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# app.py — Arxora UI (минималистичный хедер, фиксы белых полей и смещений; без аутентификации/портфеля/статистики)
+# app.py — Arxora UI (минималистичный хедер, чёрный фон без «белых полей», фикс смещений; без аутентификации/портфеля/статистики)
 
 import os
 import re
@@ -8,6 +8,7 @@ import importlib
 import traceback
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, List
+from base64 import b64encode
 
 import streamlit as st
 try:
@@ -26,18 +27,19 @@ st.set_page_config(
 def render_arxora_header():
     st.markdown("""
     <style>
-      /* Глобальный фон и контейнеры — убираем «белые поля» */
+      /* Глобальный фон: убираем «белые поля» везде, включая служебные контейнеры */
       :root, html, body { background:#000 !important; }
       .stApp { background:#000 !important; }
       [data-testid="stAppViewContainer"] { background:#000 !important; }
       header[data-testid="stHeader"] { background:#000 !important; backdrop-filter:none !important; border-bottom:none !important; }
-      footer { display:none; }
+      [data-testid="stDecoration"], [data-testid="stToolbar"], .stDeployButton { display:none !important; } /* убираем оверлеи, вызывающие «прыжки» */
 
-      /* Стабильная прокрутка: на macOS с overlay-скроллбаром уменьшает дерганье */
+      /* Стабильная прокрутка и компенсация overlay-скроллбара для Safari */
       html { scrollbar-gutter: stable both-edges; }
-      body { overflow-y: scroll; }
+      :root { --sbw: calc(100vw - 100%); }  /* ширина полосы прокрутки */
+      body { overflow-y: scroll; margin-right: var(--sbw); }
 
-      /* Центр и ширина основного блока */
+      /* Центр и ширина основного блока (layout='centered' + явное ограничение) */
       section.main { background:transparent !important; }
       section.main > div.block-container {
         max-width: 980px;
@@ -46,10 +48,10 @@ def render_arxora_header():
         box-sizing: border-box;
       }
 
-      /* Хедер — истинный центр без колонок/таблиц */
+      /* Хедер — истинный центр без колонок */
       #arxora-hero {
         width: 100%;
-        max-width: 100vw;          /* не выходим за вьюпорт */
+        max-width: 100vw;
         display: grid;
         place-items: center;
         padding: 48px 0 16px;
@@ -59,7 +61,7 @@ def render_arxora_header():
         font-weight: 800;
         color: #ECEFF1;
         letter-spacing: .4px;
-        font-size: clamp(36px, 5vw, 72px);   /* уменьшено для десктопа */
+        font-size: clamp(36px, 5vw, 72px);   /* аккуратнее на десктопе, комфортно на мобиле */
         line-height: 1.06;
         text-align: center;
       }
@@ -72,7 +74,7 @@ def render_arxora_header():
         text-transform: uppercase;
         text-align: center;
       }
-      /* Если используется файл-логотип — ограничиваем размер на десктопе */
+      /* Если используется файл-логотип — контролируем размер на десктопе */
       #arxora-hero img.arxora-logo {
         width: min(420px, 40vw);
         height: auto;
@@ -80,12 +82,12 @@ def render_arxora_header():
         margin: 0 auto;
       }
 
-      /* Таб-лист не влияет на центр хедера */
-      .stTabs [data-baseweb="tab-list"] { margin-top: 4px; }
+      /* Таб-лист — не влияет на позицию хедера */
+      .stTabs [data-baseweb="tab-list"] { margin-top: 4px; background:#000 !important; }
     </style>
     """, unsafe_allow_html=True)
 
-    # Отрисовка логотипа: файл или типографика
+    # Логотип из файла (Base64) или текстовый вариант
     explicit = os.getenv("ARXORA_LOGO_PATH", "").strip()
     candidates = [explicit] if explicit else [
         "assets/arxora_logo_center.jpeg",
@@ -94,21 +96,27 @@ def render_arxora_header():
     logo_path = next((p for p in candidates if p and os.path.exists(p)), None)
 
     if logo_path:
-        # Используем прямой <img>, чтобы избежать перерисовок Streamlit-виджета
-        abspath = os.path.abspath(logo_path)
-        st.markdown(f'''
-        <div id="arxora-hero">
-          <img class="arxora-logo" src="file://{abspath}" alt="Arxora">
-          <div class="tagline">TRADE SMARTER</div>
-        </div>
-        ''', unsafe_allow_html=True)
-    else:
-        st.markdown("""
-        <div id="arxora-hero">
-          <div class="brand">Arxora</div>
-          <div class="tagline">TRADE SMARTER</div>
-        </div>
-        """, unsafe_allow_html=True)
+        try:
+            with open(logo_path, "rb") as f:
+                data64 = b64encode(f.read()).decode("utf-8")
+            mime = "image/png" if logo_path.lower().endswith("png") else "image/jpeg"
+            st.markdown(f'''
+            <div id="arxora-hero">
+              <img class="arxora-logo" src="{mime};base64,{data64}" alt="Arxora">
+              <div class="tagline">TRADE SMARTER</div>
+            </div>
+            ''', unsafe_allow_html=True)
+            return
+        except Exception:
+            pass
+
+    # Текстовый fallback (минималистично как в референсе)
+    st.markdown("""
+    <div id="arxora-hero">
+      <div class="brand">Arxora</div>
+      <div class="tagline">TRADE SMARTER</div>
+    </div>
+    """, unsafe_allow_html=True)
 
 # Рендерим шапку один раз — вне табов
 render_arxora_header()
