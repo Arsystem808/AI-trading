@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# app.py — Arxora UI (минималистичный хедер, фон без «белых полей», без аутентификации/портфеля/статистики)
+# app.py — Arxora UI (минималистичный хедер, фиксы белых полей и смещений; без аутентификации/портфеля/статистики)
 
 import os
 import re
@@ -15,33 +15,41 @@ try:
 except Exception:
     requests = None
 
-st.set_page_config(page_title="Arxora — трейд‑ИИ (MVP)",
-                   page_icon="assets/arxora_favicon_512.png",
-                   layout="centered")
+st.set_page_config(
+    page_title="Arxora — трейд‑ИИ (MVP)",
+    page_icon="assets/arxora_favicon_512.png",
+    layout="centered"
+)
 
-# ---------------- Header (лаконичный и центрированный; фикс «белых полей» и размеров) ----------------
+# ---------------- Header (лаконичный, без смещений) ----------------
 
 def render_arxora_header():
-    # Глобальные стили страницы
     st.markdown("""
     <style>
-      /* Фон на всю ширину, без белых гаттеров */
-      html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
-        background: #000 !important;
-      }
-      /* Стабильный вертикальный скролл, чтобы не дёргался контент между вкладками */
+      /* Глобальный фон и контейнеры — убираем «белые поля» */
+      :root, html, body { background:#000 !important; }
+      .stApp { background:#000 !important; }
+      [data-testid="stAppViewContainer"] { background:#000 !important; }
+      header[data-testid="stHeader"] { background:#000 !important; backdrop-filter:none !important; border-bottom:none !important; }
+      footer { display:none; }
+
+      /* Стабильная прокрутка: на macOS с overlay-скроллбаром уменьшает дерганье */
       html { scrollbar-gutter: stable both-edges; }
       body { overflow-y: scroll; }
 
-      /* Центральный контейнер (можно поджать под ультраширокие мониторы) */
-      [data-testid="stAppViewContainer"] .main {
+      /* Центр и ширина основного блока */
+      section.main { background:transparent !important; }
+      section.main > div.block-container {
         max-width: 980px;
         margin: 0 auto;
+        padding-left: 16px; padding-right: 16px;
+        box-sizing: border-box;
       }
 
-      /* Хедер */
+      /* Хедер — истинный центр без колонок/таблиц */
       #arxora-hero {
         width: 100%;
+        max-width: 100vw;          /* не выходим за вьюпорт */
         display: grid;
         place-items: center;
         padding: 48px 0 16px;
@@ -51,7 +59,7 @@ def render_arxora_header():
         font-weight: 800;
         color: #ECEFF1;
         letter-spacing: .4px;
-        font-size: clamp(36px, 5vw, 72px); /* уменьшили max и vw для десктопа */
+        font-size: clamp(36px, 5vw, 72px);   /* уменьшено для десктопа */
         line-height: 1.06;
         text-align: center;
       }
@@ -59,22 +67,25 @@ def render_arxora_header():
         margin-top: 10px;
         color: #CFD8DC;
         opacity: .95;
-        font-size: clamp(10px, 0.9vw, 14px); /* аккуратный размер на десктопе */
-        letter-spacing: .38em;  /* широкий кернинг как в референсе */
+        font-size: clamp(10px, 0.9vw, 14px);
+        letter-spacing: .38em;               /* TRADE SMARTER */
         text-transform: uppercase;
         text-align: center;
       }
-      /* Изображение-логотип (если используется файл) — ограничиваем разумно */
+      /* Если используется файл-логотип — ограничиваем размер на десктопе */
       #arxora-hero img.arxora-logo {
         width: min(420px, 40vw);
         height: auto;
         display: block;
         margin: 0 auto;
       }
+
+      /* Таб-лист не влияет на центр хедера */
+      .stTabs [data-baseweb="tab-list"] { margin-top: 4px; }
     </style>
     """, unsafe_allow_html=True)
 
-    # Файл-логотип (опционально)
+    # Отрисовка логотипа: файл или типографика
     explicit = os.getenv("ARXORA_LOGO_PATH", "").strip()
     candidates = [explicit] if explicit else [
         "assets/arxora_logo_center.jpeg",
@@ -83,15 +94,15 @@ def render_arxora_header():
     logo_path = next((p for p in candidates if p and os.path.exists(p)), None)
 
     if logo_path:
-        # Ровно по центру, без колонок
-        st.markdown(f"""
+        # Используем прямой <img>, чтобы избежать перерисовок Streamlit-виджета
+        abspath = os.path.abspath(logo_path)
+        st.markdown(f'''
         <div id="arxora-hero">
-          <img class="arxora-logo" src="file://{os.path.abspath(logo_path)}" alt="Arxora" />
+          <img class="arxora-logo" src="file://{abspath}" alt="Arxora">
           <div class="tagline">TRADE SMARTER</div>
         </div>
-        """, unsafe_allow_html=True)
+        ''', unsafe_allow_html=True)
     else:
-        # Текстовый вариант — соответствует референсу
         st.markdown("""
         <div id="arxora-hero">
           <div class="brand">Arxora</div>
@@ -99,7 +110,7 @@ def render_arxora_header():
         </div>
         """, unsafe_allow_html=True)
 
-# Рендерим шапку один раз (вне вкладок), чтобы не было «сдвигов»
+# Рендерим шапку один раз — вне табов
 render_arxora_header()
 
 # ---------------- Вспомогательные функции анализа (логика сохранена) ----------------
@@ -108,10 +119,8 @@ ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))
 MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT",  "0.0010"))
 
 def _fmt(x: Any) -> str:
-    try:
-        return f"{float(x):.2f}"
-    except Exception:
-        return "0.00"
+    try: return f"{float(x):.2f}"
+    except Exception: return "0.00"
 
 def sanitize_targets(action: str, entry: float, tp1: float, tp2: float, tp3: float):
     step = max(MIN_TP_STEP_PCT * max(1.0, abs(entry)), 1e-6 * max(1.0, abs(entry)))
@@ -126,14 +135,10 @@ def sanitize_targets(action: str, entry: float, tp1: float, tp2: float, tp3: flo
     return tp1, tp2, tp3
 
 def entry_mode_labels(action: str, entry: float, last_price: float, eps: float):
-    if action not in ("BUY", "SHORT"):
-        return "WAIT", "Entry"
-    if abs(entry - last_price) <= eps * max(1.0, abs(last_price)):
-        return "Market price", "Entry"
-    if action == "BUY":
-        return ("Buy Stop","Entry") if entry > last_price else ("Buy Limit","Entry")
-    else:
-        return ("Sell Stop","Entry") if entry < last_price else ("Sell Limit","Entry")
+    if action not in ("BUY", "SHORT"): return "WAIT", "Entry"
+    if abs(entry - last_price) <= eps * max(1.0, abs(last_price)): return "Market price", "Entry"
+    if action == "BUY":  return ("Buy Stop","Entry") if entry > last_price else ("Buy Limit","Entry")
+    else:                return ("Sell Stop","Entry") if entry < last_price else ("Sell Limit","Entry")
 
 def normalize_for_polygon(symbol: str) -> str:
     s = (symbol or "").strip().upper().replace(" ", "")
@@ -147,9 +152,8 @@ def normalize_for_polygon(symbol: str) -> str:
     return s
 
 def rr_line(levels: Dict[str, float]) -> str:
-    risk = abs(levels["entry"] -  levels["sl"])
-    if risk <= 1e-9:
-        return ""
+    risk = abs(levels["entry"] - levels["sl"])
+    if risk <= 1e-9: return ""
     rr1 = abs(levels["tp1"] - levels["entry"]) / risk
     rr2 = abs(levels["tp2"] - levels["entry"]) / risk
     rr3 = abs(levels["tp3"] - levels["entry"]) / risk
@@ -180,18 +184,14 @@ def resolve_asset_title_polygon(raw_symbol: str, normalized: str) -> str:
 def _load_strategy_module():
     try:
         mod = importlib.import_module("core.strategy")
-        try:
-            mod = importlib.reload(mod)
-        except Exception:
-            pass
+        try: mod = importlib.reload(mod)
+        except Exception: pass
         return mod, None
-    except Exception:
-        return None, traceback.format_exc()
+    except Exception: return None, traceback.format_exc()
 
 def get_available_models() -> List[str]:
     mod, _ = _load_strategy_module()
-    if not mod:
-        return ["Octopus"]
+    if not mod: return ["Octopus"]
     reg = getattr(mod, "STRATEGY_REGISTRY", {}) or {}
     keys = list(reg.keys())
     return (["Octopus"] if "Octopus" in keys else []) + [k for k in sorted(keys) if k != "Octopus"]
@@ -206,15 +206,12 @@ def run_model_by_name(ticker_norm: str, model_name: str) -> Dict[str, Any]:
     if model_name in reg and callable(reg[model_name]):
         return reg[model_name](ticker_norm, "Краткосрочный")
     fname = f"analyze_asset_{model_name.lower()}"
-    if hasattr(mod, fname):
-        return getattr(mod, fname)(ticker_norm, "Краткосрочный")
+    if hasattr(mod, fname): return getattr(mod, fname)(ticker_norm, "Краткосрочный")
     raise RuntimeError(f"Стратегия {model_name} недоступна.")
 
 def render_confidence_breakdown_inline(ticker: str, conf_pct: float):
-    try:
-        overall = float(conf_pct or 0.0)
-    except Exception:
-        overall = 0.0
+    try: overall = float(conf_pct or 0.0)
+    except Exception: overall = 0.0
     rules_pct = 44.0
     ai_delta = overall - rules_pct
     ai_pct = max(0.0, min(overall, ai_delta))
@@ -256,8 +253,7 @@ with tab_signals:
             rec = out.get("recommendation")
             if not rec and ("action" in out or "confidence" in out):
                 rec = {"action": out.get("action","WAIT"), "confidence": float(out.get("confidence",0.0))}
-            if not rec:
-                rec = {"action":"WAIT","confidence":0.0}
+            if not rec: rec = {"action":"WAIT","confidence":0.0}
 
             action = str(rec.get("action","WAIT"))
             conf_val = float(rec.get("confidence",0.0))
@@ -292,16 +288,12 @@ with tab_signals:
             mode_text, entry_title = entry_mode_labels(action, lv.get("entry", last_price), last_price, ENTRY_MARKET_EPS)
 
             header_text = "WAIT"
-            if action == "BUY":
-                header_text = f"Long • {mode_text}"
-            elif action == "SHORT":
-                header_text = f"Short • {mode_text}"
+            if action == "BUY": header_text = f"Long • {mode_text}"
+            elif action == "SHORT": header_text = f"Short • {mode_text}"
 
             bg = "#eb9414"; txt = "#fff"; border = "rgba(255,255,255,0.06)"
-            if action == "BUY":
-                bg = "linear-gradient(98deg, #247102, #247102)"
-            elif action == "SHORT":
-                bg = "linear-gradient(98deg, #710224, #710224)"
+            if action == "BUY": bg = "linear-gradient(98deg, #247102, #247102)"
+            elif action == "SHORT": bg = "linear-gradient(98deg, #710224, #710224)"
 
             st.markdown(f"""
             <div style="background:{bg}; padding:14px 16px; border-radius:16px; border:1px solid {border}; margin-bottom:10px; color:{txt};">
