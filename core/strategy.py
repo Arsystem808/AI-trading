@@ -503,51 +503,12 @@ class _M7Predictor:
             logger.warning("M7 ML: predict failed: %s", e)
             return ("WAIT", 0.5)
 
-# --- Cooldown state (тикер -> последняя выдача сигнала) ---
-_M7_COOLDOWN = {}  # {ticker: {'ts': pd.Timestamp, 'bars': int}}
-
-def _cooldown_active(ticker: str, df: pd.DataFrame, ts: pd.Timestamp, cooldown_bars: int) -> Tuple[bool, int]:
-    cd = _M7_COOLDOWN.get(ticker)
-    if not cd or 'ts' not in cd or cd['ts'] is None:
-        return (False, 0)
-    last_ts = cd['ts']
-    # число дневных баров после last_ts
-    try:
-        bars_passed = int((df.index > last_ts).sum())
-    except Exception:
-        bars_passed = cooldown_bars
-    remaining = max(0, int(cooldown_bars) - bars_passed)
-    return (remaining > 0), remaining
-
 class M7TradingStrategy:
-    def __init__(self,
-                 atr_period=14,
-                 atr_multiplier=1.5,
-                 pivot_period='D',
-                 fib_levels=None,
-                 # профессиональный стоп
-                 stop_mode="pro",            # "pro" | "fixed"
-                 stop_atr_mult=2.5,          # множитель ATR для SL
-                 swing_lookback=20,          # окно swing high/low и для Chandelier
-                 entry_buf_pct=0.002,        # буфер от уровня в лимит-цене (0.2%)
-                 use_trailing=True,          # рекомендация трейлинг-выхода
-                 # снижение частоты сигналов
-                 confluence_levels=2,        # минимум независимых уровней рядом
-                 near_window_frac=0.75,      # ужесточение окна близости (доля от atr_multiplier)
-                 min_raw_conf=0.62           # отсев слабых по близости
-                 ):
+    def __init__(self, atr_period=14, atr_multiplier=1.5, pivot_period='D', fib_levels=None):
         self.atr_period = atr_period
         self.atr_multiplier = atr_multiplier
         self.pivot_period = pivot_period
         self.fib_levels = fib_levels or [0.236,0.382,0.5,0.618,0.786]
-        self.stop_mode = stop_mode
-        self.stop_atr_mult = stop_atr_mult
-        self.swing_lookback = swing_lookback
-        self.entry_buf_pct = entry_buf_pct
-        self.use_trailing = use_trailing
-        self.confluence_levels = confluence_levels
-        self.near_window_frac = near_window_frac
-        self.min_raw_conf = min_raw_conf
 
     def calculate_pivot_points(self, h,l,c):
         pivot = (h + l + c) / 3
@@ -562,7 +523,7 @@ class M7TradingStrategy:
             fib[f'fib_{int(level*1000)}'] = h - level * diff
         return fib
 
-    def identify_key_levels(self,  pd.DataFrame):
+    def identify_key_levels(self, data: pd.DataFrame):
         grouped = data.resample('D') if self.pivot_period == 'D' else data.resample('W')
         key = {}
         for _, g in grouped:
@@ -572,15 +533,7 @@ class M7TradingStrategy:
                 key.update(self.calculate_fib_levels(h,l))
         return key
 
-    def _swing_extrema(self,  pd.DataFrame) -> Tuple[float, float]:
-        n = int(max(5, self.swing_lookback))
-        highs = data['high'].rolling(n).max()
-        lows  = data['low'].rolling(n).min()
-        sh = float(highs.iloc[-2] if len(highs) >= 2 else highs.iloc[-1])
-        sl = float(lows.iloc[-2]  if len(lows)  >= 2 else lows.iloc[-1])
-        return sh, sl
-
-    def generate_signals(self,  pd.DataFrame):
+    def generate_signals(self, data: pd.DataFrame):
         sigs = []
         req = ['high','low','close']
         if not all(c in data.columns for c in req): return sigs
@@ -591,59 +544,24 @@ class M7TradingStrategy:
         key = self.identify_key_levels(data)
         price = float(data['close'].iloc[-1])
         ts = data.index[-1]
-        sh, sl = self._swing_extrema(data)
-
-        # ужесточённое окно близости
-        near_thr = float(self.atr_multiplier * max(1e-9, float(self.near_window_frac)))
-
-        # уровни рядом (для конфлюэнции)
-        near = []
         for name, val in key.items():
-            val = float(val)
-            dist_atr = abs(price - val) / max(1e-9, cur_atr)
-            if dist_atr < near_thr:
-                near.append((name, val, dist_atr))
-
-        # требуем минимум независимых уровней
-        if len(near) < int(self.confluence_levels):
-            return sigs
-
-        for name, val, dist_atr in near:
-            is_res = val > price
-            if is_res:
-                typ='SELL_LIMIT'
-                entry=float(val*(1.0 - self.entry_buf_pct))
-                struct_base = max(val, sh)  # за уровнем/сопротивлением
-                if self.stop_mode == "pro":
-                    sl_price = struct_base + self.stop_atr_mult * cur_atr
+            dist = abs(price - val) / max(1e-9, cur_atr)
+            if dist < self.atr_multiplier:
+                is_res = val > price
+                if is_res:
+                    typ='SELL_LIMIT'; entry=float(val*0.998); sl=float(val*1.02)
                 else:
-                    sl_price = float(val*1.02)
-            else:
-                typ='BUY_LIMIT'
-                entry=float(val*(1.0 + self.entry_buf_pct))
-                struct_base = min(val, sl)  # за уровнем/поддержкой
-                if self.stop_mode == "pro":
-                    sl_price = struct_base - self.stop_atr_mult * cur_atr
-                else:
-                    sl_price = float(val*0.98)
-
-            risk = abs(entry - sl_price)
-            tp = entry + (2.0*risk if not is_res else -2.0*risk)
-
-            # confidence от близости + бонус за конфлюэнцию
-            conf_prox = max(0.0, 1.0 - (dist_atr / max(1e-9, near_thr)))
-            conf = float(_clip01(conf_prox * (1.0 + 0.05 * (len(near) - 1))))
-            if conf < self.min_raw_conf:
-                continue
-
-            sigs.append({
-                'type':typ,'price':round(entry,4),'stop_loss':round(sl_price,4),'take_profit':round(tp,4),
-                'confidence':round(conf,2),'level':name,'level_value':round(val,4),'timestamp':ts,
-                'trail_recommended': bool(self.use_trailing),'atr': round(cur_atr,6)
-            })
+                    typ='BUY_LIMIT';  entry=float(val*1.002); sl=float(val*0.98)
+                risk = abs(entry - sl)
+                tp = entry + (2.0*risk if not is_res else -2.0*risk)
+                conf = 1.0 - (dist / self.atr_multiplier)
+                sigs.append({
+                    'type':typ,'price':round(entry,4),'stop_loss':round(sl,4),'take_profit':round(tp,4),
+                    'confidence':round(conf,2),'level':name,'level_value':round(val,4),'timestamp':ts
+                })
         return sigs
 
-def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False, cooldown_bars=3):
+def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False):
     cli = PolygonClient()
     df = cli.daily_ohlc(ticker, days=120)
     if df is None or df.empty:
@@ -658,17 +576,13 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False,
     df = df.set_index("timestamp")
     price = float(df['close'].iloc[-1])
     atr14 = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
-    ts = df.index[-1]
-
-    strategy = M7TradingStrategy()
 
     if use_ml:
         pred = _M7Predictor(ticker)
         if pred.load():
             ml_action, ml_conf = pred.predict(df, price, atr14)
+            strategy = M7TradingStrategy()
             signals = strategy.generate_signals(df)
-
-            # если нет уровней/сигналов — ожидание
             if ml_action == "WAIT" or not signals:
                 return {"last_price": price, "recommendation": {"action":"WAIT","confidence":ml_conf},
                         "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
@@ -677,18 +591,6 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False,
                         "note_html":"<div>M7 ML: ожидание</div>", "alt":"ML wait",
                         "entry_kind":"wait","entry_label":"WAIT",
                         "meta":{"source":"M7","ml_used":True,"ml_action":ml_action,"ml_conf_raw": ml_conf}}
-
-            # cooldown блокирует выдачу нового лимит-сигнала
-            active, remain = _cooldown_active(ticker, df, ts, cooldown_bars)
-            if active:
-                return {"last_price": price, "recommendation": {"action":"WAIT","confidence":ml_conf},
-                        "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
-                        "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
-                        "context":[f"M7 cooldown: осталось {remain} бар(ов)"],
-                        "note_html":"<div>M7: cooldown</div>", "alt":"Cooldown",
-                        "entry_kind":"wait","entry_label":"WAIT",
-                        "meta":{"source":"M7","cooldown":True,"ml_used":True}}
-
             side = ml_action if ml_action in ("BUY","SHORT") else None
             if side:
                 filt = [s for s in signals if (side=="BUY" and s["type"].startswith("BUY")) or (side=="SHORT" and s["type"].startswith("SELL"))]
@@ -696,33 +598,25 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False,
             else:
                 best = max(signals, key=lambda x:x["confidence"])
                 side = "BUY" if best["type"].startswith("BUY") else "SHORT"
-
             entry = float(best['price'])
             sl = float(best['stop_loss'])
             risk = abs(entry - sl)
-
             if side == "BUY":
                 tp1,tp2,tp3 = entry + 1.5*risk, entry + 2.5*risk, entry + 4.0*risk
             else:
                 tp1,tp2,tp3 = entry - 1.5*risk, entry - 2.5*risk, entry - 4.0*risk
-
             u1,u2,u3 = abs(tp1-entry)/atr14, abs(tp2-entry)/atr14, abs(tp3-entry)/atr14
             k=0.18
             b1,b2,b3 = ml_conf, max(0.50, ml_conf-0.08), max(0.45, ml_conf-0.16)
             p1=_clip01(b1*np.exp(-k*(u1-1.0))); p2=_clip01(b2*np.exp(-k*(u2-1.5))); p3=_clip01(b3*np.exp(-k*(u3-2.2)))
             probs=_monotone_tp_probs({"tp1":p1,"tp2":p2,"tp3":p3})
-
-            # обновляем cooldown только при реальной выдаче входа
-            _M7_COOLDOWN[ticker] = {'ts': ts, 'bars': int(cooldown_bars)}
-
             return {"last_price": price, "recommendation": {"action": side, "confidence": ml_conf},
                     "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3}, "probs": probs,
-                    "context": [f"ML {side} + уровни M7: {best['level']}"],
-                    "note_html": f"<div>M7 ML: {side} у {best['level_value']}</div>",
+                    "context": [f"ML {side} + уровни M7: {best['level']}"], "note_html": f"<div>M7 ML: {side} у {best['level_value']}</div>",
                     "alt": "ML‑enhanced M7", "entry_kind":"limit", "entry_label": best["type"],
                     "meta":{"source":"M7","ml_used":True,"ml_action":ml_action,"ml_conf_raw": ml_conf}}
 
-    # без ML
+    strategy = M7TradingStrategy()
     signals = strategy.generate_signals(df)
     if not signals:
         res = {"last_price": price, "recommendation": {"action":"WAIT","confidence":0.5},
@@ -737,17 +631,6 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False,
         except Exception:
             pass
         return res
-
-    # cooldown перед выдачей лимит-сигнала
-    active, remain = _cooldown_active(ticker, df, ts, cooldown_bars)
-    if active:
-        return {"last_price": price, "recommendation": {"action":"WAIT","confidence":0.5},
-                "levels":{"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0},
-                "probs":{"tp1":0.0,"tp2":0.0,"tp3":0.0},
-                "context":[f"M7 cooldown: осталось {remain} бар(ов)"],
-                "note_html":"<div>M7: cooldown</div>", "alt":"Cooldown",
-                "entry_kind":"wait","entry_label":"WAIT",
-                "meta":{"source":"M7","cooldown":True}}
 
     best = max(signals, key=lambda x: x['confidence'])
     raw_conf = float(_clip01(best['confidence']))
@@ -779,10 +662,6 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False,
                               ts=pd.Timestamp.utcnow().isoformat())
     except Exception:
         pass
-
-    # фиксация cooldown на реальной выдаче
-    _M7_COOLDOWN[ticker] = {'ts': ts, 'bars': int(cooldown_bars)}
-
     return {"last_price": price, "recommendation": {"action": act, "confidence": float(conf)},
             "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
             "probs": probs, "context": [f"Сигнал от уровня {best['level']}"],
