@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# app.py — Arxora UI (production, AI Сигналы + О проекте, центрированный логотип, вкладки #5B5BF7)
+# app.py — Arxora UI (production, без эмодзи, сокращено до «AI Сигналы» + «О проекте»)
 
 import os
 import re
@@ -21,50 +21,8 @@ except Exception: requests = None
 
 st.set_page_config(page_title="Arxora — трейд‑ИИ (MVP)", page_icon="assets/arxora_favicon_512.png", layout="centered")
 
-# ================== CSS (цвет вкладок #5B5BF7 + центрированный хедер) ==================
-st.markdown("""
-<style>
-:root{ --tab-accent:#5B5BF7; }
-
-/* Центрированный хедер (когда нет картинки) */
-.arx-hero{
-  padding:36px 0 10px 0; text-align:center;
-  background:linear-gradient(180deg, rgba(16,16,18,.7) 0%, rgba(10,10,12,.6) 100%);
-  border-radius:12px;
-}
-.arx-title{
-  font-weight:900; letter-spacing:.2px; color:#e7edf3;
-  font-size:clamp(28px,6vw,46px); line-height:1.12;
-}
-.arx-sub{
-  margin-top:6px; color:#cfd6dc; font-size:13px; letter-spacing:.28em;
-  text-transform:uppercase;
-}
-
-/* Вкладки сверху — цвет текста и подчёркивания #5B5BF7 */
-button[data-baseweb="tab"]{
-  text-transform:uppercase; letter-spacing:.06em; font-weight:800;
-  color:var(--tab-accent) !important; background:transparent !important;
-  border-radius:10px; padding:10px 14px;
-}
-button[data-baseweb="tab"][aria-selected="true"]{
-  color:var(--tab-accent) !important; position:relative;
-}
-button[data-baseweb="tab"][aria-selected="true"]::after{
-  content:""; position:absolute; left:10px; right:10px; bottom:2px;
-  height:3px; border-radius:2px; background:var(--tab-accent);
-}
-
-/* Кнопки действий можно оставить стандартными; делаем чуть жирнее */
-.stButton > button{ font-weight:700; border-radius:10px; }
-
-/* Небольшая плотность у контейнера */
-.block-container{ max-width:1180px; padding-top:.6rem; }
-</style>
-""", unsafe_allow_html=True)
-
 def render_arxora_header():
-    # Пытаемся найти центрированный логотип (как на фото)
+    # Логотип по центру (как на присланном изображении)
     logo_candidates = [
         "assets/arxora_logo_center.jpeg",
         "assets/arxora_logo_center.png",
@@ -74,14 +32,28 @@ def render_arxora_header():
     if logo_path:
         left, mid, right = st.columns([1, 3, 1])
         with mid:
-            # width="stretch" вместо use_container_width
-            st.image(logo_path, width="stretch")
+            st.image(logo_path, use_container_width=True)
         return
-    # Fallback — типографский логотип по центру
-    st.markdown(
-        "<div class='arx-hero'><div class='arx-title'>Arxora</div><div class='arx-sub'>TRADE SMARTER</div></div>",
-        unsafe_allow_html=True
-    )
+    # Fallback — прежний шапочный блок
+    st.markdown("""
+    <div style="border-radius:8px;overflow:hidden;
+                box-shadow:0 0 0 1px rgba(0,0,0,.06),0 12px 32px rgba(0,0,0,.18);">
+      <div style="background:#5B5BF7;padding:28px 16px;">
+        <div style="max-width:1120px;margin:0 auto;">
+          <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
+                      color:#fff;font-weight:700;letter-spacing:.4px;
+                      font-size:clamp(36px,7vw,72px);line-height:1.05;">
+            Arxora
+          </div>
+        </div>
+      </div>
+      <div style="background:#000;padding:12px 16px 16px 16px;">
+        <div style="max-width:1120px;margin:0 auto;">
+          <div style="color:#fff;font-size:clamp(16px,2.4vw,28px);opacity:.92;">trade smarter.</div>
+        </div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 
 ENTRY_MARKET_EPS = float(os.getenv("ARXORA_ENTRY_MARKET_EPS", "0.0015"))
 MIN_TP_STEP_PCT  = float(os.getenv("ARXORA_MIN_TP_STEP_PCT",  "0.0010"))
@@ -205,7 +177,7 @@ def render_confidence_breakdown_inline(ticker: str, conf_pct: float):
 render_arxora_header()
 
 # Вкладки: только «AI Сигналы» и «О проекте»
-tab_signals, tab_about = st.tabs(["AI СИГНАЛЫ", "О ПРОЕКТЕ"])
+tab_signals, tab_about = st.tabs(["AI Сигналы", "О проекте"])
 
 # === TAB 1: AI Сигналы ===
 with tab_signals:
@@ -256,7 +228,6 @@ with tab_signals:
             if action == "BUY": header_text = f"Long • {mode_text}"
             elif action == "SHORT": header_text = f"Short • {mode_text}"
 
-            # WAIT amber, LONG/SHORT — ваши фирменные цвета
             bg = "#eb9414"; txt = "#fff"; border = "rgba(255,255,255,0.06)"
             if action == "BUY": bg = "linear-gradient(98deg, #247102, #247102)"
             elif action == "SHORT": bg = "linear-gradient(98deg, #710224, #710224)"
@@ -338,5 +309,4 @@ with tab_about:
         unsafe_allow_html=True
     )
 
-# Небольшой стиль для кнопок
 st.markdown("<style>.stButton > button { font-weight: 600; }</style>", unsafe_allow_html=True)
