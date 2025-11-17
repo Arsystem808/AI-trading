@@ -1,0 +1,1 @@
+{"ticker": "AAPL", "queryCount": 1, "resultsCount": 1, "adjusted": true, "results": [{"T": "AAPL", "v": 47431201.0, "vw": 273.1083, "o": 271.05, "c": 272.41, "h": 275.96, "l": 269.6, "t": 1763154000000, "n": 705590}], "status": "OK", "request_id": "5ba2eb30a7e36cb36622bea440bbe24b", "count": 1}
