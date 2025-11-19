@@ -11,11 +11,15 @@ Usage:
     --force: Overwrite existing config files
 """
 
+import sys
+from pathlib import Path
+# Добавляем корень проекта в sys.path для импорта модуля core
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import argparse
 import json
 import logging
 from datetime import datetime
-from pathlib import Path
 
 import joblib
 
