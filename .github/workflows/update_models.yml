@@ -12,12 +12,12 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   update-models:
     runs-on: ubuntu-latest
 
-    # ✅ единый PYTHONPATH для всех Python‑шагов
     env:
       PYTHONPATH: ${{ github.workspace }}
 
@@ -91,7 +91,6 @@ jobs:
         id: check_changes
         run: |
           CHANGED=false
-          # при необходимости поменяй configs/ на фактический каталог
           if ! git diff --quiet models/ 2>/dev/null; then CHANGED=true; fi
           if ! git diff --quiet configs/ 2>/dev/null; then CHANGED=true; fi
           echo "changed=$CHANGED" >> $GITHUB_OUTPUT
@@ -124,24 +123,28 @@ jobs:
 
           cat model_update_report.md
 
-      - name: 🚀 Commit and Push Changes
+      - name: 🚀 Create Auto PR with Model Updates
         if: steps.check_changes.outputs.changed == 'true'
-        run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "🤖 Auto-update models"
+          title: "🤖 Auto-update models"
+          body: |
+            Auto-generated model update.
 
-          git add -f models/ configs/
-
-          git commit -m "🤖 Auto-update models [skip ci]" \
-                     -m "$(cat model_update_report.md)"
-
-          git push origin HEAD:main
+            This PR is created by the `Auto Update Models` workflow.
+          branch: auto/update-models
+          base: main
+          add-paths: |
+            models/**
+            configs/**
+          delete-branch: true
 
       - name: 🎉 Success Notification
         if: steps.check_changes.outputs.changed == 'true'
         run: |
-          echo "✅ Models updated successfully!"
-          echo "📦 Pushed $(git rev-parse --short HEAD)"
+          echo "✅ Models updated and pull request created (or updated)!"
 
       - name: ⚠️ Failure Notification
         if: failure()
