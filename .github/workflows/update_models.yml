@@ -2,7 +2,8 @@ name: Auto Update Models
 
 on:
   schedule:
-    - cron: '0 6 * * *'    # 06:00 UTC = 09:00 MSK (каждый день)
+    # 06:00 UTC = 09:00 MSK (каждый день)
+    - cron: '0 6 * * *'
   workflow_dispatch:
   push:
     branches: [main]
@@ -15,25 +16,29 @@ permissions:
 jobs:
   update-models:
     runs-on: ubuntu-latest
-    
+
+    # ✅ единый PYTHONPATH для всех Python‑шагов
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+
     steps:
       - name: 📥 Checkout Repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
-      
+
       - name: 🐍 Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
           cache: 'pip'
-      
+
       - name: 📦 Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests joblib lightgbm pandas numpy scikit-learn
-      
+
       - name: 🔍 Debug Environment
         run: |
           echo "📁 Project structure:"
@@ -42,115 +47,102 @@ jobs:
           ls -la core/ 2>/dev/null || echo "❌ core/ not found"
           echo "📁 Scripts directory:"
           ls -la scripts/ 2>/dev/null || echo "❌ scripts/ not found"
-          echo "🐍 Python sys.path:"
-          python -c "import sys; print('\n'.join(sys.path))"
-      
-      - name: 🔍 Detect Config Directory
-        id: detect_config
-        run: |
-          CONFIG_DIR=$(python -c "from core.model_loader import CONFIG_DIR; print(CONFIG_DIR)" 2>/dev/null || echo "configs")
-          echo "config_dir=$CONFIG_DIR" >> $GITHUB_OUTPUT
-          echo "✅ Config directory: $CONFIG_DIR"
-      
+          echo "🐍 Python sys.path (from Python):"
+          python -c "import sys, pprint; pprint.pp(sys.path)"
+
       - name: 🔍 Validate Model Loader
         run: |
           python -c "from core.model_loader import MODELS_DIR, CONFIG_DIR; print(f'✅ MODELS_DIR={MODELS_DIR}, CONFIG_DIR={CONFIG_DIR}')"
-      
+
       - name: 📥 Download Latest Models
         id: download
         run: |
           if [ -f "scripts/download_models.py" ]; then
             echo "🚀 Downloading models..."
-            python scripts/download_models.py --force
-            echo "download_status=success" >> $GITHUB_OUTPUT
+            if python scripts/download_models.py --force; then
+              echo "download_status=success" >> $GITHUB_OUTPUT
+            else
+              echo "download_status=failed" >> $GITHUB_OUTPUT
+            fi
           else
-            echo "⚠️ download_models.py not found, skipping"
+            echo "⚠️ scripts/download_models.py not found, skipping"
             echo "download_status=skipped" >> $GITHUB_OUTPUT
           fi
         continue-on-error: true
-      
+
       - name: 🔄 Migrate Models to JSON Config
-        if: steps.download.outputs.download_status != 'skipped'
-        env:
-          PYTHONPATH: ${{ github.workspace }}   # 👈 добавляем корень репо в sys.path
+        if: steps.download.outputs.download_status == 'success'
         run: |
           echo "🔧 Migrating models..."
           python scripts/migrate_models.py
-      
+
       - name: ✅ Validate Models
-        if: steps.download.outputs.download_status != 'skipped'
+        if: steps.download.outputs.download_status == 'success'
         run: |
           if [ -f "scripts/validate_models.py" ]; then
             echo "🧪 Validating models..."
             python scripts/validate_models.py
           else
-            echo "⚠️ validate_models.py not found, skipping"
+            echo "⚠️ scripts/validate_models.py not found, skipping"
           fi
         continue-on-error: true
-      
+
       - name: 📊 Check for Changes
         id: check_changes
         run: |
           CHANGED=false
-          CONFIG_DIR="${{ steps.detect_config.outputs.config_dir }}"
-          
-          git diff --quiet models/ 2>/dev/null || CHANGED=true
-          git diff --quiet "$CONFIG_DIR/" 2>/dev/null || CHANGED=true
-          
+          # при необходимости поменяй configs/ на фактический каталог
+          if ! git diff --quiet models/ 2>/dev/null; then CHANGED=true; fi
+          if ! git diff --quiet configs/ 2>/dev/null; then CHANGED=true; fi
+          echo "changed=$CHANGED" >> $GITHUB_OUTPUT
           if [ "$CHANGED" = "true" ]; then
             echo "✅ Changes detected"
-            echo "changed=true" >> $GITHUB_OUTPUT
           else
             echo "ℹ️ No changes detected"
-            echo "changed=false" >> $GITHUB_OUTPUT
           fi
-      
+
       - name: 📈 Generate Model Report
         if: steps.check_changes.outputs.changed == 'true'
         run: |
-          CONFIG_DIR="${{ steps.detect_config.outputs.config_dir }}"
+          UTC_NOW=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          MSK_NOW=$(TZ='Europe/Moscow' date +"%Y-%m-%d %H:%M:%S %Z")
           cat > model_update_report.md << EOF
           # 🤖 Model Update Report
-          
-          **Date**: $(date -u +"%Y-%m-%d %H:%M:%S UTC") ($(date +"%Y-%m-%d %H:%M:%S MSK"))
+
+          **UTC**: $UTC_NOW
+          **MSK**: $MSK_NOW
           **Triggered by**: ${{ github.event_name }}
-          **Config directory**: $CONFIG_DIR
-          
+
           ## Changes
           \`\`\`
-          $(git diff --stat models/ "$CONFIG_DIR/" 2>/dev/null || echo "No diff available")
+          $(git diff --stat models/ configs/ 2>/dev/null || echo "No diff available")
           \`\`\`
-          
-          ## Updated Models
-          $(find "$CONFIG_DIR/" -name "*.json" -type f 2>/dev/null | wc -l) model configs found
-          
-          ## Validation Status
-          ✅ Migration completed successfully
+
+          ## Validation
+          ✅ Migration and (optional) validation steps completed
           EOF
-          
+
           cat model_update_report.md
-      
+
       - name: 🚀 Commit and Push Changes
         if: steps.check_changes.outputs.changed == 'true'
         run: |
-          CONFIG_DIR="${{ steps.detect_config.outputs.config_dir }}"
-          
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          
-          git add -f models/ "$CONFIG_DIR/"
-          
+
+          git add -f models/ configs/
+
           git commit -m "🤖 Auto-update models [skip ci]" \
                      -m "$(cat model_update_report.md)"
-          
+
           git push origin HEAD:main
-      
+
       - name: 🎉 Success Notification
         if: steps.check_changes.outputs.changed == 'true'
         run: |
           echo "✅ Models updated successfully!"
           echo "📦 Pushed $(git rev-parse --short HEAD)"
-      
+
       - name: ⚠️ Failure Notification
         if: failure()
         run: |
