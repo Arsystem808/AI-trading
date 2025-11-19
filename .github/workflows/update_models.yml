@@ -3,7 +3,7 @@ name: Auto Update Models
 on:
   schedule:
     - cron: '0 6 * * *'    # 06:00 UTC = 09:00 MSK (каждый день)
-  workflow_dispatch:       # Ручной запуск
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
@@ -71,6 +71,8 @@ jobs:
       
       - name: 🔄 Migrate Models to JSON Config
         if: steps.download.outputs.download_status != 'skipped'
+        env:
+          PYTHONPATH: ${{ github.workspace }}   # 👈 добавляем корень репо в sys.path
         run: |
           echo "🔧 Migrating models..."
           python scripts/migrate_models.py
