@@ -13,8 +13,13 @@ Usage:
 
 import sys
 from pathlib import Path
-# Добавляем корень проекта в sys.path для импорта модуля core
-sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# Находим корень репозитория (где есть папка core/)
+script_dir = Path(__file__).parent  # scripts/
+repo_root = script_dir.parent       # корень проекта
+
+sys.path.insert(0, str(repo_root))
+print(f"Added to sys.path: {repo_root}")  # Отладочный вывод
 
 import argparse
 import json
