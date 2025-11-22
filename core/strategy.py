@@ -1490,14 +1490,36 @@ except Exception:
         return res
 
 # -------------------- Оркестратор Octopus --------------------
-OCTO_WEIGHTS: Dict[str, float] = {"Global": 0.25, "M7": 0.20, "W7": 0.30, "AlphaPulse": 0.25}  # как и было
+from typing import Dict, Any
+import numpy as np
+import pandas as pd
+import os
+import logging
 
-def _act_to_num(a: str) -> int:  # без изменений
+logger = logging.getLogger(__name__)
+
+OCTO_WEIGHTS: Dict[str, float] = {
+    "Global": 0.25,
+    "M7": 0.20,
+    "W7": 0.30,
+    "AlphaPulse": 0.25,
+}
+
+# Порог confidence, ниже которого Octopus НЕ даёт торговый сигнал (WAIT)
+# Можно переопределить через переменную окружения OCTO_CONF_THRESHOLD
+CONF_THRESHOLD: float = float(os.getenv("OCTO_CONF_THRESHOLD", "0.64"))
+
+def _clip01(x: float) -> float:
+    return max(0.0, min(1.0, float(x)))
+
+def _act_to_num(a: str) -> int:
     return 1 if a == "BUY" else (-1 if a == "SHORT" else 0)
 
-def _num_to_act(x: float) -> str:  # без изменений
-    if x > 0: return "BUY"
-    if x < 0: return "SHORT"
+def _num_to_act(x: float) -> str:
+    if x > 0:
+        return "BUY"
+    if x < 0:
+        return "SHORT"
     return "WAIT"
 
 def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
@@ -1522,11 +1544,13 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
             "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
             "context": ["Octopus: no agents responded"],
             "note_html": "<div>Octopus: WAIT</div>",
-            "alt": "WAIT", "entry_kind": "wait", "entry_label": "WAIT",
-            "meta": {"source": "Octopus", "votes": [], "ratio": 0.0}
+            "alt": "WAIT",
+            "entry_kind": "wait",
+            "entry_label": "WAIT",
+            "meta": {"source": "Octopus", "votes": [], "ratio": 0.0},
         }
 
-    # 2) Строим активные голоса BUY/SHORT с весами и conf (как было)
+    # 2) Строим активные голоса BUY/SHORT с весами и conf
     active = []
     for k, r in parts.items():
         a = str(r.get("recommendation", {}).get("action", "WAIT")).upper()
@@ -1543,33 +1567,61 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     delta = abs(score_long - score_short)
     ratio = delta / max(1e-6, total_side)
 
-    # 3) Правило выбора действия (без изменений)
+    # 3) Правило выбора действия (как было)
     if count_long >= 3:
         final_action = "BUY"
     elif count_short >= 3:
         final_action = "SHORT"
     else:
-        final_action = "WAIT" if ratio < 0.20 else ("BUY" if score_long > score_short else "SHORT")
+        if ratio < 0.20:
+            final_action = "WAIT"
+        else:
+            final_action = "BUY" if score_long > score_short else "SHORT"
 
     # Утилита для медианных уровней по сторонникам выбранной стороны
     def _median_levels(direction: str):
-        L = [r.get("levels", {}) for r in parts.values()
-             if str(r.get("recommendation", {}).get("action", "")).upper() == direction]
+        L = [
+            r.get("levels", {})
+            for r in parts.values()
+            if str(r.get("recommendation", {}).get("action", "")).upper() == direction
+        ]
         if not L:
             return {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
-        med = lambda k: float(np.median([x.get(k, 0.0) for x in L if isinstance(x.get(k, None), (int, float))]))
-        return {"entry": med("entry"), "sl": med("sl"), "tp1": med("tp1"), "tp2": med("tp2"), "tp3": med("tp3")}
+        med = lambda k: float(
+            np.median(
+                [
+                    x.get(k, 0.0)
+                    for x in L
+                    if isinstance(x.get(k, None), (int, float))
+                ]
+            )
+        )
+        return {
+            "entry": med("entry"),
+            "sl": med("sl"),
+            "tp1": med("tp1"),
+            "tp2": med("tp2"),
+            "tp3": med("tp3"),
+        }
 
-    # 4) Уровни/пробы как было: медианы при слабой поляризации, иначе — от победителя
     if final_action in ("BUY", "SHORT"):
+        # 4) Уровни/пробы: медианы при слабой поляризации, иначе — от победителя
         cand = [t for t in active if t[1] == final_action]
-        win_agent = (max(cand, key=lambda t: t[2] * t[3])[0] if cand
-                     else max(active, key=lambda t: t[2] * t[3])[0])
-        levels_out = _median_levels(final_action) if ratio < 0.25 else parts[win_agent].get("levels", {})
-        probs_out = _monotone_tp_probs(parts.get(win_agent, {}).get("probs", {}) or {})
+        win_agent = (
+            max(cand, key=lambda t: t[2] * t[3])[0] if cand
+            else max(active, key=lambda t: t[2] * t[3])[0]
+        )
 
-        # 5) Итоговый confidence (НОВОЕ): взвешенно по победившей стороне + мягкий штраф конфликта
-        # 5.1 Взвешенный conf по сторонникам финальной стороны
+        if ratio < 0.25:
+            levels_out = _median_levels(final_action)
+        else:
+            levels_out = parts[win_agent].get("levels", {})
+
+        probs_out = _monotone_tp_probs(
+            parts.get(win_agent, {}).get("probs", {}) or {}
+        )
+
+        # 5) Итоговый confidence: взвешенно по победившей стороне + мягкий штраф конфликта
         side_items = []
         for k, r in parts.items():
             rec = r.get("recommendation", {})
@@ -1577,52 +1629,92 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
                 w = float(OCTO_WEIGHTS.get(k, 0.20))
                 c = _clip01(rec.get("confidence", 0.5))
                 side_items.append((w, c))
-        overall_conf = (sum(w * c for w, c in side_items) / max(1e-6, sum(w for w, _ in side_items))) if side_items else 0.50
 
-        # 5.2 Мягкий штраф за сильное несогласие противоположной стороны
+        if side_items:
+            overall_conf = sum(w * c for w, c in side_items) / max(
+                1e-6, sum(w for w, _ in side_items)
+            )
+        else:
+            overall_conf = 0.50
+
         score_side = score_long if final_action == "BUY" else score_short
         score_opp  = score_short if final_action == "BUY" else score_long
+
         try:
-            import os as _os
-            beta = float(_os.getenv("OCTO_CONF_BETA", "0.35"))
+            beta = float(os.getenv("OCTO_CONF_BETA", "0.35"))
         except Exception:
             beta = 0.35
+
         penalty = 1.0 - beta * (score_opp / max(1e-6, score_side))
         penalty = max(0.70, min(1.00, penalty))  # клип фактора
-        overall_conf = float(CAL_CONF["Octopus"](_clip01(overall_conf * penalty)))
+
+        overall_conf = float(
+            CAL_CONF["Octopus"](_clip01(overall_conf * penalty))
+        )
 
     else:
         levels_out = {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
         probs_out  = {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
         overall_conf = float(CAL_CONF["Octopus"](0.50))
 
-    # 6) Сбор ответа и логирование (как было)
+    # 5.3 Фильтр по порогу confidence:
+    # если действие BUY/SHORT, но confidence ниже порога,
+    # то переводим сигнал в WAIT и обнуляем уровни/вероятности.
+    if final_action in ("BUY", "SHORT") and overall_conf < CONF_THRESHOLD:
+        final_action = "WAIT"
+        levels_out = {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
+        probs_out  = {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
+        # Можно оставить overall_conf как есть (показывая «насколько не дотянули»),
+        # либо привести к нейтральному уровню — здесь оставляем как есть.
+
+    # 6) Сбор ответа и логирование
     last_price = float(next(iter(parts.values())).get("last_price", 0.0))
-    votes_txt = [{"agent": k,
-                  "action": str(r.get("recommendation", {}).get("action", "")),
-                  "confidence": float(r.get("recommendation", {}).get("confidence", 0.0))}
-                 for k, r in parts.items()]
+
+    votes_txt = [
+        {
+            "agent": k,
+            "action": str(r.get("recommendation", {}).get("action", "")),
+            "confidence": float(r.get("recommendation", {}).get("confidence", 0.0)),
+        }
+        for k, r in parts.items()
+    ]
 
     res = {
         "last_price": last_price,
-        "recommendation": {"action": final_action, "confidence": overall_conf},
+        "recommendation": {
+            "action": final_action,
+            "confidence": overall_conf,
+        },
         "levels": levels_out,
         "probs": probs_out,
-        "context": [f"Octopus: ratio={ratio:.2f}, votes={count_long}L/{count_short}S"],
+        "context": [
+            f"Octopus: ratio={ratio:.2f}, votes={count_long}L/{count_short}S, "
+            f"conf_thresh={CONF_THRESHOLD:.2f}"
+        ],
         "note_html": f"<div>Octopus: {final_action} с {overall_conf:.0%}</div>",
         "alt": "Octopus",
         "entry_kind": "market" if final_action != "WAIT" else "wait",
         "entry_label": final_action if final_action != "WAIT" else "WAIT",
-        "meta": {"source": "Octopus", "votes": votes_txt, "ratio": float(ratio)}
+        "meta": {
+            "source": "Octopus",
+            "votes": votes_txt,
+            "ratio": float(ratio),
+            "conf_threshold": float(CONF_THRESHOLD),
+        },
     }
 
     try:
         log_agent_performance(
-            agent="Octopus", ticker=ticker, horizon=horizon,
-            action=final_action, confidence=float(overall_conf),
-            levels=levels_out, probs=probs_out,
-            meta={"votes": votes_txt, "ratio": float(ratio)},
-            ts=pd.Timestamp.utcnow().isoformat()
+            agent="Octopus",
+            ticker=ticker,
+            horizon=horizon,
+            action=final_action,
+            confidence=float(overall_conf),
+            levels=levels_out,
+            probs=probs_out,
+            meta={"votes": votes_txt, "ratio": float(ratio),
+                  "conf_threshold": float(CONF_THRESHOLD)},
+            ts=pd.Timestamp.utcnow().isoformat(),
         )
     except Exception as e:
         logger.warning("perf log Octopus failed: %s", e)
