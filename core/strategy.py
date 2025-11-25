@@ -603,12 +603,15 @@ class _M7Predictor:
 class M7TradingStrategy:
     """
     Правила M7: торговля от pivot/Fibonacci уровней.
-    БЕЗ УКАЗАНИЯ ТИПА ОРДЕРА - только направление и зоны.
+    ГАРАНТИЯ: БЕЗ ЛИМИТНЫХ ОРДЕРОВ, только направление + динамический SL на базе ATR.
     """
     def __init__(
         self,
         atr_period: int = 14,
         atr_multiplier: float = 1.0,
+        atr_sl_multiplier: float = 1.5,
+        min_sl_percent: float = 0.008,
+        max_sl_percent: float = 0.04,
         pivot_period: str = 'D',
         fib_levels=None,
         cooldown_minutes: int = 60,
@@ -616,6 +619,9 @@ class M7TradingStrategy:
     ):
         self.atr_period = atr_period
         self.atr_multiplier = atr_multiplier
+        self.atr_sl_multiplier = atr_sl_multiplier
+        self.min_sl_percent = min_sl_percent
+        self.max_sl_percent = max_sl_percent
         self.pivot_period = pivot_period
         self.fib_levels = fib_levels or [0.236, 0.382, 0.5, 0.618, 0.786]
         self.cooldown = pd.Timedelta(minutes=cooldown_minutes)
@@ -657,7 +663,10 @@ class M7TradingStrategy:
         level_hits_map: Optional[Dict[Tuple[str, str], pd.Timestamp]] = None,
         use_lock: bool = True,
     ):
-        """Генерация сигналов БЕЗ типа ордера"""
+        """
+        Генерация сигналов БЕЗ типа ордера.
+        SL рассчитывается динамически на базе ATR.
+        """
         sigs = []
         req = ['high', 'low', 'close']
         if not all(c in data.columns for c in req):
@@ -698,15 +707,36 @@ class M7TradingStrategy:
 
                 is_resistance = val > price
                 
+                # Динамический SL на базе ATR
                 if is_resistance:
                     direction = 'SHORT'
                     entry = float(val)
-                    sl = float(val * 1.015)
+                    sl = float(entry + self.atr_sl_multiplier * cur_atr)
                 else:
                     direction = 'BUY'
                     entry = float(val)
-                    sl = float(val * 0.985)
+                    sl = float(entry - self.atr_sl_multiplier * cur_atr)
+                
+                # Минимальный порог SL
+                sl_distance = abs(entry - sl)
+                min_distance = entry * self.min_sl_percent
+                
+                if sl_distance < min_distance:
+                    if direction == 'BUY':
+                        sl = entry - min_distance
+                    else:
+                        sl = entry + min_distance
+                
+                # Максимальный порог SL
+                max_distance = entry * self.max_sl_percent
+                
+                if sl_distance > max_distance:
+                    if direction == 'BUY':
+                        sl = entry - max_distance
+                    else:
+                        sl = entry + max_distance
 
+                # Тренд-фильтр
                 if self.use_trend_filter and pivot_val is not None:
                     if direction == 'BUY' and price < pivot_val:
                         blocked_by_trend.append((name, direction, "price_below_pivot"))
@@ -715,6 +745,7 @@ class M7TradingStrategy:
                         blocked_by_trend.append((name, direction, "price_above_pivot"))
                         continue
 
+                # Кулдаун
                 if ticker is not None:
                     lvl_key = (ticker, name)
                     last_ts = hits.get(lvl_key)
@@ -736,7 +767,9 @@ class M7TradingStrategy:
                     'confidence': round(conf, 2),
                     'level': name,
                     'level_value': round(val, 4),
-                    'timestamp': ts
+                    'timestamp': ts,
+                    'atr_used': round(cur_atr, 4),
+                    'sl_type': 'dynamic_atr'
                 })
             
             return sigs, {
@@ -759,41 +792,38 @@ def analyze_asset_m7(
     dir_min_hold_hours: float = _M7_DIR_MIN_HOLD_HOURS,
     dir_min_delta_conf: float = _M7_DIR_MIN_DELTA_CONF,
     force_check: bool = False,
-    execution_window: Optional[Tuple[time, time]] = (time(19, 52), time(20, 0)),  # 00:01-00:15 UTC
+    execution_window: Optional[Tuple[time, time]] = (time(0, 1), time(0, 45)),
     use_sticky_signal: bool = True,
     invalidation_triggers: Optional[Dict[str, Any]] = None,
 ):
-
     """
     M7 Agent - торговля от ключевых уровней с липкими сигналами.
     
-    ГАРАНТИИ:
-    - НЕТ ЛИМИТНЫХ ОРДЕРОВ
-    - Возвращается только направление (BUY/SHORT/WAIT)
-    - Сигнал сохраняется до инвалидации
+    ФИНАЛЬНАЯ ВЕРСИЯ с:
+    - Динамическим SL на базе ATR (не фиксированный 1.5%)
+    - Sticky signals с invalidation triggers
+    - Scheduled execution в 00:01 UTC
+    - Thread-safety
+    - БЕЗ ЛИМИТНЫХ ОРДЕРОВ
     
     Args:
         ticker: Тикер актива
         horizon: Горизонт торговли
         use_ml: Использовать ML
         state: Внешнее хранилище
-        dir_min_hold_hours: Минимальное время между разворотами
-        dir_min_delta_conf: Минимальный прирост уверенности
-        force_check: Принудительный анализ (игнорирует расписание и липкий сигнал)
-        execution_window: Окно времени для scheduled execution (None = всегда работает)
+        dir_min_hold_hours: Минимальное время между разворотами (default: 4.0)
+        dir_min_delta_conf: Минимальный прирост уверенности (default: 0.08)
+        force_check: Принудительный анализ (игнорирует расписание)
+        execution_window: Окно времени UTC (default: 00:01-00:45 UTC)
         use_sticky_signal: Сохранять сигнал до инвалидации
-        invalidation_triggers: Условия пересчёта:
-            - stop_loss_hit: bool (пересчитать если SL пробит)
-            - volatility_spike: float (порог роста ATR для пересчёта)
-            - max_age_hours: float (максимальный возраст сигнала)
-            - pivot_level_breach: bool (пересчитать если пробит pivot)
+        invalidation_triggers: Условия пересчёта
     """
     
     # Дефолтные триггеры инвалидации
     if invalidation_triggers is None:
         invalidation_triggers = {
             "stop_loss_hit": True,
-            "volatility_spike": 2.0,
+            "volatility_spike": 1.8,
             "max_age_hours": 24.0,
             "pivot_level_breach": True,
         }
@@ -813,13 +843,14 @@ def analyze_asset_m7(
                 "recommendation": {"action": "WAIT", "confidence": 0.0},
                 "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
                 "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
-                "context": [f"M7: вне расписания (окно: {execution_window[0]}-{execution_window[1]})"],
-                "note_html": "<div>M7: вне торгового окна</div>",
+                "context": [f"M7: вне расписания (окно: {execution_window[0]}-{execution_window[1]} UTC)"],
+                "note_html": f"<div>M7: вне торгового окна<br>Следующий анализ в {execution_window[0]} UTC</div>",
                 "alt": "Scheduled execution only",
                 "meta": {
                     "source": "M7",
                     "scheduled_only": True,
-                    "current_time": now.time().isoformat(),
+                    "current_time_utc": now.time().isoformat(),
+                    "next_window": f"{execution_window[0]}-{execution_window[1]} UTC"
                 }
             }
     
@@ -900,7 +931,7 @@ def analyze_asset_m7(
                 if not should_invalidate:
                     signal_age = (now - saved_time).total_seconds() / 3600
                     saved_signal["context"] = [
-                        f"Липкий сигнал от {saved_time.strftime('%d.%m %H:%M')} (возраст: {signal_age:.1f}ч)",
+                        f"Липкий сигнал от {saved_time.strftime('%d.%m %H:%M UTC')} (возраст: {signal_age:.1f}ч)",
                         "Условия не изменились, сигнал в силе"
                     ]
                     saved_signal["meta"]["sticky_signal"] = True
@@ -949,7 +980,7 @@ def analyze_asset_m7(
     
     ts_last = df.index[-1]
 
-    # ML ветка (упрощена для краткости, полная логика как в предыдущей версии)
+    # ML ветка
     if use_ml:
         pred = _M7Predictor(ticker)
         if pred.load():
@@ -1008,7 +1039,6 @@ def analyze_asset_m7(
             else:
                 tp1, tp2, tp3 = entry - 1.5 * risk, entry - 2.5 * risk, entry - 4.0 * risk
 
-            # Расчёт вероятностей (как раньше)
             try:
                 from core.strategy import _clip01, _monotone_tp_probs
             except ImportError:
@@ -1033,19 +1063,19 @@ def analyze_asset_m7(
                 "recommendation": {"action": filtered_action, "confidence": ml_conf},
                 "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
                 "probs": probs,
-                "context": [f"ML {filtered_action} + уровни M7: {best['level']}"],
-                "note_html": f"<div>M7 ML: {filtered_action} у {best['level_value']}</div>",
+                "context": [f"ML {filtered_action} + уровни M7: {best['level']} (SL динамический ATR)"],
+                "note_html": f"<div>M7 ML: {filtered_action} у {best['level_value']}<br>SL: {best.get('sl_type', 'dynamic_atr')}</div>",
                 "alt": "ML‑enhanced M7",
                 "meta": {
                     "source": "M7",
                     "ml_used": True,
                     "dir_meta": dir_meta,
                     "filters": filter_meta,
-                    "advisory_entry_type": "market_at_zone",
+                    "sl_type": best.get('sl_type', 'dynamic_atr'),
+                    "atr_used": best.get('atr_used'),
                 }
             }
 
-            # Сохраняем липкий сигнал
             if use_sticky_signal and filtered_action in ("BUY", "SHORT"):
                 with _M7_LOCK:
                     sticky_signals[ticker] = {
@@ -1123,7 +1153,6 @@ def analyze_asset_m7(
             "meta": {"source": "M7", "grey_zone": True, "dir_meta": dir_meta, "filters": filter_meta}
         }
 
-    # Расчёт вероятностей
     try:
         from core.strategy import _clip01, _monotone_tp_probs
     except ImportError:
@@ -1148,19 +1177,19 @@ def analyze_asset_m7(
         "recommendation": {"action": act, "confidence": float(conf)},
         "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
         "probs": probs,
-        "context": [f"Сигнал от уровня {best['level']}"],
-        "note_html": f"<div>M7: {act} на уровне {best['level_value']}</div>",
+        "context": [f"Сигнал от уровня {best['level']} (SL динамический ATR)"],
+        "note_html": f"<div>M7: {act} на уровне {best['level_value']}<br>SL тип: {best.get('sl_type', 'dynamic_atr')}</div>",
         "alt": "Торговля по M7",
         "meta": {
             "source": "M7",
             "grey_zone": bool(0.48 <= conf <= 0.58),
             "dir_meta": dir_meta,
             "filters": filter_meta,
-            "advisory_entry_type": "market_at_zone",
+            "sl_type": best.get('sl_type', 'dynamic_atr'),
+            "atr_used": best.get('atr_used'),
         }
     }
 
-    # Сохраняем липкий сигнал
     if use_sticky_signal and act in ("BUY", "SHORT"):
         with _M7_LOCK:
             sticky_signals[ticker] = {
