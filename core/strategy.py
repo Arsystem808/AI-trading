@@ -759,7 +759,7 @@ def analyze_asset_m7(
     dir_min_hold_hours: float = _M7_DIR_MIN_HOLD_HOURS,
     dir_min_delta_conf: float = _M7_DIR_MIN_DELTA_CONF,
     force_check: bool = False,
-    execution_window: Optional[Tuple[time, time]] = (time(0, 1), time(0, 15)),  # 00:01-00:15 UTC
+    execution_window: Optional[Tuple[time, time]] = (time(19, 52), time(20, 0)),  # 00:01-00:15 UTC
     use_sticky_signal: bool = True,
     invalidation_triggers: Optional[Dict[str, Any]] = None,
 ):
