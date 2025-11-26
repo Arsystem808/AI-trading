@@ -603,7 +603,7 @@ class _M7Predictor:
 class M7TradingStrategy:
     """
     Правила M7: торговля от pivot/Fibonacci уровней.
-    БЕЗ ЛИМИТНЫХ ОРДЕРОВ, динамический SL на базе ATR.
+    ГАРАНТИЯ: БЕЗ ЛИМИТНЫХ ОРДЕРОВ, только направление + динамический SL на базе ATR.
     """
     def __init__(
         self,
@@ -644,7 +644,7 @@ class M7TradingStrategy:
             fib[f'fib_{int(level * 1000)}'] = h - level * diff
         return fib
 
-    def identify_key_levels(self,  pd.DataFrame):
+    def identify_key_levels(self, data: pd.DataFrame):
         grouped = data.resample('D') if self.pivot_period == 'D' else data.resample('W')
         key = {}
         for _, g in grouped:
@@ -658,12 +658,15 @@ class M7TradingStrategy:
 
     def generate_signals(
         self,
-         pd.DataFrame,
+        data: pd.DataFrame,
         ticker: Optional[str] = None,
         level_hits_map: Optional[Dict[Tuple[str, str], pd.Timestamp]] = None,
         use_lock: bool = True,
     ):
-        """Генерация сигналов БЕЗ типа ордера, динамический SL"""
+        """
+        Генерация сигналов БЕЗ типа ордера.
+        SL рассчитывается динамически на базе ATR.
+        """
         sigs = []
         req = ['high', 'low', 'close']
         if not all(c in data.columns for c in req):
@@ -796,9 +799,9 @@ def analyze_asset_m7(
     """
     M7 Agent - торговля от ключевых уровней с липкими сигналами.
     
-    ФИНАЛЬНАЯ PRODUCTION-READY ВЕРСИЯ:
-    - Липкий сигнал проверяется ДО execution_window (исправлено!)
-    - Динамический SL на базе ATR
+    ФИНАЛЬНАЯ ВЕРСИЯ с:
+    - Динамическим SL на базе ATR (не фиксированный 1.5%)
+    - Sticky signals с invalidation triggers
     - Scheduled execution: 08:01-08:45 UTC (11:01-11:45 MSK)
     - Thread-safety
     - БЕЗ ЛИМИТНЫХ ОРДЕРОВ
@@ -820,7 +823,7 @@ def analyze_asset_m7(
     if invalidation_triggers is None:
         invalidation_triggers = {
             "stop_loss_hit": True,
-            "volatility_spike": 1.8,
+            "volatility_spike": 2.0,
             "max_age_hours": 24.0,
             "pivot_level_breach": True,
         }
@@ -830,10 +833,29 @@ def analyze_asset_m7(
     level_hits_map = (state.get("level_hits") if state is not None else None) or _M7_LAST_HIT
     sticky_signals = (state.get("sticky_signals") if state is not None else None) or _M7_STICKY_SIGNALS
     
+    # Scheduled execution
     now = pd.Timestamp.utcnow()
-    cli = PolygonClient()
+    if execution_window is not None:
+        in_window = execution_window[0] <= now.time() <= execution_window[1]
+        if not in_window and not force_check:
+            return {
+                "last_price": 0.0,
+                "recommendation": {"action": "WAIT", "confidence": 0.0},
+                "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
+                "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+                "context": [f"M7: вне расписания (окно: {execution_window[0]}-{execution_window[1]} UTC)"],
+                "note_html": f"<div>M7: вне торгового окна<br>Следующий анализ в {execution_window[0]} UTC</div>",
+                "alt": "Scheduled execution only",
+                "meta": {
+                    "source": "M7",
+                    "scheduled_only": True,
+                    "current_time_utc": now.time().isoformat(),
+                    "next_window": f"{execution_window[0]}-{execution_window[1]} UTC"
+                }
+            }
     
-    # Получаем текущую цену сразу для липкого сигнала
+    # Получаем текущую цену
+    cli = PolygonClient()
     try:
         current_price = float(cli.last_trade_price(ticker))
     except:
@@ -843,9 +865,7 @@ def analyze_asset_m7(
         else:
             current_price = None
     
-    # ==========================================
-    # СНАЧАЛА проверяем липкий сигнал (ИСПРАВЛЕНО!)
-    # ==========================================
+    # Проверяем липкий сигнал
     if use_sticky_signal and not force_check and ticker in sticky_signals:
         with _M7_LOCK:
             saved = sticky_signals.get(ticker)
@@ -907,7 +927,7 @@ def analyze_asset_m7(
                             should_invalidate = True
                             invalidation_reason = f"pivot_breach_above_{current_price:.2f}_pivot_{saved_pivot:.2f}"
                 
-                # Если НЕ инвалидирован - возвращаем липкий сигнал
+                # Возвращаем липкий сигнал
                 if not should_invalidate:
                     signal_age = (now - saved_time).total_seconds() / 3600
                     saved_signal["context"] = [
@@ -919,34 +939,12 @@ def analyze_asset_m7(
                     saved_signal["meta"]["invalidation_checked"] = True
                     saved_signal["last_price"] = current_price if current_price else saved_signal.get("last_price", 0)
                     
-                    return saved_signal  # <-- ВОЗВРАТ НЕЗАВИСИМО ОТ ВРЕМЕНИ
+                    return saved_signal
                 
-                # Инвалидирован
+                # Инвалидируем
                 if should_invalidate:
                     logger.info(f"M7 {ticker}: инвалидация - {invalidation_reason}")
                     del sticky_signals[ticker]
-    
-    # ==========================================
-    # ТЕПЕРЬ проверяем execution_window
-    # ==========================================
-    if execution_window is not None:
-        in_window = execution_window[0] <= now.time() <= execution_window[1]
-        if not in_window and not force_check:
-            return {
-                "last_price": current_price if current_price else 0.0,
-                "recommendation": {"action": "WAIT", "confidence": 0.0},
-                "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
-                "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
-                "context": [f"M7: вне расписания (окно: {execution_window[0]}-{execution_window[1]} UTC)"],
-                "note_html": f"<div>M7: вне торгового окна<br>Следующий анализ в {execution_window[0]} UTC</div>",
-                "alt": "Scheduled execution only",
-                "meta": {
-                    "source": "M7",
-                    "scheduled_only": True,
-                    "current_time_utc": now.time().isoformat(),
-                    "next_window": f"{execution_window[0]}-{execution_window[1]} UTC"
-                }
-            }
     
     # Основной анализ
     min_hold = pd.Timedelta(hours=float(dir_min_hold_hours))
@@ -955,7 +953,7 @@ def analyze_asset_m7(
     df = cli.daily_ohlc(ticker, days=120)
     if df is None or df.empty:
         return {
-            "last_price": current_price if current_price else 0.0,
+            "last_price": 0.0,
             "recommendation": {"action": "WAIT", "confidence": 0.5},
             "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
             "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
@@ -982,7 +980,7 @@ def analyze_asset_m7(
     
     ts_last = df.index[-1]
 
-    # ML ветка (сокращена для краткости, полная логика идентична)
+    # ML ветка
     if use_ml:
         pred = _M7Predictor(ticker)
         if pred.load():
