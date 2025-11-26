@@ -389,8 +389,6 @@ def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный
 # -------------------- M7 (rules + optional ML overlay) --------------------
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
-from datetime import time
-import threading
 import math
 import numpy as np
 import pandas as pd
@@ -401,19 +399,16 @@ except Exception:
     def load_model_for(*args, **kwargs):
         return None
 
-# Thread-safe хранилище
-_M7_LOCK = threading.Lock()
+# Встроенное (процессное) хранилище для тестов/локальной разработки:
 _M7_LAST_HIT: Dict[Tuple[str, str], pd.Timestamp] = {}
 _M7_DIR_STATE: Dict[str, Dict[str, Any]] = {}
-_M7_STICKY_SIGNALS: Dict[str, Dict[str, Any]] = {}
 
-# Параметры по умолчанию
+# Параметры гистерезиса по умолчанию
 _M7_DIR_MIN_HOLD_HOURS: float = 4.0
 _M7_DIR_MIN_DELTA_CONF: float = 0.08
 
 
 class _M7IdentityCalibrator:
-    """Fallback калибратор"""
     def __call__(self, p: float) -> float:
         return float(max(0.0, min(1.0, p)))
 
@@ -422,7 +417,6 @@ _M7_CAL = None
 
 
 def _m7_cal():
-    """Получение калибратора M7"""
     global _M7_CAL
     if _M7_CAL is None:
         try:
@@ -441,75 +435,66 @@ def _m7_direction_filter(
     dir_state_map: Dict[str, Dict[str, Any]],
     min_hold: pd.Timedelta,
     min_delta: float,
-    use_lock: bool = True,
 ) -> Tuple[str, Dict[str, Any]]:
-    """Thread-safe гистерезис по направлению"""
+    """
+    Гистерезис по направлению: не позволяет flip'аться слишком часто
+    или без существенного изменения уверенности.
+    """
     if raw_action not in ("BUY", "SHORT"):
-        return raw_action, {"dir_state": "no_change", "reason": "not_directional"}
+        return raw_action, {"dir_state": "no_change"}
 
-    def _process():
-        st = dir_state_map.get(ticker)
-        if st is None:
-            dir_state_map[ticker] = {"action": raw_action, "ts": ts, "conf": float(conf)}
-            return raw_action, {"dir_state": "init", "reason": "first_signal"}
-
-        prev_action = st.get("action")
-        prev_ts = st.get("ts")
-        prev_conf = float(st.get("conf", 0.0))
-
-        if raw_action == prev_action:
-            if conf > prev_conf:
-                st["conf"] = float(conf)
-            return raw_action, {
-                "dir_state": "same",
-                "reason": "direction_unchanged",
-                "prev_action": prev_action,
-                "prev_ts": prev_ts,
-                "prev_conf": prev_conf,
-            }
-
-        if prev_ts is not None and ts - prev_ts < min_hold:
-            time_diff = (ts - prev_ts).total_seconds() / 3600
-            return "WAIT", {
-                "dir_state": "blocked_time",
-                "reason": f"flip_too_soon_{time_diff:.1f}h_of_{min_hold.total_seconds()/3600:.1f}h",
-                "prev_action": prev_action,
-                "prev_ts": prev_ts,
-                "prev_conf": prev_conf,
-                "new_action": raw_action,
-                "new_conf": float(conf),
-            }
-
-        if conf < prev_conf + min_delta:
-            conf_diff = conf - prev_conf
-            return "WAIT", {
-                "dir_state": "blocked_conf",
-                "reason": f"confidence_delta_{conf_diff:.3f}_below_{min_delta:.3f}",
-                "prev_action": prev_action,
-                "prev_ts": prev_ts,
-                "prev_conf": prev_conf,
-                "new_action": raw_action,
-                "new_conf": float(conf),
-            }
-
+    st = dir_state_map.get(ticker)
+    if st is None:
         dir_state_map[ticker] = {"action": raw_action, "ts": ts, "conf": float(conf)}
+        return raw_action, {"dir_state": "init"}
+
+    prev_action = st.get("action")
+    prev_ts = st.get("ts")
+    prev_conf = float(st.get("conf", 0.0))
+
+    # То же направление -> просто обновляем confidence
+    if raw_action == prev_action:
+        if conf > prev_conf:
+            st["conf"] = float(conf)
         return raw_action, {
-            "dir_state": "flipped",
-            "reason": "flip_conditions_met",
+            "dir_state": "same",
             "prev_action": prev_action,
             "prev_ts": prev_ts,
             "prev_conf": prev_conf,
         }
 
-    if use_lock:
-        with _M7_LOCK:
-            return _process()
-    else:
-        return _process()
+    # Попытка flip'а: проверяем время и прирост уверенности
+    if prev_ts is not None and ts - prev_ts < min_hold:
+        return "WAIT", {
+            "dir_state": "blocked_time",
+            "prev_action": prev_action,
+            "prev_ts": prev_ts,
+            "prev_conf": prev_conf,
+            "new_action": raw_action,
+            "new_conf": float(conf),
+        }
+
+    if conf < prev_conf + min_delta:
+        return "WAIT", {
+            "dir_state": "blocked_conf",
+            "prev_action": prev_action,
+            "prev_ts": prev_ts,
+            "prev_conf": prev_conf,
+            "new_action": raw_action,
+            "new_conf": float(conf),
+        }
+
+    # Flip разрешён
+    dir_state_map[ticker] = {"action": raw_action, "ts": ts, "conf": float(conf)}
+    return raw_action, {
+        "dir_state": "flipped",
+        "prev_action": prev_action,
+        "prev_ts": prev_ts,
+        "prev_conf": prev_conf,
+    }
 
 
 class _M7Predictor:
-    """ML-предиктор для M7"""
     def __init__(self, ticker: str, agent="arxora_m7pro"):
         self.ticker = ticker
         self.agent = agent
@@ -523,7 +508,7 @@ class _M7Predictor:
             return False
         self.model = md["model"]
         try:
-            import joblib
+            import joblib  # noqa: F401
             meta = md.get("metadata", {}) or {}
             sp = meta.get("scaler_artifact")
             if sp:
@@ -531,6 +516,7 @@ class _M7Predictor:
                 if not p.is_absolute():
                     p = Path(".") / p
                 if p.exists():
+                    import joblib
                     self.scaler = joblib.load(p)
         except Exception as e:
             logger.warning("M7 ML: scaler load failed: %s", e)
@@ -548,7 +534,11 @@ class _M7Predictor:
         x = np.array([[r, vol, pos, atr / max(1e-9, price)]], dtype=float)
         return np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
 
-    def _predict_proba_safe(self, X: np.ndarray, df_last_row: Optional[pd.DataFrame] = None) -> Optional[np.ndarray]:
+    def _predict_proba_safe(
+        self,
+        X: np.ndarray,
+        df_last_row: Optional[pd.DataFrame] = None
+    ) -> Optional[np.ndarray]:
         try:
             return self.model.predict_proba(X)
         except Exception as e1:
@@ -556,7 +546,10 @@ class _M7Predictor:
                 try:
                     return self.model.predict_proba(df_last_row)
                 except Exception as e2:
-                    logger.warning("M7 ML: predict_proba failed on X(%s) and df_last_row(%s)", e1, e2)
+                    logger.warning(
+                        "M7 ML: predict_proba failed on X(%s) and df_last_row(%s)",
+                        e1, e2
+                    )
                     return None
             logger.warning("M7 ML: predict_proba failed on X(%s)", e1)
             return None
@@ -579,6 +572,7 @@ class _M7Predictor:
             if proba is None:
                 return ("WAIT", 0.5)
 
+            # бинарный случай
             if proba.shape[1] == 2:
                 p_long = float(proba[0, 1])
                 cal = _m7_cal()["M7"]
@@ -590,6 +584,7 @@ class _M7Predictor:
                 else:
                     return ("WAIT", p_long_cal)
 
+            # многокласс
             acts = ["BUY", "SHORT", "WAIT"]
             idx = int(np.argmax(proba[0]))
             conf = float(proba[0, idx])
@@ -601,17 +596,10 @@ class _M7Predictor:
 
 
 class M7TradingStrategy:
-    """
-    Правила M7: торговля от pivot/Fibonacci уровней.
-    ГАРАНТИЯ: БЕЗ ЛИМИТНЫХ ОРДЕРОВ, только направление + динамический SL на базе ATR.
-    """
     def __init__(
         self,
         atr_period: int = 14,
         atr_multiplier: float = 1.0,
-        atr_sl_multiplier: float = 1.5,
-        min_sl_percent: float = 0.008,
-        max_sl_percent: float = 0.04,
         pivot_period: str = 'D',
         fib_levels=None,
         cooldown_minutes: int = 60,
@@ -619,9 +607,6 @@ class M7TradingStrategy:
     ):
         self.atr_period = atr_period
         self.atr_multiplier = atr_multiplier
-        self.atr_sl_multiplier = atr_sl_multiplier
-        self.min_sl_percent = min_sl_percent
-        self.max_sl_percent = max_sl_percent
         self.pivot_period = pivot_period
         self.fib_levels = fib_levels or [0.236, 0.382, 0.5, 0.618, 0.786]
         self.cooldown = pd.Timedelta(minutes=cooldown_minutes)
@@ -635,7 +620,15 @@ class M7TradingStrategy:
         s1 = (2 * pivot) - h
         s2 = pivot - (h - l)
         s3 = l - 2 * (h - pivot)
-        return {'pivot': pivot, 'r1': r1, 'r2': r2, 'r3': r3, 's1': s1, 's2': s2, 's3': s3}
+        return {
+            'pivot': pivot,
+            'r1': r1,
+            'r2': r2,
+            'r3': r3,
+            's1': s1,
+            's2': s2,
+            's3': s3
+        }
 
     def calculate_fib_levels(self, h, l):
         diff = h - l
@@ -661,127 +654,78 @@ class M7TradingStrategy:
         data: pd.DataFrame,
         ticker: Optional[str] = None,
         level_hits_map: Optional[Dict[Tuple[str, str], pd.Timestamp]] = None,
-        use_lock: bool = True,
     ):
         """
-        Генерация сигналов БЕЗ типа ордера.
-        SL рассчитывается динамически на базе ATR.
+        Генерация сигналов по pivot+Fibo без указания типа ордера.
+        Возвращает просто direction (BUY/SHORT) + entry/SL/TP уровни.
         """
         sigs = []
         req = ['high', 'low', 'close']
         if not all(c in data.columns for c in req):
-            return sigs, {"error": "missing_columns"}
+            return sigs
 
         data = data.copy()
-        try:
-            from core.strategy import _atr_like
-            data['atr'] = _atr_like(data, self.atr_period)
-        except ImportError:
-            hl = data["high"] - data["low"]
-            hc = (data["high"] - data["close"].shift(1)).abs()
-            lc = (data["low"] - data["close"].shift(1)).abs()
-            tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
-            data['atr'] = tr.rolling(self.atr_period, min_periods=1).mean()
-        
+        data['atr'] = _atr_like(data, self.atr_period)
         cur_atr = float(data['atr'].iloc[-1])
         if cur_atr <= 0:
-            return sigs, {"error": "zero_atr"}
+            return sigs
 
         key = self.identify_key_levels(data)
         if not key:
-            return sigs, {"error": "no_levels"}
+            return sigs
 
         price = float(data['close'].iloc[-1])
         ts = data.index[-1]
         pivot_val = key.get('pivot', None)
         hits = level_hits_map if level_hits_map is not None else _M7_LAST_HIT
 
-        def _process_levels():
-            blocked_by_cooldown = []
-            blocked_by_trend = []
+        for name, val in key.items():
+            dist = abs(price - val) / max(1e-9, cur_atr)
+            if dist >= self.atr_multiplier:
+                continue
+
+            is_resistance = val > price
             
-            for name, val in key.items():
-                dist = abs(price - val) / max(1e-9, cur_atr)
-                if dist >= self.atr_multiplier:
+            # Определяем направление сигнала и базовые уровни
+            if is_resistance:
+                direction = 'SHORT'
+                entry = float(val)
+                sl = float(val * 1.015)  # стоп чуть выше сопротивления
+            else:
+                direction = 'BUY'
+                entry = float(val)
+                sl = float(val * 0.985)  # стоп чуть ниже поддержки
+
+            # Тренд-фильтр по центральному pivot
+            if self.use_trend_filter and pivot_val is not None:
+                if direction == 'BUY' and price < pivot_val:
+                    continue
+                if direction == 'SHORT' and price > pivot_val:
                     continue
 
-                is_resistance = val > price
-                
-                # Динамический SL на базе ATR
-                if is_resistance:
-                    direction = 'SHORT'
-                    entry = float(val)
-                    sl = float(entry + self.atr_sl_multiplier * cur_atr)
-                else:
-                    direction = 'BUY'
-                    entry = float(val)
-                    sl = float(entry - self.atr_sl_multiplier * cur_atr)
-                
-                # Минимальный порог SL
-                sl_distance = abs(entry - sl)
-                min_distance = entry * self.min_sl_percent
-                
-                if sl_distance < min_distance:
-                    if direction == 'BUY':
-                        sl = entry - min_distance
-                    else:
-                        sl = entry + min_distance
-                
-                # Максимальный порог SL
-                max_distance = entry * self.max_sl_percent
-                
-                if sl_distance > max_distance:
-                    if direction == 'BUY':
-                        sl = entry - max_distance
-                    else:
-                        sl = entry + max_distance
+            # Кулдаун по уровню
+            if ticker is not None:
+                lvl_key = (ticker, name)
+                last_ts = hits.get(lvl_key)
+                if last_ts is not None and ts - last_ts < self.cooldown:
+                    continue
+                hits[lvl_key] = ts
 
-                # Тренд-фильтр
-                if self.use_trend_filter and pivot_val is not None:
-                    if direction == 'BUY' and price < pivot_val:
-                        blocked_by_trend.append((name, direction, "price_below_pivot"))
-                        continue
-                    if direction == 'SHORT' and price > pivot_val:
-                        blocked_by_trend.append((name, direction, "price_above_pivot"))
-                        continue
-
-                # Кулдаун
-                if ticker is not None:
-                    lvl_key = (ticker, name)
-                    last_ts = hits.get(lvl_key)
-                    if last_ts is not None and ts - last_ts < self.cooldown:
-                        time_left = (self.cooldown - (ts - last_ts)).total_seconds() / 60
-                        blocked_by_cooldown.append((name, f"{time_left:.0f}min_remaining"))
-                        continue
-                    hits[lvl_key] = ts
-
-                risk = abs(entry - sl)
-                tp = entry + (2.0 * risk if direction == 'BUY' else -2.0 * risk)
-                conf = 1.0 - (dist / self.atr_multiplier)
-                
-                sigs.append({
-                    'direction': direction,
-                    'entry': round(entry, 4),
-                    'stop_loss': round(sl, 4),
-                    'take_profit': round(tp, 4),
-                    'confidence': round(conf, 2),
-                    'level': name,
-                    'level_value': round(val, 4),
-                    'timestamp': ts,
-                    'atr_used': round(cur_atr, 4),
-                    'sl_type': 'dynamic_atr'
-                })
+            risk = abs(entry - sl)
+            tp = entry + (2.0 * risk if direction == 'BUY' else -2.0 * risk)
+            conf = 1.0 - (dist / self.atr_multiplier)
             
-            return sigs, {
-                "blocked_by_cooldown": blocked_by_cooldown,
-                "blocked_by_trend": blocked_by_trend,
-            }
-
-        if use_lock:
-            with _M7_LOCK:
-                return _process_levels()
-        else:
-            return _process_levels()
+            sigs.append({
+                'direction': direction,
+                'entry': round(entry, 4),
+                'stop_loss': round(sl, 4),
+                'take_profit': round(tp, 4),
+                'confidence': round(conf, 2),
+                'level': name,
+                'level_value': round(val, 4),
+                'timestamp': ts
+            })
+        return sigs
 
 
 def analyze_asset_m7(
@@ -791,165 +735,20 @@ def analyze_asset_m7(
     state: Optional[Dict[str, Any]] = None,
     dir_min_hold_hours: float = _M7_DIR_MIN_HOLD_HOURS,
     dir_min_delta_conf: float = _M7_DIR_MIN_DELTA_CONF,
-    force_check: bool = False,
-    execution_window: Optional[Tuple[time, time]] = (time(8, 1), time(8, 45)),
-    use_sticky_signal: bool = True,
-    invalidation_triggers: Optional[Dict[str, Any]] = None,
 ):
     """
-    M7 Agent - торговля от ключевых уровней с липкими сигналами.
+    Основной вход для агента M7.
     
-    ФИНАЛЬНАЯ ВЕРСИЯ с:
-    - Динамическим SL на базе ATR (не фиксированный 1.5%)
-    - Sticky signals с invalidation triggers
-    - Scheduled execution: 08:01-08:45 UTC (11:01-11:45 MSK)
-    - Thread-safety
-    - БЕЗ ЛИМИТНЫХ ОРДЕРОВ
-    
-    Args:
-        ticker: Тикер актива
-        horizon: Горизонт торговли
-        use_ml: Использовать ML
-        state: Внешнее хранилище
-        dir_min_hold_hours: Минимальное время между разворотами (default: 4.0)
-        dir_min_delta_conf: Минимальный прирост уверенности (default: 0.08)
-        force_check: Принудительный анализ (игнорирует расписание)
-        execution_window: Окно времени UTC (default: 08:01-08:45 UTC)
-        use_sticky_signal: Сохранять сигнал до инвалидации
-        invalidation_triggers: Условия пересчёта
+    Возвращает направление (BUY/SHORT/WAIT) + уровни, без указания типа ордера.
+    Решение о market/limit остаётся за оркестратором/исполнителем.
     """
-    
-    # Дефолтные триггеры инвалидации
-    if invalidation_triggers is None:
-        invalidation_triggers = {
-            "stop_loss_hit": True,
-            "volatility_spike": 2.0,
-            "max_age_hours": 24.0,
-            "pivot_level_breach": True,
-        }
-    
-    # Выбираем хранилища
     dir_state_map = (state.get("dir") if state is not None else None) or _M7_DIR_STATE
     level_hits_map = (state.get("level_hits") if state is not None else None) or _M7_LAST_HIT
-    sticky_signals = (state.get("sticky_signals") if state is not None else None) or _M7_STICKY_SIGNALS
-    
-    # Scheduled execution
-    now = pd.Timestamp.utcnow()
-    if execution_window is not None:
-        in_window = execution_window[0] <= now.time() <= execution_window[1]
-        if not in_window and not force_check:
-            return {
-                "last_price": 0.0,
-                "recommendation": {"action": "WAIT", "confidence": 0.0},
-                "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
-                "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
-                "context": [f"M7: вне расписания (окно: {execution_window[0]}-{execution_window[1]} UTC)"],
-                "note_html": f"<div>M7: вне торгового окна<br>Следующий анализ в {execution_window[0]} UTC</div>",
-                "alt": "Scheduled execution only",
-                "meta": {
-                    "source": "M7",
-                    "scheduled_only": True,
-                    "current_time_utc": now.time().isoformat(),
-                    "next_window": f"{execution_window[0]}-{execution_window[1]} UTC"
-                }
-            }
-    
-    # Получаем текущую цену
-    cli = PolygonClient()
-    try:
-        current_price = float(cli.last_trade_price(ticker))
-    except:
-        df_quick = cli.daily_ohlc(ticker, days=1)
-        if df_quick is not None and not df_quick.empty:
-            current_price = float(df_quick['close'].iloc[-1])
-        else:
-            current_price = None
-    
-    # Проверяем липкий сигнал
-    if use_sticky_signal and not force_check and ticker in sticky_signals:
-        with _M7_LOCK:
-            saved = sticky_signals.get(ticker)
-            if saved:
-                saved_signal = saved["signal"]
-                saved_time = saved["timestamp"]
-                saved_atr = saved.get("atr", 1.0)
-                
-                should_invalidate = False
-                invalidation_reason = None
-                
-                # 1. Stop Loss пробит
-                if invalidation_triggers.get("stop_loss_hit") and current_price is not None:
-                    sl = saved_signal["levels"].get("sl", 0)
-                    action = saved_signal["recommendation"]["action"]
-                    
-                    if action == "BUY" and current_price <= sl:
-                        should_invalidate = True
-                        invalidation_reason = f"stop_loss_hit_buy_{current_price:.2f}<={sl:.2f}"
-                    elif action == "SHORT" and current_price >= sl:
-                        should_invalidate = True
-                        invalidation_reason = f"stop_loss_hit_short_{current_price:.2f}>={sl:.2f}"
-                
-                # 2. Волатильность взорвалась
-                if not should_invalidate and invalidation_triggers.get("volatility_spike"):
-                    df_check = cli.daily_ohlc(ticker, days=20)
-                    if df_check is not None and not df_check.empty:
-                        try:
-                            from core.strategy import _atr_like
-                            current_atr = float(_atr_like(df_check, n=14).iloc[-1])
-                            spike_threshold = invalidation_triggers["volatility_spike"]
-                            
-                            if current_atr > saved_atr * spike_threshold:
-                                should_invalidate = True
-                                invalidation_reason = f"volatility_spike_atr_{current_atr:.2f}_vs_{saved_atr:.2f}"
-                        except:
-                            pass
-                
-                # 3. Максимальный возраст
-                if not should_invalidate and invalidation_triggers.get("max_age_hours"):
-                    age_hours = (now - saved_time).total_seconds() / 3600
-                    max_age = invalidation_triggers["max_age_hours"]
-                    
-                    if age_hours > max_age:
-                        should_invalidate = True
-                        invalidation_reason = f"signal_expired_{age_hours:.1f}h>_{max_age}h"
-                
-                # 4. Pivot пробит
-                if not should_invalidate and invalidation_triggers.get("pivot_level_breach") and current_price is not None:
-                    saved_pivot = saved.get("pivot_level")
-                    if saved_pivot is not None:
-                        action = saved_signal["recommendation"]["action"]
-                        
-                        if action == "BUY" and current_price < saved_pivot - 2.0 * saved_atr:
-                            should_invalidate = True
-                            invalidation_reason = f"pivot_breach_below_{current_price:.2f}_pivot_{saved_pivot:.2f}"
-                        
-                        if action == "SHORT" and current_price > saved_pivot + 2.0 * saved_atr:
-                            should_invalidate = True
-                            invalidation_reason = f"pivot_breach_above_{current_price:.2f}_pivot_{saved_pivot:.2f}"
-                
-                # Возвращаем липкий сигнал
-                if not should_invalidate:
-                    signal_age = (now - saved_time).total_seconds() / 3600
-                    saved_signal["context"] = [
-                        f"Липкий сигнал от {saved_time.strftime('%d.%m %H:%M UTC')} (возраст: {signal_age:.1f}ч)",
-                        "Условия не изменились, сигнал в силе"
-                    ]
-                    saved_signal["meta"]["sticky_signal"] = True
-                    saved_signal["meta"]["signal_age_hours"] = float(signal_age)
-                    saved_signal["meta"]["invalidation_checked"] = True
-                    saved_signal["last_price"] = current_price if current_price else saved_signal.get("last_price", 0)
-                    
-                    return saved_signal
-                
-                # Инвалидируем
-                if should_invalidate:
-                    logger.info(f"M7 {ticker}: инвалидация - {invalidation_reason}")
-                    del sticky_signals[ticker]
-    
-    # Основной анализ
+
     min_hold = pd.Timedelta(hours=float(dir_min_hold_hours))
     min_delta = float(dir_min_delta_conf)
 
+    cli = PolygonClient()
     df = cli.daily_ohlc(ticker, days=120)
     if df is None or df.empty:
         return {
@@ -960,39 +759,23 @@ def analyze_asset_m7(
             "context": ["Нет данных для M7"],
             "note_html": "<div>M7: ожидание</div>",
             "alt": "Ожидание",
-            "meta": {"source": "M7", "grey_zone": True, "error": "no_data"}
+            "meta": {"source": "M7", "grey_zone": True}
         }
 
     df = df.sort_values("timestamp")
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     df = df.set_index("timestamp")
     price = float(df['close'].iloc[-1])
-    
-    try:
-        from core.strategy import _atr_like
-        atr14 = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
-    except ImportError:
-        hl = df["high"] - df["low"]
-        hc = (df["high"] - df["close"].shift(1)).abs()
-        lc = (df["low"] - df["close"].shift(1)).abs()
-        tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
-        atr14 = float(tr.rolling(14, min_periods=1).mean().iloc[-1]) or 1e-9
-    
+    atr14 = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
     ts_last = df.index[-1]
 
-    # ML ветка
+    # --- Ветка с ML ---
     if use_ml:
         pred = _M7Predictor(ticker)
         if pred.load():
             ml_action, ml_conf = pred.predict(df, price, atr14)
             strategy = M7TradingStrategy()
-            result = strategy.generate_signals(df, ticker=ticker, level_hits_map=level_hits_map, use_lock=True)
-            
-            if isinstance(result, tuple):
-                signals, filter_meta = result
-            else:
-                signals = result
-                filter_meta = {}
+            signals = strategy.generate_signals(df, ticker=ticker, level_hits_map=level_hits_map)
 
             if ml_action == "WAIT" or not signals:
                 return {
@@ -1003,20 +786,34 @@ def analyze_asset_m7(
                     "context": [f"ML: нет сильного сигнала ({ml_conf:.2f})"],
                     "note_html": "<div>M7 ML: ожидание</div>",
                     "alt": "ML wait",
-                    "meta": {"source": "M7", "ml_used": True, "grey_zone": True, "filters": filter_meta}
+                    "meta": {
+                        "source": "M7",
+                        "ml_used": True,
+                        "ml_action": ml_action,
+                        "ml_conf_raw": ml_conf,
+                        "grey_zone": True
+                    }
                 }
 
             side = ml_action if ml_action in ("BUY", "SHORT") else None
             if side:
                 filt = [s for s in signals if s["direction"] == side]
-                best = max(filt, key=lambda x: x["confidence"]) if filt else max(signals, key=lambda x: x["confidence"])
+                best = (
+                    max(filt, key=lambda x: x["confidence"])
+                    if filt else max(signals, key=lambda x: x["confidence"])
+                )
             else:
                 best = max(signals, key=lambda x: x["confidence"])
                 side = best["direction"]
 
             filtered_action, dir_meta = _m7_direction_filter(
-                ticker=ticker, raw_action=side, conf=ml_conf, ts=ts_last,
-                dir_state_map=dir_state_map, min_hold=min_hold, min_delta=min_delta, use_lock=True
+                ticker=ticker,
+                raw_action=side,
+                conf=ml_conf,
+                ts=ts_last,
+                dir_state_map=dir_state_map,
+                min_hold=min_hold,
+                min_delta=min_delta,
             )
 
             if filtered_action == "WAIT":
@@ -1025,32 +822,42 @@ def analyze_asset_m7(
                     "recommendation": {"action": "WAIT", "confidence": ml_conf},
                     "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
                     "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
-                    "context": [f"M7 ML: {dir_meta.get('reason', 'flip_blocked')}"],
-                    "note_html": "<div>M7 ML: гистерезис активен</div>",
+                    "context": [
+                        f"M7 ML: разворот заблокирован по гистерезису ({dir_meta.get('dir_state')})"
+                    ],
+                    "note_html": "<div>M7 ML: гистерезис, без нового входа</div>",
                     "alt": "ML wait hysteresis",
-                    "meta": {"source": "M7", "ml_used": True, "dir_meta": dir_meta, "filters": filter_meta, "grey_zone": True}
+                    "meta": {
+                        "source": "M7",
+                        "ml_used": True,
+                        "ml_action": side,
+                        "ml_conf_raw": ml_conf,
+                        "dir_meta": dir_meta,
+                        "grey_zone": True
+                    }
                 }
 
             entry = float(best['entry'])
             sl = float(best['stop_loss'])
             risk = abs(entry - sl)
             if filtered_action == "BUY":
-                tp1, tp2, tp3 = entry + 1.5 * risk, entry + 2.5 * risk, entry + 4.0 * risk
+                tp1, tp2, tp3 = (
+                    entry + 1.5 * risk,
+                    entry + 2.5 * risk,
+                    entry + 4.0 * risk
+                )
             else:
-                tp1, tp2, tp3 = entry - 1.5 * risk, entry - 2.5 * risk, entry - 4.0 * risk
+                tp1, tp2, tp3 = (
+                    entry - 1.5 * risk,
+                    entry - 2.5 * risk,
+                    entry - 4.0 * risk
+                )
 
-            try:
-                from core.strategy import _clip01, _monotone_tp_probs
-            except ImportError:
-                def _clip01(x): return max(0.0, min(1.0, float(x)))
-                def _monotone_tp_probs(d):
-                    p1, p2, p3 = d["tp1"], d["tp2"], d["tp3"]
-                    p1 = max(p1, p2, p3)
-                    p2 = min(p1, max(p2, p3))
-                    p3 = min(p2, p3)
-                    return {"tp1": p1, "tp2": p2, "tp3": p3}
-            
-            u1, u2, u3 = abs(tp1 - entry) / atr14, abs(tp2 - entry) / atr14, abs(tp3 - entry) / atr14
+            u1, u2, u3 = (
+                abs(tp1 - entry) / atr14,
+                abs(tp2 - entry) / atr14,
+                abs(tp3 - entry) / atr14
+            )
             k = 0.18
             b1, b2, b3 = ml_conf, max(0.50, ml_conf - 0.08), max(0.45, ml_conf - 0.16)
             p1 = _clip01(b1 * math.exp(-k * (u1 - 1.0)))
@@ -1058,47 +865,34 @@ def analyze_asset_m7(
             p3 = _clip01(b3 * math.exp(-k * (u3 - 2.2)))
             probs = _monotone_tp_probs({"tp1": p1, "tp2": p2, "tp3": p3})
 
-            final_result = {
+            return {
                 "last_price": price,
                 "recommendation": {"action": filtered_action, "confidence": ml_conf},
-                "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
+                "levels": {
+                    "entry": entry,
+                    "sl": sl,
+                    "tp1": tp1,
+                    "tp2": tp2,
+                    "tp3": tp3
+                },
                 "probs": probs,
-                "context": [f"ML {filtered_action} + уровни M7: {best['level']} (SL динамический ATR)"],
-                "note_html": f"<div>M7 ML: {filtered_action} у {best['level_value']}<br>SL: {best.get('sl_type', 'dynamic_atr')}</div>",
+                "context": [f"ML {filtered_action} + уровни M7: {best['level']}"],
+                "note_html": f"<div>M7 ML: {filtered_action} у {best['level_value']}</div>",
                 "alt": "ML‑enhanced M7",
                 "meta": {
                     "source": "M7",
                     "ml_used": True,
-                    "dir_meta": dir_meta,
-                    "filters": filter_meta,
-                    "sl_type": best.get('sl_type', 'dynamic_atr'),
-                    "atr_used": best.get('atr_used'),
+                    "ml_action": side,
+                    "ml_conf_raw": ml_conf,
+                    "dir_meta": dir_meta
                 }
             }
 
-            if use_sticky_signal and filtered_action in ("BUY", "SHORT"):
-                with _M7_LOCK:
-                    sticky_signals[ticker] = {
-                        "signal": final_result,
-                        "timestamp": now,
-                        "atr": atr14,
-                        "pivot_level": strategy.identify_key_levels(df).get('pivot'),
-                    }
-            
-            return final_result
-
-    # Ветка без ML
+    # --- Ветка без ML ---
     strategy = M7TradingStrategy()
-    result = strategy.generate_signals(df, ticker=ticker, level_hits_map=level_hits_map, use_lock=True)
-    
-    if isinstance(result, tuple):
-        signals, filter_meta = result
-    else:
-        signals = result
-        filter_meta = {}
-    
+    signals = strategy.generate_signals(df, ticker=ticker, level_hits_map=level_hits_map)
     if not signals:
-        return {
+        res = {
             "last_price": price,
             "recommendation": {"action": "WAIT", "confidence": 0.5},
             "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
@@ -1106,65 +900,98 @@ def analyze_asset_m7(
             "context": ["Нет сигналов по стратегии M7"],
             "note_html": "<div>M7: ожидание</div>",
             "alt": "Ожидание сигналов от уровней",
-            "meta": {"source": "M7", "grey_zone": True, "filters": filter_meta}
+            "meta": {"source": "M7", "grey_zone": True}
         }
+        try:
+            log_agent_performance(
+                agent="M7",
+                ticker=ticker,
+                horizon=horizon,
+                action="WAIT",
+                confidence=0.50,
+                levels=res["levels"],
+                probs=res["probs"],
+                meta={"probs_debug": {"u": [], "p": []}},
+                ts=pd.Timestamp.utcnow().isoformat()
+            )
+        except Exception:
+            pass
+        return res
 
     best = max(signals, key=lambda x: x['confidence'])
-    try:
-        from core.strategy import _clip01
-        raw_conf = _clip01(float(best['confidence']))
-    except ImportError:
-        raw_conf = max(0.0, min(1.0, float(best['confidence'])))
-    
+    raw_conf = float(_clip01(best['confidence']))
     entry = float(best['entry'])
     sl = float(best['stop_loss'])
     risk = abs(entry - sl)
     vol = float(df['close'].pct_change().std() * np.sqrt(252))
-
     conf_base = 0.50 + 0.34 * math.tanh((raw_conf - 0.65) / 0.20)
     penalty = (
-        (0.05 if vol > 0.35 else 0.0) +
-        (0.04 if risk / atr14 < 0.8 else 0.0) +
-        (0.03 if risk / atr14 > 3.5 else 0.0)
+        (0.05 if vol > 0.35 else 0.0)
+        + (0.04 if risk / atr14 < 0.8 else 0.0)
+        + (0.03 if risk / atr14 > 3.5 else 0.0)
     )
     conf = float(max(0.52, min(0.82, conf_base * (1.0 - penalty))))
     conf = float(_m7_cal()["M7"](conf))
 
     act_raw = best['direction']
     if act_raw == "BUY":
-        tp1, tp2, tp3 = entry + 1.5 * risk, entry + 2.5 * risk, entry + 4.0 * risk
+        tp1, tp2, tp3 = (
+            entry + 1.5 * risk,
+            entry + 2.5 * risk,
+            entry + 4.0 * risk
+        )
     else:
-        tp1, tp2, tp3 = entry - 1.5 * risk, entry - 2.5 * risk, entry - 4.0 * risk
+        tp1, tp2, tp3 = (
+            entry - 1.5 * risk,
+            entry - 2.5 * risk,
+            entry - 4.0 * risk
+        )
 
-    act, dir_meta = _m7_direction_filter(
-        ticker=ticker, raw_action=act_raw, conf=conf, ts=ts_last,
-        dir_state_map=dir_state_map, min_hold=min_hold, min_delta=min_delta, use_lock=True
+    act_filtered, dir_meta = _m7_direction_filter(
+        ticker=ticker,
+        raw_action=act_raw,
+        conf=conf,
+        ts=ts_last,
+        dir_state_map=dir_state_map,
+        min_hold=min_hold,
+        min_delta=min_delta,
     )
 
-    if act == "WAIT":
-        return {
+    if act_filtered == "WAIT":
+        res = {
             "last_price": price,
             "recommendation": {"action": "WAIT", "confidence": conf},
             "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
             "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
-            "context": [f"M7: {dir_meta.get('reason', 'flip_blocked')}"],
-            "note_html": "<div>M7: гистерезис активен</div>",
+            "context": [
+                f"M7: разворот заблокирован по гистерезису ({dir_meta.get('dir_state')})"
+            ],
+            "note_html": "<div>M7: гистерезис, без нового входа</div>",
             "alt": "Торговля по M7 (гистерезис)",
-            "meta": {"source": "M7", "grey_zone": True, "dir_meta": dir_meta, "filters": filter_meta}
+            "meta": {"source": "M7", "grey_zone": True, "dir_meta": dir_meta}
         }
+        try:
+            log_agent_performance(
+                agent="M7",
+                ticker=ticker,
+                horizon=horizon,
+                action="WAIT",
+                confidence=float(conf),
+                levels=res["levels"],
+                probs=res["probs"],
+                meta={"probs_debug": {"u": [], "p": []}, "dir_meta": dir_meta},
+                ts=pd.Timestamp.utcnow().isoformat()
+            )
+        except Exception:
+            pass
+        return res
 
-    try:
-        from core.strategy import _clip01, _monotone_tp_probs
-    except ImportError:
-        def _clip01(x): return max(0.0, min(1.0, float(x)))
-        def _monotone_tp_probs(d):
-            p1, p2, p3 = d["tp1"], d["tp2"], d["tp3"]
-            p1 = max(p1, p2, p3)
-            p2 = min(p1, max(p2, p3))
-            p3 = min(p2, p3)
-            return {"tp1": p1, "tp2": p2, "tp3": p3}
-    
-    u1, u2, u3 = abs(tp1 - entry) / atr14, abs(tp2 - entry) / atr14, abs(tp3 - entry) / atr14
+    act = act_filtered
+    u1, u2, u3 = (
+        abs(tp1 - entry) / atr14,
+        abs(tp2 - entry) / atr14,
+        abs(tp3 - entry) / atr14
+    )
     k = 0.18
     b1, b2, b3 = conf, max(0.50, conf - 0.08), max(0.45, conf - 0.16)
     p1 = _clip01(b1 * math.exp(-k * (u1 - 1.0)))
@@ -1172,34 +999,49 @@ def analyze_asset_m7(
     p3 = _clip01(b3 * math.exp(-k * (u3 - 2.2)))
     probs = _monotone_tp_probs({"tp1": p1, "tp2": p2, "tp3": p3})
 
-    final_result = {
+    try:
+        log_agent_performance(
+            agent="M7",
+            ticker=ticker,
+            horizon=horizon,
+            action=act,
+            confidence=float(conf),
+            levels={"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
+            probs={
+                "tp1": float(probs["tp1"]),
+                "tp2": float(probs["tp2"]),
+                "tp3": float(probs["tp3"])
+            },
+            meta={
+                "probs_debug": {
+                    "u": [float(u1), float(u2), float(u3)],
+                    "p": [
+                        float(probs["tp1"]),
+                        float(probs["tp2"]),
+                        float(probs["tp3"])
+                    ]
+                },
+                "dir_meta": dir_meta,
+            },
+            ts=pd.Timestamp.utcnow().isoformat()
+        )
+    except Exception:
+        pass
+
+    return {
         "last_price": price,
         "recommendation": {"action": act, "confidence": float(conf)},
         "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
         "probs": probs,
-        "context": [f"Сигнал от уровня {best['level']} (SL динамический ATR)"],
-        "note_html": f"<div>M7: {act} на уровне {best['level_value']}<br>SL тип: {best.get('sl_type', 'dynamic_atr')}</div>",
+        "context": [f"Сигнал от уровня {best['level']}"],
+        "note_html": f"<div>M7: {act} на уровне {best['level_value']}</div>",
         "alt": "Торговля по M7",
         "meta": {
             "source": "M7",
             "grey_zone": bool(0.48 <= conf <= 0.58),
             "dir_meta": dir_meta,
-            "filters": filter_meta,
-            "sl_type": best.get('sl_type', 'dynamic_atr'),
-            "atr_used": best.get('atr_used'),
         }
     }
-
-    if use_sticky_signal and act in ("BUY", "SHORT"):
-        with _M7_LOCK:
-            sticky_signals[ticker] = {
-                "signal": final_result,
-                "timestamp": now,
-                "atr": atr14,
-                "pivot_level": strategy.identify_key_levels(df).get('pivot'),
-            }
-    
-    return final_result
 
 # -------------------- W7 --------------------
 def analyze_asset_w7(ticker: str, horizon: str):
