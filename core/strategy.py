@@ -401,11 +401,15 @@ _M7_DIR_STATE = {}
 _M7_DIR_MIN_HOLD_HOURS = 4.0     # минимальное время между разворотами по направлению
 _M7_DIR_MIN_DELTA_CONF = 0.08    # насколько новая уверенность должна быть выше старой, чтобы разрешить flip
 
+
 class _M7IdentityCalibrator:
     def __call__(self, p: float) -> float:
         return float(max(0.0, min(1.0, p)))
 
+
 _M7_CAL = None
+
+
 def _m7_cal():
     global _M7_CAL
     if _M7_CAL is None:
@@ -415,6 +419,7 @@ def _m7_cal():
         except Exception:
             _M7_CAL = {"M7": _M7IdentityCalibrator()}
     return _M7_CAL
+
 
 def _m7_direction_filter(ticker: str, raw_action: str, conf: float, ts: "pd.Timestamp"):
     """
@@ -476,6 +481,7 @@ def _m7_direction_filter(ticker: str, raw_action: str, conf: float, ts: "pd.Time
         "prev_ts": prev_ts,
         "prev_conf": prev_conf,
     }
+
 
 class _M7Predictor:
     def __init__(self, ticker: str, agent="arxora_m7pro"):
@@ -577,15 +583,19 @@ class _M7Predictor:
             logger.warning("M7 ML: predict failed: %s", e)
             return ("WAIT", 0.5)
 
+
 class M7TradingStrategy:
     def __init__(
         self,
         atr_period: int = 14,
-        atr_multiplier: float = 1.0,      # было 1.5, сузили зону вокруг уровня
+        atr_multiplier: float = 1.0,      # зона вокруг уровня
         pivot_period: str = 'D',
         fib_levels=None,
         cooldown_minutes: int = 60,      # кулдаун по уровню для одного тикера
-        use_trend_filter: bool = True    # включаем/выключаем фильтр по тренду
+        use_trend_filter: bool = True,   # включаем/выключаем фильтр по тренду
+        sl_atr_mult: float = 1.0,        # НОВОЕ: множитель ATR для стопа от цены входа
+        sl_min_pct: float = 0.01,        # НОВОЕ: мин. риск 1% от цены
+        sl_max_pct: float = 0.05,        # НОВОЕ: макс. риск 5% от цены
     ):
         self.atr_period = atr_period
         self.atr_multiplier = atr_multiplier
@@ -593,6 +603,9 @@ class M7TradingStrategy:
         self.fib_levels = fib_levels or [0.236, 0.382, 0.5, 0.618, 0.786]
         self.cooldown = pd.Timedelta(minutes=cooldown_minutes)
         self.use_trend_filter = use_trend_filter
+        self.sl_atr_mult = sl_atr_mult
+        self.sl_min_pct = sl_min_pct
+        self.sl_max_pct = sl_max_pct
 
     def calculate_pivot_points(self, h, l, c):
         pivot = (h + l + c) / 3
@@ -619,7 +632,7 @@ class M7TradingStrategy:
             fib[f'fib_{int(level * 1000)}'] = h - level * diff
         return fib
 
-    def identify_key_levels(self, data: pd.DataFrame):
+    def identify_key_levels(self,  pd.DataFrame):
         grouped = data.resample('D') if self.pivot_period == 'D' else data.resample('W')
         key = {}
         for _, g in grouped:
@@ -631,10 +644,11 @@ class M7TradingStrategy:
                 key.update(self.calculate_fib_levels(h, l))
         return key
 
-    def generate_signals(self, data: pd.DataFrame, ticker: Optional[str] = None):
+    def generate_signals(self,  pd.DataFrame, ticker: Optional[str] = None):
         """
         Генерирует сигналы с учётом:
         - ATR-фильтра вокруг уровней
+        - ATR-адаптивного стопа от цены входа
         - кулдауна по (ticker, level)
         - простого тренд-фильтра по центральному pivot
         """
@@ -657,6 +671,12 @@ class M7TradingStrategy:
         ts = data.index[-1]
         pivot_val = key.get('pivot', None)
 
+        # базовый риск по ATR + кэп в процентах от цены
+        base_risk_atr = max(1e-9, self.sl_atr_mult * cur_atr)
+        min_risk = self.sl_min_pct * price
+        max_risk = self.sl_max_pct * price
+        risk_abs = max(min_risk, min(max_risk, base_risk_atr))
+
         for name, val in key.items():
             dist = abs(price - val) / max(1e-9, cur_atr)
             if dist >= self.atr_multiplier:
@@ -667,11 +687,11 @@ class M7TradingStrategy:
             if is_res:
                 typ = 'SELL_LIMIT'
                 entry = float(val * 0.998)
-                sl = float(val * 1.02)
+                sl = float(entry + risk_abs)   # стоп выше цены входа
             else:
                 typ = 'BUY_LIMIT'
                 entry = float(val * 1.002)
-                sl = float(val * 0.98)
+                sl = float(entry - risk_abs)   # стоп ниже цены входа
 
             # тренд-фильтр по центральному pivot:
             # - BUY только выше pivot
@@ -705,6 +725,7 @@ class M7TradingStrategy:
                 'timestamp': ts
             })
         return sigs
+
 
 def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False):
     cli = PolygonClient()
