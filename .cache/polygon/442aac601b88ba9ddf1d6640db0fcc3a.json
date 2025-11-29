@@ -1,0 +1,1 @@
+{"ticker": "SPY", "queryCount": 1, "resultsCount": 1, "adjusted": true, "results": [{"T": "SPY", "v": 78426969.0, "vw": 676.8211, "o": 676.11, "c": 675.24, "h": 679.96, "l": 674.58, "t": 1762290000000, "n": 1140117}], "status": "OK", "request_id": "ffcac1c30e2a23a2a92fa3cc1e843ab1", "count": 1}
