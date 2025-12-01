@@ -1126,7 +1126,10 @@ def analyze_asset_w7(ticker: str, horizon: str):
     u_base = step_w if hz != "ST" else step_d
     base_buf = {"ST": 0.25, "MID": 0.30, "LT": 0.35}[hz]
     regime_adj = {"low": -0.05, "mid": 0.0, "high": +0.10}[atr_regime]
-    if _is_crypto(ticker): base_buf += 0.05; regime_adj += 0.05 if atr_regime == 'high' else 0.0
+    if _is_crypto(ticker):
+        base_buf += 0.05
+        if atr_regime == 'high':
+            regime_adj += 0.05
     k_buf = max(0.2, base_buf + regime_adj + 0.05 * _clip01(vol_ratio - 1.0))
     atr_buf = k_buf * u_base
 
@@ -1136,10 +1139,17 @@ def analyze_asset_w7(ticker: str, horizon: str):
     if _is_crypto(ticker):
         thr_far = {"ST": 0.50, "MID": 0.70, "LT": 0.90}[hz] + regime_adj_thr
 
+    # --- ATR% filter with crypto-aware thresholds ---
     atr_pct = (atr_d / price) * 100 if price > 0 else 0.0
-    if atr_pct > 5.0:
+    if _is_crypto(ticker):
+        # более высокие пороги для крипты, учитывая её типичную волатильность
+        crit = {"ST": 10.0, "MID": 12.0, "LT": 15.0}[hz]
+    else:
+        crit = 5.0
+
+    if atr_pct > crit:
         action = "WAIT"
-        alt = "Экстремальная волатильность (>5% ATR) — ждём стабилизации"
+        alt = f"Экстремальная волатильность (>{crit:.1f}% ATR) — ждём стабилизации"
     else:
         alt = ""
 
@@ -1258,7 +1268,8 @@ def analyze_asset_w7(ticker: str, horizon: str):
         "probs": probs, "context": [],
         "note_html": "<div>W7: adaptive ATR-pivots breakout w/ regime & volume</div>",
         "alt": alt, "entry_kind": entry_kind, "entry_label": entry_label,
-        "meta": {"source":"W7","grey_zone": bool(0.48 <= conf <= 0.58), "probs_debug": meta_debug}
+        # grey_zone подтянут под порог 64%
+        "meta": {"source":"W7","grey_zone": bool(0.55 <= conf < 0.64), "probs_debug": meta_debug}
     }
 
 # -------------------- AlphaPulse --------------------
