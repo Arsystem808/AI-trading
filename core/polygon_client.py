@@ -5,10 +5,12 @@ import json
 import random
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Callable
+from threading import Thread
 
 import pandas as pd
 import requests
+import websocket  # pip install websocket-client
 
 
 class PolygonClient:
@@ -18,6 +20,7 @@ class PolygonClient:
         cache_ttl_sec: int = 3600,
         base_url: str = "https://api.polygon.io",
         session: Optional[requests.Session] = None,
+        enable_websocket: bool = False,  # Опционально для live данных
     ):
         # Ключ читаем из аргумента или переменной окружения POLYGON_API_KEY
         self.api_key = (api_key or os.getenv("POLYGON_API_KEY", "")).strip()
@@ -28,6 +31,12 @@ class PolygonClient:
         self.cache_dir = Path(".cache/polygon")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._session = session or requests.Session()
+        
+        # WebSocket для live цен (без кэша!)
+        self.enable_websocket = enable_websocket
+        self._ws = None
+        self._ws_thread = None
+        self._ws_callbacks = {}
 
     def _cache_path(self, key: str) -> Path:
         h = hashlib.md5(key.encode()).hexdigest()
@@ -82,7 +91,7 @@ class PolygonClient:
             return js
         raise last_err or requests.HTTPError(f"Request failed after {max_retries} retries")
 
-    # -------- Stocks Aggregates: дневные свечи --------
+    # -------- REST API: Stocks Aggregates с кэшем --------
     def daily_ohlc(self, ticker: str, days: int = 120) -> pd.DataFrame:
         # Берём растянутый диапазон, чтобы компенсировать выходные/праздники
         end = pd.Timestamp.utcnow().normalize()
@@ -102,9 +111,8 @@ class PolygonClient:
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
         return df
 
-    # -------- Последняя сделка --------
     def last_trade_price(self, ticker: str) -> Optional[float]:
-        # Пытаемся v2 last trade, при необходимости можно заменить на v3/trades с сортировкой
+        # REST endpoint с кэшем - для некритичных запросов
         url = f"{self.base_url}/v2/last/trade/{ticker}"
         js = self._get(url, use_cache_key=f"last_trade:{ticker}")
         res = js.get("results") or js.get("result") or {}
@@ -114,7 +122,6 @@ class PolygonClient:
         except Exception:
             return None
 
-    # -------- Предыдущее закрытие --------
     def prev_close(self, ticker: str, adjusted: bool = True) -> Optional[float]:
         url = f"{self.base_url}/v2/aggs/ticker/{ticker}/prev"
         js = self._get(url, params={"adjusted": str(adjusted).lower()}, use_cache_key=f"prev_close:{ticker}:{adjusted}")
@@ -127,11 +134,109 @@ class PolygonClient:
         except Exception:
             return None
 
-    # -------- Health-check ключа --------
     def check_auth(self) -> bool:
-        # Лёгкий запрос, который валиден с ключом
         try:
             _ = self.prev_close("SPY")
             return True
         except Exception:
             return False
+
+    # -------- WebSocket API: Live цены БЕЗ кэша --------
+    def _on_ws_message(self, ws, message):
+        """Обработчик входящих WebSocket сообщений"""
+        try:
+            data = json.loads(message)
+            for msg in 
+                ev_type = msg.get("ev")  # T=Trade, Q=Quote, A=Aggregate
+                if ev_type in self._ws_callbacks:
+                    for callback in self._ws_callbacks[ev_type]:
+                        callback(msg)
+        except Exception as e:
+            print(f"WebSocket message error: {e}")
+
+    def _on_ws_error(self, ws, error):
+        print(f"WebSocket error: {error}")
+
+    def _on_ws_close(self, ws, close_status_code, close_msg):
+        print(f"WebSocket closed: {close_status_code} {close_msg}")
+
+    def _on_ws_open(self, ws):
+        """Аутентификация после подключения"""
+        auth_msg = json.dumps({"action": "auth", "params": self.api_key})
+        ws.send(auth_msg)
+        print("WebSocket connected and authenticated")
+
+    def start_websocket(self):
+        """Запустить WebSocket подключение в фоновом потоке"""
+        if not self.enable_websocket:
+            raise RuntimeError("WebSocket не активирован (enable_websocket=False)")
+        
+        if self._ws_thread and self._ws_thread.is_alive():
+            print("WebSocket уже запущен")
+            return
+        
+        ws_url = "wss://socket.polygon.io/stocks"
+        self._ws = websocket.WebSocketApp(
+            ws_url,
+            on_open=self._on_ws_open,
+            on_message=self._on_ws_message,
+            on_error=self._on_ws_error,
+            on_close=self._on_ws_close,
+        )
+        
+        self._ws_thread = Thread(target=self._ws.run_forever, daemon=True)
+        self._ws_thread.start()
+        time.sleep(1)  # Даём время на подключение
+
+    def subscribe_live_trades(self, tickers: list, callback: Callable[[Dict], None]):
+        """
+        Подписка на live трейды (без кэша, минимальная задержка ~7мс)
+        
+        Args:
+            tickers: Список тикеров, например ["AAPL", "TSLA"]
+            callback: Функция для обработки каждого трейда, получает dict с полями:
+                      ev="T", sym="AAPL", p=цена, s=размер, t=timestamp
+        """
+        if not self._ws:
+            self.start_websocket()
+        
+        # Регистрируем callback
+        if "T" not in self._ws_callbacks:
+            self._ws_callbacks["T"] = []
+        self._ws_callbacks["T"].append(callback)
+        
+        # Подписываемся на тикеры
+        for ticker in tickers:
+            sub_msg = json.dumps({"action": "subscribe", "params": f"T.{ticker}"})
+            self._ws.send(sub_msg)
+        print(f"Subscribed to trades: {tickers}")
+
+    def subscribe_live_quotes(self, tickers: list, callback: Callable[[Dict], None]):
+        """
+        Подписка на live котировки bid/ask (задержка ~35-50мс)
+        
+        Args:
+            tickers: Список тикеров
+            callback: Функция получает dict с ev="Q", sym="AAPL", bp=bid, ap=ask
+        """
+        if not self._ws:
+            self.start_websocket()
+        
+        if "Q" not in self._ws_callbacks:
+            self._ws_callbacks["Q"] = []
+        self._ws_callbacks["Q"].append(callback)
+        
+        for ticker in tickers:
+            sub_msg = json.dumps({"action": "subscribe", "params": f"Q.{ticker}"})
+            self._ws.send(sub_msg)
+        print(f"Subscribed to quotes: {tickers}")
+
+    def stop_websocket(self):
+        """Остановить WebSocket подключение"""
+        if self._ws:
+            self._ws.close()
+            self._ws = None
+        if self._ws_thread:
+            self._ws_thread.join(timeout=2)
+            self._ws_thread = None
+        print("WebSocket stopped")
