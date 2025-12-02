@@ -1,4 +1,3 @@
-global_client
 # core/polygon_client.py
 import os
 import hashlib
