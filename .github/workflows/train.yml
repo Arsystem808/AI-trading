@@ -47,7 +47,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        symbol: [AAPL, BTCUSD, ETHUSD, SOLUSD, XRPUSD, NVDA, SOXL, SPY, TLT, TSLA, QQQ]
+        symbol: [AAPL, BTCUSD, ETHUSD, SOLUSD, XRPUSD, NVDA, SPY,]
         include:
           - symbol: GLD
             epochs: 10
