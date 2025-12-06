@@ -1,0 +1,8 @@
+{
+  "model_artifact": "models/arxora_m7pro_MARA.joblib",
+  "agent": "arxora_m7pro",
+  "ticker": "MARA",
+  "version": "1.0",
+  "migrated_at": "2025-12-06T06:29:19.523981",
+  "migrated_by": "scripts/migrate_models.py"
+}

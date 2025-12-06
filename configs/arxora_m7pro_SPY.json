@@ -1,0 +1,8 @@
+{
+  "model_artifact": "models/arxora_m7pro_SPY.joblib",
+  "agent": "arxora_m7pro",
+  "ticker": "SPY",
+  "version": "1.0",
+  "migrated_at": "2025-12-06T06:29:20.170194",
+  "migrated_by": "scripts/migrate_models.py"
+}

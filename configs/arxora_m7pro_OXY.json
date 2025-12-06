@@ -1,0 +1,8 @@
+{
+  "model_artifact": "models/arxora_m7pro_OXY.joblib",
+  "agent": "arxora_m7pro",
+  "ticker": "OXY",
+  "version": "1.0",
+  "migrated_at": "2025-12-06T06:29:19.781907",
+  "migrated_by": "scripts/migrate_models.py"
+}
