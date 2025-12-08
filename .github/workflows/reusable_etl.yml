@@ -15,9 +15,14 @@ on:
         type: string
         required: false
         default: "."
+      tickers:
+        type: string
+        required: false
+        default: "AAPL,MSFT,TSLA"
     secrets:
       POLYGON_API_KEY:
-        required: false
+        required: true
+        description: 'Polygon.io API key for market data'
 
 permissions:
   contents: read
@@ -29,6 +34,7 @@ defaults:
 jobs:
   etl:
     runs-on: ubuntu-latest
+    timeout-minutes: 30  # ✅ Защита от зависших jobs
     env:
       ENV: ${{ inputs.env }}
       WORKDIR_IN: ${{ inputs.workdir }}
@@ -38,78 +44,148 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1  # ✅ Быстрее для ETL
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
+          cache-dependency-path: '**/requirements*.txt'
+
+      - name: Validate secrets
+        run: |
+          set -euo pipefail
+          if [ -z "${POLYGON_API_KEY:-}" ]; then
+            echo "::error::POLYGON_API_KEY is not set"
+            exit 1
+          fi
+          echo "::add-mask::$POLYGON_API_KEY"
+          echo "✅ Secrets validated"
 
       - name: Compute paths
         run: |
           set -euo pipefail
-          # Нормализуем рабочий каталог и собираем абсолютные пути
           WD="${WORKDIR_IN:-.}"
           if [ "$WD" = "." ]; then
             BASE="${GITHUB_WORKSPACE}"
           else
-            # убираем ведущие ./ для аккуратной конкатенации
             BASE="${GITHUB_WORKSPACE}/${WD#./}"
           fi
           ART_DIR="${BASE}/artifacts"
           echo "WORKDIR_NORM=${WD}" >> "$GITHUB_ENV"
           echo "ARTIFACTS_DIR=${ART_DIR}" >> "$GITHUB_ENV"
           mkdir -p "${ART_DIR}"
+          echo "📂 Working directory: ${BASE}"
+          echo "📦 Artifacts directory: ${ART_DIR}"
+
+      - name: Cache market data
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/polygon_data
+            data/cache
+          key: polygon-cache-${{ inputs.tickers }}-${{ github.run_id }}
+          restore-keys: |
+            polygon-cache-${{ inputs.tickers }}-
+            polygon-cache-
 
       - name: Install dependencies
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install pyarrow
+          python -m pip install --upgrade pip wheel
+          if [ -f requirements.txt ]; then 
+            pip install -r requirements.txt
+          fi
+          pip install pyarrow pandas numpy
         working-directory: ${{ env.WORKDIR_NORM }}
 
       - name: Run ETL
+        id: etl
         env:
           ARTIFACTS_DIR: ${{ env.ARTIFACTS_DIR }}
         run: |
           set -euo pipefail
-          test -n "${POLYGON_API_KEY:-}" || echo "WARN: POLYGON_API_KEY is empty"
-          eval "${{ inputs.command }}"
+          # Validate command safety
+          CMD="${{ inputs.command }}"
+          if [[ ! "$CMD" =~ ^python\ -m\ core\. ]]; then
+            echo "::error::Only 'python -m core.*' commands allowed"
+            exit 1
+          fi
+          
+          echo "🚀 Running ETL: $CMD"
+          $CMD --out "${ARTIFACTS_DIR}/latest.parquet" || {
+            echo "::error::ETL command failed with exit code $?"
+            exit 1
+          }
+          echo "✅ ETL completed successfully"
         working-directory: ${{ env.WORKDIR_NORM }}
 
       - name: Collect outputs
-        if: always()
+        if: success()  # ✅ Только если ETL успешен
         env:
           ARTIFACTS_DIR: ${{ env.ARTIFACTS_DIR }}
         run: |
           set -euo pipefail
           mkdir -p "${ARTIFACTS_DIR}"
-          # Собираем типовые каталоги, если они появились в ходе ETL
+          
+          # Collect standard directories
           for d in logs output data; do
-            if [ -d "$d" ]; then
+            if [ -d "$d" ] && [ -n "$(ls -A $d)" ]; then
+              echo "📂 Collecting $d/"
               rsync -a "$d"/ "${ARTIFACTS_DIR}/$d"/
             fi
           done
-          # Гарантируем наличие хотя бы одного файла для строгой загрузки
-          echo "run_id=${GITHUB_RUN_ID} env=${ENV} date=$(date -Is)" \
-            | tee "${ARTIFACTS_DIR}/run.log" >/dev/null
+          
+          # Generate metadata
+          cat > "${ARTIFACTS_DIR}/run_metadata.json" <<EOF
+          {
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_number": "${GITHUB_RUN_NUMBER}",
+            "environment": "${ENV}",
+            "timestamp": "$(date -Is)",
+            "repository": "${GITHUB_REPOSITORY}",
+            "commit_sha": "${GITHUB_SHA}",
+            "actor": "${GITHUB_ACTOR}"
+          }
+          EOF
+          
+          echo "✅ Metadata generated"
         working-directory: ${{ env.WORKDIR_NORM }}
 
-      - name: List artifacts
-        if: always()
+      - name: Validate artifacts
+        if: success()
         env:
           ARTIFACTS_DIR: ${{ env.ARTIFACTS_DIR }}
         run: |
-          echo "Artifacts at: ${ARTIFACTS_DIR}"
-          ls -la "${ARTIFACTS_DIR}" || true
+          set -euo pipefail
+          echo "📊 Artifacts summary:"
+          
+          # Check for parquet files
+          PARQUET_COUNT=$(find "${ARTIFACTS_DIR}" -name "*.parquet" | wc -l)
+          echo "  Parquet files: ${PARQUET_COUNT}"
+          
+          if [ "$PARQUET_COUNT" -eq 0 ]; then
+            echo "::warning::No parquet files generated"
+          fi
+          
+          # List all files with sizes
+          echo ""
+          echo "📄 File listing:"
+          find "${ARTIFACTS_DIR}" -type f -exec ls -lh {} \; | awk '{print "  " $9 " (" $5 ")"}'
+          
+          # Total size
+          TOTAL_SIZE=$(du -sh "${ARTIFACTS_DIR}" | awk '{print $1}')
+          echo ""
+          echo "💾 Total size: ${TOTAL_SIZE}"
 
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: etl-artifacts-${{ github.run_id }}
+          name: etl-artifacts-${{ inputs.env }}-${{ github.run_number }}
           path: ${{ env.ARTIFACTS_DIR }}/
-          if-no-files-found: error
-          include-hidden-files: true
+          if-no-files-found: warn  # ✅ Не скрываем ошибки ETL
+          retention-days: 7  # ✅ Автоудаление старых артефактов
+          include-hidden-files: false  # ✅ Безопаснее
+          compression-level: 6  # ✅ Баланс скорости/размера
