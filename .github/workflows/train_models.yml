@@ -33,7 +33,7 @@ jobs:
       POLYGON_TIER: ${{ vars.POLYGON_TIER || 'basic' }}
       
       # Core symbols (production)
-      SYMBOLS: ${{ inputs.symbols_override || 'AAPL SPY X:BTCUSD X:ETHUSD QQQ TLT TSLA X:XRPUSD X:BNBUSD OXY X:SOLUSD MARA SOXL NVDA GS GLD' }}
+      SYMBOLS: ${{ inputs.symbols_override || 'AAPL SPY X:BTCUSD X:ETHUSD QQQ TLT TSLA X:XRPUSD OXY X:SOLUSD MARA SOXL NVDA GS GLD' }}
       START_DATE: "2019-01-01"
       EPOCHS: "12"
       
