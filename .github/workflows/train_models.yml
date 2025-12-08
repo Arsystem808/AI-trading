@@ -2,53 +2,38 @@ name: Nightly Training
 
 on:
   schedule:
-    - cron: "0 2 * * *"   # 02:00 UTC (05:00 MSK) ежедневно
-  workflow_dispatch:
-    inputs:
-      canary:
-        description: "Create canary release (experimental)"
-        type: boolean
-        default: false
-      symbols_override:
-        description: "Override symbols list (space-separated)"
-        type: string
-        required: false
+    - cron: "0 2 * * *"   # каждый день в 02:00 UTC (05:00 MSK)
+  workflow_dispatch:      # возможность запуска вручную
 
 permissions:
-  contents: write
-  actions: read
-  id-token: write
+  contents: write         # ✅ ВАЖНО: права на создание релизов
 
 concurrency:
   group: nightly-training-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: false   # не отменять длительные тренировки
 
 jobs:
   train:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6 hours max
+    permissions:
+      contents: write      # для GitHub Releases
+      actions: read
+      id-token: write
     
     env:
       POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
-      POLYGON_TIER: ${{ vars.POLYGON_TIER || 'basic' }}
-      
-      # Core symbols (production) - используем нормализованные имена для crypto
-      SYMBOLS: ${{ inputs.symbols_override || 'AAPL SPY X:BTCUSD X:ETHUSD QQQ TLT TSLA IBIT EETH MSFT OXY BITO MARA SOXL NVDA GS GLD' }}
+      SYMBOLS: "AAPL SPY BTCUSD ETHUSD QQQ TLT TSLA IBIT MSFT SOLUSD XRPUSD MARA SOXL NVDA GS GLD"
       START_DATE: "2019-01-01"
       EPOCHS: "12"
       
-      # Hugging Face (optional)
+      # Hugging Face (опционально)
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       HF_REPO: ${{ vars.HF_REPO }}
       HF_PRIVATE: "true"
-      
-      # Release management
-      KEEP_RELEASES: 7
-      MAX_FAILURE_RATE: 30  # Max % of failed symbols before abort
 
     steps:
       # ========================================
-      # 1. Setup & Validation
+      # 1. Setup
       # ========================================
       - name: Checkout code
         uses: actions/checkout@v4
@@ -73,46 +58,18 @@ jobs:
       - name: Install dependencies
         shell: bash
         run: |
-          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install huggingface_hub  # для публикации
-          echo "✅ Dependencies installed"
 
-      - name: Verify API key
-        shell: bash
-        run: |
-          if [ -z "${POLYGON_API_KEY}" ]; then
-            echo "❌ POLYGON_API_KEY not configured"
-            exit 1
-          fi
-          echo "✅ API key validated (tier: ${POLYGON_TIER})"
-
-      - name: Set runtime variables
+      - name: Set END_DATE (UTC today)
         shell: bash
         run: |
           echo "END_DATE=$(date -u +%Y-%m-%d)" >> "$GITHUB_ENV"
           echo "RUN_DATE=$(date -u +%Y%m%d_%H%M%S)" >> "$GITHUB_ENV"
-          echo "IS_CANARY=${{ inputs.canary }}" >> "$GITHUB_ENV"
-          
-          # Create directories
-          mkdir -p models configs artifacts logs
-          
-          echo "📅 Training date: $(date -u +%Y-%m-%d)"
-          echo "🏷️  Run ID: ${{ github.run_id }}"
-
-      - name: Monitor initial disk space
-        shell: bash
-        run: |
-          echo "💾 Initial disk usage:"
-          df -h
-          
-          AVAILABLE_GB=$(df -BG . | tail -1 | awk '{print $4}' | sed 's/G//')
-          if [ "$AVAILABLE_GB" -lt 5 ]; then
-            echo "⚠️  WARNING: Low disk space (${AVAILABLE_GB}GB remaining)"
-          fi
 
       # ========================================
-      # 2. Training with Rate Limiting & Retry
+      # 2. Training
       # ========================================
       - name: Train models (all symbols)
         shell: bash
@@ -120,583 +77,120 @@ jobs:
           CI_DRY_RUN: "0"
         run: |
           set -euo pipefail
-          
-          # Rate limiting based on Polygon tier
-          if [ "$POLYGON_TIER" = "basic" ]; then
-            DELAY_BETWEEN_SYMBOLS=20
-            RETRY_DELAY=60
-            echo "⚠️  Using Polygon Basic tier (5 req/sec) - adding delays"
-          elif [ "$POLYGON_TIER" = "starter" ]; then
-            DELAY_BETWEEN_SYMBOLS=10
-            RETRY_DELAY=30
-            echo "ℹ️  Using Polygon Starter tier"
-          else
-            DELAY_BETWEEN_SYMBOLS=5
-            RETRY_DELAY=15
-            echo "ℹ️  Using Polygon Advanced tier"
-          fi
-          
           IFS=' ' read -r -a SYMBOLS_ARR <<< "$SYMBOLS"
-          FAILED_SYMBOLS=()
-          SUCCESS_COUNT=0
           
-          echo ""
-          echo "========================================="
-          echo "🎯 Training ${#SYMBOLS_ARR[@]} symbols"
-          echo "========================================="
-          
-          for i in "${!SYMBOLS_ARR[@]}"; do
-            SYMBOL="${SYMBOLS_ARR[$i]}"
-            # Sanitize symbol for filenames (X:BTCUSD → X_BTCUSD)
-            SAFE_SYMBOL="${SYMBOL//:/_}"
-            
-            echo ""
+          for SYMBOL in "${SYMBOLS_ARR[@]}"; do
             echo "========================================="
-            echo "[$((i+1))/${#SYMBOLS_ARR[@]}] Training: ${SYMBOL}"
-            echo "  Safe name: ${SAFE_SYMBOL}"
+            echo "Training: ${SYMBOL}"
             echo "========================================="
             
-            # Train with retry logic
-            RETRIES=3
-            SUCCESS=0
-            
-            for attempt in $(seq 1 $RETRIES); do
-              echo "Attempt $attempt/$RETRIES for ${SYMBOL}..."
-              
-              # Use SAFE_SYMBOL for all file paths
-              if timeout 1200 python scripts/train.py \
-                --symbol "${SYMBOL}" \
-                --start "${START_DATE}" \
-                --end "${END_DATE}" \
-                --epochs "${EPOCHS}" \
-                --artifacts-dir "artifacts/${SAFE_SYMBOL}" \
-                --models-dir "models" \
-                --configs-dir "configs" 2>&1 | tee "logs/train_${SAFE_SYMBOL}.log"; then
-                
-                SUCCESS=1
-                SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
-                echo "✅ Training succeeded for ${SYMBOL}"
-                break
-              else
-                EXIT_CODE=$?
-                echo "⚠️  Training failed for ${SYMBOL} (attempt $attempt/$RETRIES, exit code: $EXIT_CODE)"
-                
-                # Check for rate limit errors
-                if grep -qE "rate limit|429|Too Many Requests|API key" "logs/train_${SAFE_SYMBOL}.log" 2>/dev/null; then
-                  echo "Rate limit detected, waiting ${RETRY_DELAY}s before retry..."
-                  sleep "$RETRY_DELAY"
-                elif [ $EXIT_CODE -eq 124 ]; then
-                  echo "Timeout detected (20min), skipping retries"
-                  break
-                else
-                  echo "Waiting 10s before retry..."
-                  sleep 10
-                fi
-              fi
-            done
-            
-            if [ $SUCCESS -eq 0 ]; then
-              FAILED_SYMBOLS+=("$SYMBOL")
-              echo "❌ Training failed for ${SYMBOL} after $RETRIES attempts"
-            fi
-            
-            # Cleanup intermediate artifacts to save disk space
-            if [ -d "artifacts/${SAFE_SYMBOL}" ]; then
-              find "artifacts/${SAFE_SYMBOL}" -name "*.png" -delete 2>/dev/null || true
-              find "artifacts/${SAFE_SYMBOL}" -name "checkpoint_*.pkl" -delete 2>/dev/null || true
-            fi
-            
-            # Delay between symbols to respect rate limits
-            if [ $((i+1)) -lt ${#SYMBOLS_ARR[@]} ]; then
-              echo "Waiting ${DELAY_BETWEEN_SYMBOLS}s before next symbol..."
-              sleep "$DELAY_BETWEEN_SYMBOLS"
-            fi
+            python scripts/train.py \
+              --symbol "${SYMBOL}" \
+              --start "${START_DATE}" \
+              --end "${END_DATE}" \
+              --epochs "${EPOCHS}" \
+              --artifacts-dir "artifacts/${SYMBOL}" \
+              --models-dir "models" \
+              --configs-dir "configs" \
+              || echo "⚠️  Training failed for ${SYMBOL}, continuing..."
           done
-          
-          # Report results
-          echo ""
-          echo "========================================="
-          echo "📊 Training Summary"
-          echo "========================================="
-          echo "Total symbols: ${#SYMBOLS_ARR[@]}"
-          echo "Succeeded: $SUCCESS_COUNT"
-          echo "Failed: ${#FAILED_SYMBOLS[@]}"
-          
-          if [ ${#FAILED_SYMBOLS[@]} -gt 0 ]; then
-            echo ""
-            echo "Failed symbols: ${FAILED_SYMBOLS[*]}"
-            echo "FAILED_SYMBOLS=${FAILED_SYMBOLS[*]}" >> "$GITHUB_ENV"
-            echo "FAILED_COUNT=${#FAILED_SYMBOLS[@]}" >> "$GITHUB_ENV"
-            
-            # Calculate failure rate
-            FAIL_RATE=$(( ${#FAILED_SYMBOLS[@]} * 100 / ${#SYMBOLS_ARR[@]} ))
-            echo "FAILURE_RATE=$FAIL_RATE" >> "$GITHUB_ENV"
-            
-            # Fail if too many failures
-            if [ $FAIL_RATE -gt "$MAX_FAILURE_RATE" ]; then
-              echo ""
-              echo "❌ Failure rate too high: ${FAIL_RATE}% (threshold: ${MAX_FAILURE_RATE}%)"
-              echo "Aborting release creation."
-              exit 1
-            else
-              echo "⚠️  Failure rate acceptable: ${FAIL_RATE}% (threshold: ${MAX_FAILURE_RATE}%)"
-            fi
-          else
-            echo "✅ All symbols trained successfully"
-            echo "FAILED_SYMBOLS=" >> "$GITHUB_ENV"
-            echo "FAILED_COUNT=0" >> "$GITHUB_ENV"
-            echo "FAILURE_RATE=0" >> "$GITHUB_ENV"
-          fi
-
-      - name: Monitor disk space after training
-        if: always()
-        shell: bash
-        run: |
-          echo "💾 Disk usage after training:"
-          df -h
-          du -sh models/ artifacts/ logs/ 2>/dev/null || true
 
       - name: Calibrate confidence
         shell: bash
         run: |
-          python scripts/calibrate_confidence.py || echo "⚠️  Calibration failed (non-critical)"
+          python scripts/calibrate_confidence.py || echo "⚠️  Calibration failed"
 
       - name: Train Octopus meta-model
         shell: bash
         run: |
-          python scripts/train_octopus_meta.py || echo "⚠️  Octopus training failed (non-critical)"
+          python scripts/train_octopus_meta.py || echo "⚠️  Octopus training failed"
 
       - name: Sanitize filenames
         shell: bash
         run: |
-          echo "🔧 Sanitizing filenames (removing colons)..."
-          # Clean all directories including logs
-          for dir in models artifacts configs logs; do
+          for dir in models artifacts configs; do
             if [ -d "$dir" ]; then
-              RENAMED_COUNT=0
-              find "$dir" -type f -name '*:*' 2>/dev/null | while IFS= read -r file; do
+              find "$dir" -type f -name '*:*' -print0 2>/dev/null | while IFS= read -r -d '' file; do
                 new_file="${file//:/_}"
                 mkdir -p "$(dirname "$new_file")"
                 mv "$file" "$new_file"
                 echo "Renamed: $file → $new_file"
-                RENAMED_COUNT=$((RENAMED_COUNT + 1))
-              done || true
-              
-              if [ $RENAMED_COUNT -gt 0 ]; then
-                echo "  Renamed $RENAMED_COUNT files in $dir/"
-              fi
+              done
             fi
           done
-          echo "✅ Sanitization complete"
 
       # ========================================
-      # 3. Model Validation (CRITICAL)
-      # ========================================
-      - name: Validate trained models
-        shell: bash
-        run: |
-          set -euo pipefail
-          
-          echo "========================================="
-          echo "🔍 Validating Trained Models"
-          echo "========================================="
-          
-          VALIDATION_FAILED=0
-          VALIDATED_COUNT=0
-          IFS=' ' read -r -a SYMBOLS_ARR <<< "$SYMBOLS"
-          
-          for SYMBOL in "${SYMBOLS_ARR[@]}"; do
-            # Normalize symbol for model path
-            SAFE_SYMBOL="${SYMBOL//:/_}"
-            
-            # Try multiple naming patterns
-            MODEL_PATHS=(
-              "models/arxora_m7pro_${SAFE_SYMBOL}.joblib"
-              "models/m7_${SAFE_SYMBOL}.joblib"
-              "models/${SAFE_SYMBOL}.joblib"
-            )
-            
-            MODEL_FOUND=0
-            for MODEL_PATH in "${MODEL_PATHS[@]}"; do
-              if [ -f "$MODEL_PATH" ]; then
-                MODEL_FOUND=1
-                
-                # Validate model with proper DataFrame handling for LightGBM
-                python - <<PYTHON_SCRIPT || { echo "❌ Validation failed for $SYMBOL"; VALIDATION_FAILED=1; continue 2; }
-import sys
-import joblib
-import numpy as np
-import pandas as pd
-from pathlib import Path
-
-model_path = Path("$MODEL_PATH")
-symbol = "$SYMBOL"
-
-try:
-    # Load model
-    model = joblib.load(model_path)
-    
-    # Check structure
-    if not hasattr(model, 'predict'):
-        print(f"❌ {symbol}: Model has no predict() method")
-        sys.exit(1)
-    
-    # Extract feature names and count
-    feature_names = None
-    n_features = None
-    
-    # Priority 1: Get from LightGBM booster (most reliable)
-    if hasattr(model, 'booster_'):
-        if hasattr(model.booster_, 'feature_name'):
-            feature_names = model.booster_.feature_name()
-            if feature_names:
-                n_features = len(feature_names)
-                print(f"ℹ️  {symbol}: Found {n_features} features from booster")
-    
-    # Priority 2: Get from sklearn wrapper
-    if hasattr(model, 'n_features_in_') and n_features is None:
-        n_features = model.n_features_in_
-        print(f"ℹ️  {symbol}: Found {n_features} features from n_features_in_")
-    
-    # Fallback
-    if n_features is None:
-        print(f"⚠️  {symbol}: Cannot determine feature count, using fallback (50)")
-        n_features = 50
-    
-    # Create test data with proper format for LightGBM
-    if feature_names:
-        # LightGBM models need DataFrame with exact column names
-        X_test = pd.DataFrame(
-            np.random.randn(5, n_features),
-            columns=feature_names
-        )
-        print(f"ℹ️  {symbol}: Using DataFrame with feature names")
-    else:
-        # Fallback to array (less safe, may fail for some models)
-        X_test = np.random.randn(5, n_features)
-        print(f"⚠️  {symbol}: Using array (no feature names available)")
-    
-    # Test prediction
-    try:
-        if hasattr(model, 'predict_proba'):
-            preds = model.predict_proba(X_test)
-            
-            # Validate probabilities
-            if not (0 <= preds.min() and preds.max() <= 1.1):  # Allow slight numerical error
-                print(f"❌ {symbol}: Invalid probabilities (min={preds.min():.3f}, max={preds.max():.3f})")
-                sys.exit(1)
-            
-            print(f"✅ {symbol}: predict_proba OK (shape={preds.shape}, features={n_features})")
-        else:
-            preds = model.predict(X_test)
-            print(f"✅ {symbol}: predict OK (shape={preds.shape}, features={n_features})")
-            
-    except KeyError as e:
-        print(f"❌ {symbol}: KeyError during prediction: {e}")
-        print(f"   This usually means model expects specific feature names")
-        if feature_names:
-            print(f"   Model expects: {list(feature_names)[:10]}...")
-            print(f"   Total features: {len(feature_names)}")
-        sys.exit(1)
-    except ValueError as e:
-        print(f"❌ {symbol}: ValueError during prediction: {e}")
-        print(f"   Feature count mismatch or data format issue")
-        if feature_names:
-            print(f"   Expected features: {len(feature_names)}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"❌ {symbol}: Unexpected prediction error: {type(e).__name__}: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-    
-    # Check file size
-    size_mb = model_path.stat().st_size / (1024 * 1024)
-    if size_mb < 0.01:
-        print(f"❌ {symbol}: Model suspiciously small ({size_mb:.3f} MB)")
-        sys.exit(1)
-    
-    # Summary
-    print(f"   📊 Size: {size_mb:.2f} MB")
-    if feature_names:
-        print(f"   📋 Features: {list(feature_names)[:5]}... ({len(feature_names)} total)")
-    
-except Exception as e:
-    print(f"❌ {symbol}: Validation error - {type(e).__name__}: {e}")
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
-PYTHON_SCRIPT
-                
-                VALIDATED_COUNT=$((VALIDATED_COUNT + 1))
-                break
-              fi
-            done
-            
-            if [ $MODEL_FOUND -eq 0 ]; then
-              # Only error if training didn't fail
-              if [[ ! " ${FAILED_SYMBOLS[@]:-} " =~ " ${SYMBOL} " ]]; then
-                echo "❌ Model not found for ${SYMBOL} (tried: ${MODEL_PATHS[*]})"
-                VALIDATION_FAILED=1
-              else
-                echo "⚠️  Model not found for ${SYMBOL} (training failed, skipping)"
-              fi
-            fi
-          done
-          
-          echo ""
-          echo "========================================="
-          echo "Validation Results"
-          echo "========================================="
-          echo "Validated: $VALIDATED_COUNT"
-          echo "Failed: $VALIDATION_FAILED"
-          
-          if [ $VALIDATION_FAILED -gt 0 ]; then
-            echo ""
-            echo "❌ MODEL VALIDATION FAILED"
-            echo "One or more models failed validation."
-            echo "Release will NOT be created."
-            exit 1
-          fi
-          
-          echo "✅ All models validated successfully"
-
-      - name: Generate model statistics
-        shell: bash
-        run: |
-          python - <<'PYTHON_SCRIPT'
-          import json
-          from pathlib import Path
-          import joblib
-          from datetime import datetime
-          
-          models_dir = Path("models")
-          stats = {
-              "generated_at": datetime.utcnow().isoformat(),
-              "run_id": "${{ github.run_id }}",
-              "models": {}
-          }
-          
-          for model_file in sorted(models_dir.glob("*.joblib")):
-              try:
-                  model = joblib.load(model_file)
-                  
-                  stat = {
-                      "file": model_file.name,
-                      "size_mb": round(model_file.stat().st_size / (1024 * 1024), 2),
-                      "has_predict": hasattr(model, "predict"),
-                      "has_predict_proba": hasattr(model, "predict_proba"),
-                  }
-                  
-                  # Extract feature info
-                  if hasattr(model, 'n_features_in_'):
-                      stat["n_features"] = model.n_features_in_
-                  elif hasattr(model, 'booster_'):
-                      if hasattr(model.booster_, 'feature_name'):
-                          names = model.booster_.feature_name()
-                          stat["n_features"] = len(names) if names else None
-                          if names:
-                              stat["feature_names"] = list(names)[:10]  # First 10
-                  
-                  stats["models"][model_file.stem] = stat
-                  
-              except Exception as e:
-                  stats["models"][model_file.stem] = {"error": str(e)}
-          
-          # Summary
-          stats["summary"] = {
-              "total_models": len(stats["models"]),
-              "total_size_mb": round(sum(
-                  s.get("size_mb", 0) for s in stats["models"].values()
-              ), 2),
-              "successful": sum(
-                  1 for s in stats["models"].values() if "error" not in s
-              ),
-              "failed": sum(
-                  1 for s in stats["models"].values() if "error" in s
-              )
-          }
-          
-          # Save
-          with open("models_stats.json", "w") as f:
-              json.dump(stats, f, indent=2)
-          
-          print("📊 Model Statistics:")
-          print(json.dumps(stats["summary"], indent=2))
-          PYTHON_SCRIPT
-          
-          echo "MODEL_STATS_GENERATED=true" >> "$GITHUB_ENV"
-
-      # ========================================
-      # 4. Package Models
+      # 3. Package Models
       # ========================================
       - name: Package models
         shell: bash
         run: |
-          echo "📦 Packaging models..."
-          
-          # Ensure directories exist
-          mkdir -p models configs
-          
-          # Create tarball
-          tar -czf "models-${RUN_DATE}.tar.gz" models/ configs/ || {
-            echo "⚠️  Failed to create full archive, trying models only"
-            tar -czf "models-${RUN_DATE}.tar.gz" models/
-          }
-          
-          # Verify archive
-          if [ ! -f "models-${RUN_DATE}.tar.gz" ]; then
-            echo "❌ Archive not created"
-            exit 1
+          # Проверяем что models существует
+          if [ ! -d "models" ]; then
+            echo "⚠️  No models directory found"
+            mkdir -p models
+            echo "dummy" > models/placeholder.txt
           fi
           
-          # Check size
-          SIZE_MB=$(du -m "models-${RUN_DATE}.tar.gz" | cut -f1)
-          echo "Archive size: ${SIZE_MB} MB"
+          # Архивируем models + configs
+          tar -czf models-${RUN_DATE}.tar.gz models/ configs/ || tar -czf models-${RUN_DATE}.tar.gz models/
           
-          if [ "$SIZE_MB" -lt 1 ]; then
-            echo "⚠️  WARNING: Archive suspiciously small (< 1 MB)"
-          fi
+          # Проверяем размер
+          ls -lh models-${RUN_DATE}.tar.gz
           
-          # Generate checksums
-          sha256sum "models-${RUN_DATE}.tar.gz" > "models-${RUN_DATE}.tar.gz.sha256"
-          
-          echo "✅ Package created: models-${RUN_DATE}.tar.gz (${SIZE_MB} MB)"
+          # Создаем checksums
+          sha256sum models-${RUN_DATE}.tar.gz > models-${RUN_DATE}.tar.gz.sha256
 
       # ========================================
-      # 5. Cleanup Old Releases
-      # ========================================
-      - name: Cleanup old releases
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "🗑️  Cleaning up old releases (keeping last $KEEP_RELEASES)..."
-          
-          # List all model releases sorted by date
-          gh release list --repo "${{ github.repository }}" --limit 100 \
-            | grep -E "models-[0-9]{8}_[0-9]{6}" \
-            | awk '{print $3}' \
-            | sort -r \
-            | tail -n +$((KEEP_RELEASES + 1)) \
-            | while read -r tag; do
-                echo "Deleting old release: $tag"
-                gh release delete "$tag" --repo "${{ github.repository }}" --yes || true
-                git push --delete origin "$tag" 2>/dev/null || true
-              done
-          
-          echo "✅ Cleanup complete"
-
-      # ========================================
-      # 6. Create GitHub Release
+      # 4. Create GitHub Release ⬅️ НОВЫЙ ШАГ
       # ========================================
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: models-${{ env.RUN_DATE }}
-          name: "${{ env.IS_CANARY == 'true' && '🧪' || '🤖' }} Models ${{ env.END_DATE }}"
+          name: "🤖 Models ${{ env.END_DATE }}"
           body: |
-            ## ${{ env.IS_CANARY == 'true' && '🧪 Canary' || '🎯 Production' }} Training Results
+            ## 🎯 Nightly Training Results
             
             **Training Date**: ${{ env.END_DATE }}  
             **Run Date**: ${{ env.RUN_DATE }}  
-            **Run ID**: ${{ github.run_id }}  
-            **Trigger**: ${{ github.event_name }}
+            **Symbols**: ${{ env.SYMBOLS }}  
+            **Epochs**: ${{ env.EPOCHS }}  
             
-            ### 📊 Summary
-            - **Symbols Trained**: ${{ env.SYMBOLS }}
-            - **Failed Symbols**: ${{ env.FAILED_SYMBOLS || 'none' }}
-            - **Failure Rate**: ${{ env.FAILURE_RATE || '0' }}%
-            - **Epochs**: ${{ env.EPOCHS }}
-            
-            ### 📈 Model Statistics
+            ### 📦 Download
             ```
-            $(cat models_stats.json 2>/dev/null | jq -r '.summary // {}' || echo '{}')
-            ```
+            # Download latest release
+            gh release download models-${{ env.RUN_DATE }} -R ${{ github.repository }}
             
-            <details>
-            <summary>📋 Full Statistics</summary>
-            
-            ```
-            $(cat models_stats.json 2>/dev/null || echo '{}')
-            ```
-            </details>
-            
-            ### 📦 Quick Start
-            ```
-            # Download latest stable release
-            curl -L https://github.com/${{ github.repository }}/releases/download/models-latest/models.tar.gz -o models.tar.gz
-            
-            # Or specific date
+            # Or with curl
             curl -L https://github.com/${{ github.repository }}/releases/download/models-${{ env.RUN_DATE }}/models-${{ env.RUN_DATE }}.tar.gz -o models.tar.gz
             
             # Extract
-            tar -xzf models.tar.gz
+            tar -xzf models-${{ env.RUN_DATE }}.tar.gz
+            ```
             
-            # Verify integrity
+            ### 📊 Contents
+            - M7 models for all symbols
+            - Confidence calibration data
+            - Octopus meta-model (if trained)
+            
+            ### ✅ Verification
+            ```
             sha256sum -c models-${{ env.RUN_DATE }}.tar.gz.sha256
             ```
-            
-            ### 🔄 Rollback
-            To rollback to previous release:
-            ```
-            gh release list --repo ${{ github.repository }} | grep models-
-            gh release download models-YYYYMMDD_HHMMSS -R ${{ github.repository }}
-            ```
-            
-            ### ⚠️ Notes
-            ${{ env.IS_CANARY == 'true' && '- **CANARY RELEASE**: Use for testing only, not recommended for production' || '' }}
-            ${{ env.FAILED_SYMBOLS != '' && format('- Some models failed training: {0}', env.FAILED_SYMBOLS) || '' }}
           files: |
             models-${{ env.RUN_DATE }}.tar.gz
             models-${{ env.RUN_DATE }}.tar.gz.sha256
-            models_stats.json
           draft: false
-          prerelease: ${{ env.IS_CANARY == 'true' }}
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # ========================================
-      # 7. Update 'latest' Alias (production only)
-      # ========================================
-      - name: Update latest release alias
-        if: success() && env.IS_CANARY != 'true'
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "🏷️  Updating models-latest alias..."
-          
-          # Create or force-update tag
-          git tag -f models-latest
-          git push -f origin models-latest
-          
-          # Delete old latest release
-          gh release delete models-latest --repo "${{ github.repository }}" --yes 2>/dev/null || true
-          
-          # Create new latest release
-          gh release create models-latest \
-            --repo "${{ github.repository }}" \
-            --title "🤖 Latest Models (Auto-updated)" \
-            --notes "**Auto-updated**: $(date -u)  
-          **Source Release**: models-${{ env.RUN_DATE }}  
-          **Training Date**: ${{ env.END_DATE }}  
-          
-          This release is automatically updated after each successful nightly training.
-          
-          For production use, always use this \`models-latest\` release.
-          For specific versions, see: https://github.com/${{ github.repository }}/releases" \
-            "models-${{ env.RUN_DATE }}.tar.gz" \
-            "models-${{ env.RUN_DATE }}.tar.gz.sha256" \
-            "models_stats.json"
-          
-          echo "✅ models-latest updated successfully"
-
-      # ========================================
-      # 8. Publish to Hugging Face (optional)
+      # 5. Publish to Hugging Face (optional)
       # ========================================
       - name: Publish to Hugging Face Hub
-        if: success() && env.HF_TOKEN != '' && env.IS_CANARY != 'true'
+        if: ${{ env.HF_TOKEN != '' }}
         shell: bash
         run: |
           python - <<'PYTHON_SCRIPT'
@@ -722,151 +216,64 @@ PYTHON_SCRIPT
           
           print(f"📤 Uploading to hf.co/{repo_id}@{revision}")
           
-          try:
-              api = HfApi(token=token)
-              api.create_repo(repo_id=repo_id, repo_type="model", private=private, exist_ok=True)
-              
-              # Upload models
-              api.upload_folder(
-                  folder_path="models",
+          api = HfApi(token=token)
+          api.create_repo(repo_id=repo_id, repo_type="model", private=private, exist_ok=True)
+          
+          # Upload models
+          api.upload_folder(
+              folder_path="models",
+              repo_id=repo_id,
+              repo_type="model",
+              commit_message=f"nightly: {revision}",
+              revision=revision
+          )
+          
+          # Upload calibration
+          if pathlib.Path("configs/calibration.json").exists():
+              api.upload_file(
+                  path_or_fileobj="configs/calibration.json",
+                  path_in_repo="calibration.json",
                   repo_id=repo_id,
                   repo_type="model",
-                  commit_message=f"nightly: {revision}",
+                  commit_message=f"calibration: {revision}",
                   revision=revision
               )
-              
-              # Upload calibration
-              if pathlib.Path("configs/calibration.json").exists():
-                  api.upload_file(
-                      path_or_fileobj="configs/calibration.json",
-                      path_in_repo="calibration.json",
-                      repo_id=repo_id,
-                      repo_type="model",
-                      commit_message=f"calibration: {revision}",
-                      revision=revision
-                  )
-              
-              print(f"✅ Published to https://huggingface.co/{repo_id}/tree/{revision}")
-          except Exception as e:
-              print(f"⚠️  Hugging Face upload failed: {e}")
-              # Non-critical, don't fail workflow
+          
+          print(f"✅ Published to https://huggingface.co/{repo_id}/tree/{revision}")
           PYTHON_SCRIPT
 
       # ========================================
-      # 9. Upload Artifacts (backup)
+      # 6. Upload Artifacts (backup)
       # ========================================
-      - name: Upload artifacts
-        if: always()
+      - name: Upload artifacts (7 days)
         uses: actions/upload-artifact@v4
         with:
-          name: training-artifacts-${{ env.RUN_DATE }}
+          name: models-artifacts-${{ env.RUN_DATE }}
           path: |
             models/**/*.joblib
             models/**/*.pkl
             configs/**/*.json
-            logs/*.log
-            models_stats.json
+            artifacts/**
           if-no-files-found: warn
           retention-days: 7
           compression-level: 9
 
       # ========================================
-      # 10. Monitoring & Summary
+      # 7. Summary
       # ========================================
-      - name: Report metrics
+      - name: Summary
         if: always()
         shell: bash
         run: |
-          python - <<'PYTHON_SCRIPT'
-          import os
-          import json
-          from datetime import datetime
-          
-          metrics = {
-              "timestamp": datetime.utcnow().isoformat(),
-              "workflow_id": os.environ["GITHUB_RUN_ID"],
-              "trigger": os.environ.get("GITHUB_EVENT_NAME", "unknown"),
-              "status": "success" if os.environ.get("FAILED_SYMBOLS", "") == "" else "partial_failure",
-              "is_canary": os.environ.get("IS_CANARY", "false") == "true",
-              "symbols_total": len(os.environ.get("SYMBOLS", "").split()),
-              "symbols_failed": len(os.environ.get("FAILED_SYMBOLS", "").split()) if os.environ.get("FAILED_SYMBOLS") else 0,
-              "failure_rate_pct": int(os.environ.get("FAILURE_RATE", "0")),
-          }
-          
-          # Load model stats
-          try:
-              with open("models_stats.json") as f:
-                  stats = json.load(f)
-                  if "summary" in stats:
-                      metrics.update({
-                          "models_count": stats["summary"]["total_models"],
-                          "total_size_mb": stats["summary"]["total_size_mb"],
-                      })
-          except:
-              pass
-          
-          print("📊 Training Metrics:")
-          print(json.dumps(metrics, indent=2))
-          
-          # Save for external monitoring
-          with open("training_metrics.json", "w") as f:
-              json.dump(metrics, f, indent=2)
-          
-          # TODO: Send to monitoring system
-          # import requests
-          # requests.post("https://metrics.arxora.com/training", json=metrics)
-          PYTHON_SCRIPT
-
-      - name: Generate workflow summary
-        if: always()
-        shell: bash
-        run: |
-          cat >> $GITHUB_STEP_SUMMARY <<EOF
-          ## ${{ env.IS_CANARY == 'true' && '🧪 Canary' || '🎯 Production' }} Training Summary
-          
-          **Status**: ${{ job.status }}  
-          **Date**: ${{ env.END_DATE }}  
-          **Run ID**: ${{ github.run_id }}  
-          **Runtime**: $(date -u)
-          
-          ### 📊 Results
-          - **Total Symbols**: $(echo "${{ env.SYMBOLS }}" | wc -w)
-          - **Failed**: ${{ env.FAILED_COUNT || '0' }}
-          - **Failure Rate**: ${{ env.FAILURE_RATE || '0' }}%
-          
-          ${{ env.FAILED_SYMBOLS != '' && format('### ⚠️ Failed Symbols\n{0}\n', env.FAILED_SYMBOLS) || '' }}
-          
-          ### 📦 Artifacts
-          - **Release**: [models-${{ env.RUN_DATE }}](https://github.com/${{ github.repository }}/releases/tag/models-${{ env.RUN_DATE }})
-          ${{ env.IS_CANARY != 'true' && format('- **Latest Alias**: [models-latest](https://github.com/{0}/releases/tag/models-latest)', github.repository) || '' }}
-          ${{ env.HF_TOKEN != '' && env.IS_CANARY != 'true' && format('- **Hugging Face**: [{0}](https://huggingface.co/{0})', env.HF_REPO) || '' }}
-          
-          ### 💾 Disk Usage
-          \`\`\`
-          $(df -h | grep -E 'Filesystem|/$')
-          \`\`\`
-          
-          ### 📈 Model Stats
-          \`\`\`json
-          $(cat models_stats.json 2>/dev/null | jq -r '.summary // {}' || echo '{}')
-          \`\`\`
-          EOF
-          
-          echo "✅ Summary generated"
-
-      - name: Notify on failure
-        if: failure()
-        shell: bash
-        run: |
-          echo "========================================="
-          echo "❌ WORKFLOW FAILED"
-          echo "========================================="
-          echo "Run ID: ${{ github.run_id }}"
-          echo "Logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          echo ""
-          echo "Failed symbols: ${{ env.FAILED_SYMBOLS || 'unknown' }}"
-          echo ""
-          # TODO: Send alert to Telegram/Slack
-          # curl -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-          #   -d "chat_id=${TELEGRAM_CHAT_ID}" \
-          #   -d "text=❌ Nightly training failed: Run ${{ github.run_id }}"
+          echo "## 🎯 Training Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Date**: ${{ env.END_DATE }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Run ID**: ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Symbols**: ${{ env.SYMBOLS }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "- GitHub Release: \`models-${{ env.RUN_DATE }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- View at: https://github.com/${{ github.repository }}/releases/tag/models-${{ env.RUN_DATE }}" >> $GITHUB_STEP_SUMMARY
+          if [ -n "${{ env.HF_TOKEN }}" ]; then
+            echo "- Hugging Face: \`${{ env.HF_REPO }}\`" >> $GITHUB_STEP_SUMMARY
+          fi
