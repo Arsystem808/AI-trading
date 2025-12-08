@@ -321,68 +321,112 @@ jobs:
               if [ -f "$MODEL_PATH" ]; then
                 MODEL_FOUND=1
                 
-                # Validate model
+                # Validate model with proper DataFrame handling for LightGBM
                 python - <<PYTHON_SCRIPT || { echo "❌ Validation failed for $SYMBOL"; VALIDATION_FAILED=1; continue 2; }
-          import sys
-          import joblib
-          import numpy as np
-          from pathlib import Path
-          
-          model_path = Path("$MODEL_PATH")
-          symbol = "$SYMBOL"
-          
-          try:
-              # Load model
-              model = joblib.load(model_path)
-              
-              # Check structure
-              if not hasattr(model, 'predict'):
-                  print(f"❌ {symbol}: Model has no predict() method")
-                  sys.exit(1)
-              
-              # Extract feature count
-              n_features = None
-              if hasattr(model, 'n_features_in_'):
-                  n_features = model.n_features_in_
-              elif hasattr(model, 'booster_'):
-                  if hasattr(model.booster_, 'feature_name'):
-                      feature_names = model.booster_.feature_name()
-                      n_features = len(feature_names) if feature_names else None
-              
-              if n_features is None:
-                  print(f"⚠️  {symbol}: Cannot determine feature count, using fallback")
-                  n_features = 50
-              
-              # Test prediction
-              X_test = np.random.randn(5, n_features)
-              
-              if hasattr(model, 'predict_proba'):
-                  preds = model.predict_proba(X_test)
-                  
-                  # Validate probabilities
-                  if not (0 <= preds.min() and preds.max() <= 1.1):  # Allow slight numerical error
-                      print(f"❌ {symbol}: Invalid probabilities (min={preds.min():.3f}, max={preds.max():.3f})")
-                      sys.exit(1)
-                  
-                  print(f"✅ {symbol}: predict_proba OK (shape={preds.shape}, features={n_features})")
-              else:
-                  preds = model.predict(X_test)
-                  print(f"✅ {symbol}: predict OK (shape={preds.shape}, features={n_features})")
-              
-              # Check file size
-              size_mb = model_path.stat().st_size / (1024 * 1024)
-              if size_mb < 0.01:
-                  print(f"❌ {symbol}: Model suspiciously small ({size_mb:.3f} MB)")
-                  sys.exit(1)
-              
-              print(f"   Size: {size_mb:.2f} MB")
-              
-          except Exception as e:
-              print(f"❌ {symbol}: Validation error - {e}")
-              import traceback
-              traceback.print_exc()
-              sys.exit(1)
-          PYTHON_SCRIPT
+import sys
+import joblib
+import numpy as np
+import pandas as pd
+from pathlib import Path
+
+model_path = Path("$MODEL_PATH")
+symbol = "$SYMBOL"
+
+try:
+    # Load model
+    model = joblib.load(model_path)
+    
+    # Check structure
+    if not hasattr(model, 'predict'):
+        print(f"❌ {symbol}: Model has no predict() method")
+        sys.exit(1)
+    
+    # Extract feature names and count
+    feature_names = None
+    n_features = None
+    
+    # Priority 1: Get from LightGBM booster (most reliable)
+    if hasattr(model, 'booster_'):
+        if hasattr(model.booster_, 'feature_name'):
+            feature_names = model.booster_.feature_name()
+            if feature_names:
+                n_features = len(feature_names)
+                print(f"ℹ️  {symbol}: Found {n_features} features from booster")
+    
+    # Priority 2: Get from sklearn wrapper
+    if hasattr(model, 'n_features_in_') and n_features is None:
+        n_features = model.n_features_in_
+        print(f"ℹ️  {symbol}: Found {n_features} features from n_features_in_")
+    
+    # Fallback
+    if n_features is None:
+        print(f"⚠️  {symbol}: Cannot determine feature count, using fallback (50)")
+        n_features = 50
+    
+    # Create test data with proper format for LightGBM
+    if feature_names:
+        # LightGBM models need DataFrame with exact column names
+        X_test = pd.DataFrame(
+            np.random.randn(5, n_features),
+            columns=feature_names
+        )
+        print(f"ℹ️  {symbol}: Using DataFrame with feature names")
+    else:
+        # Fallback to array (less safe, may fail for some models)
+        X_test = np.random.randn(5, n_features)
+        print(f"⚠️  {symbol}: Using array (no feature names available)")
+    
+    # Test prediction
+    try:
+        if hasattr(model, 'predict_proba'):
+            preds = model.predict_proba(X_test)
+            
+            # Validate probabilities
+            if not (0 <= preds.min() and preds.max() <= 1.1):  # Allow slight numerical error
+                print(f"❌ {symbol}: Invalid probabilities (min={preds.min():.3f}, max={preds.max():.3f})")
+                sys.exit(1)
+            
+            print(f"✅ {symbol}: predict_proba OK (shape={preds.shape}, features={n_features})")
+        else:
+            preds = model.predict(X_test)
+            print(f"✅ {symbol}: predict OK (shape={preds.shape}, features={n_features})")
+            
+    except KeyError as e:
+        print(f"❌ {symbol}: KeyError during prediction: {e}")
+        print(f"   This usually means model expects specific feature names")
+        if feature_names:
+            print(f"   Model expects: {list(feature_names)[:10]}...")
+            print(f"   Total features: {len(feature_names)}")
+        sys.exit(1)
+    except ValueError as e:
+        print(f"❌ {symbol}: ValueError during prediction: {e}")
+        print(f"   Feature count mismatch or data format issue")
+        if feature_names:
+            print(f"   Expected features: {len(feature_names)}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ {symbol}: Unexpected prediction error: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+    
+    # Check file size
+    size_mb = model_path.stat().st_size / (1024 * 1024)
+    if size_mb < 0.01:
+        print(f"❌ {symbol}: Model suspiciously small ({size_mb:.3f} MB)")
+        sys.exit(1)
+    
+    # Summary
+    print(f"   📊 Size: {size_mb:.2f} MB")
+    if feature_names:
+        print(f"   📋 Features: {list(feature_names)[:5]}... ({len(feature_names)} total)")
+    
+except Exception as e:
+    print(f"❌ {symbol}: Validation error - {type(e).__name__}: {e}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
+PYTHON_SCRIPT
                 
                 VALIDATED_COUNT=$((VALIDATED_COUNT + 1))
                 break
