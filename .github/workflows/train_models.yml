@@ -32,8 +32,8 @@ jobs:
       POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
       POLYGON_TIER: ${{ vars.POLYGON_TIER || 'basic' }}
       
-      # Core symbols (production)
-      SYMBOLS: ${{ inputs.symbols_override || 'AAPL SPY X:BTCUSD X:ETHUSD QQQ TLT TSLA X:XRPUSD OXY X:SOLUSD MARA SOXL NVDA GS GLD' }}
+      # Core symbols (production) - используем нормализованные имена для crypto
+      SYMBOLS: ${{ inputs.symbols_override || 'AAPL SPY X:BTCUSD X:ETHUSD QQQ TLT TSLA IBIT EETH MSFT OXY BITO MARA SOXL NVDA GS GLD' }}
       START_DATE: "2019-01-01"
       EPOCHS: "12"
       
@@ -147,9 +147,13 @@ jobs:
           
           for i in "${!SYMBOLS_ARR[@]}"; do
             SYMBOL="${SYMBOLS_ARR[$i]}"
+            # Sanitize symbol for filenames (X:BTCUSD → X_BTCUSD)
+            SAFE_SYMBOL="${SYMBOL//:/_}"
+            
             echo ""
             echo "========================================="
             echo "[$((i+1))/${#SYMBOLS_ARR[@]}] Training: ${SYMBOL}"
+            echo "  Safe name: ${SAFE_SYMBOL}"
             echo "========================================="
             
             # Train with retry logic
@@ -159,14 +163,15 @@ jobs:
             for attempt in $(seq 1 $RETRIES); do
               echo "Attempt $attempt/$RETRIES for ${SYMBOL}..."
               
+              # Use SAFE_SYMBOL for all file paths
               if timeout 1200 python scripts/train.py \
                 --symbol "${SYMBOL}" \
                 --start "${START_DATE}" \
                 --end "${END_DATE}" \
                 --epochs "${EPOCHS}" \
-                --artifacts-dir "artifacts/${SYMBOL}" \
+                --artifacts-dir "artifacts/${SAFE_SYMBOL}" \
                 --models-dir "models" \
-                --configs-dir "configs" 2>&1 | tee "logs/train_${SYMBOL}.log"; then
+                --configs-dir "configs" 2>&1 | tee "logs/train_${SAFE_SYMBOL}.log"; then
                 
                 SUCCESS=1
                 SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
@@ -177,7 +182,7 @@ jobs:
                 echo "⚠️  Training failed for ${SYMBOL} (attempt $attempt/$RETRIES, exit code: $EXIT_CODE)"
                 
                 # Check for rate limit errors
-                if grep -qE "rate limit|429|Too Many Requests|API key" "logs/train_${SYMBOL}.log" 2>/dev/null; then
+                if grep -qE "rate limit|429|Too Many Requests|API key" "logs/train_${SAFE_SYMBOL}.log" 2>/dev/null; then
                   echo "Rate limit detected, waiting ${RETRY_DELAY}s before retry..."
                   sleep "$RETRY_DELAY"
                 elif [ $EXIT_CODE -eq 124 ]; then
@@ -196,9 +201,9 @@ jobs:
             fi
             
             # Cleanup intermediate artifacts to save disk space
-            if [ -d "artifacts/${SYMBOL}" ]; then
-              find "artifacts/${SYMBOL}" -name "*.png" -delete 2>/dev/null || true
-              find "artifacts/${SYMBOL}" -name "checkpoint_*.pkl" -delete 2>/dev/null || true
+            if [ -d "artifacts/${SAFE_SYMBOL}" ]; then
+              find "artifacts/${SAFE_SYMBOL}" -name "*.png" -delete 2>/dev/null || true
+              find "artifacts/${SAFE_SYMBOL}" -name "checkpoint_*.pkl" -delete 2>/dev/null || true
             fi
             
             # Delay between symbols to respect rate limits
@@ -265,16 +270,24 @@ jobs:
         shell: bash
         run: |
           echo "🔧 Sanitizing filenames (removing colons)..."
-          for dir in models artifacts configs; do
+          # Clean all directories including logs
+          for dir in models artifacts configs logs; do
             if [ -d "$dir" ]; then
+              RENAMED_COUNT=0
               find "$dir" -type f -name '*:*' 2>/dev/null | while IFS= read -r file; do
                 new_file="${file//:/_}"
                 mkdir -p "$(dirname "$new_file")"
                 mv "$file" "$new_file"
                 echo "Renamed: $file → $new_file"
+                RENAMED_COUNT=$((RENAMED_COUNT + 1))
               done || true
+              
+              if [ $RENAMED_COUNT -gt 0 ]; then
+                echo "  Renamed $RENAMED_COUNT files in $dir/"
+              fi
             fi
           done
+          echo "✅ Sanitization complete"
 
       # ========================================
       # 3. Model Validation (CRITICAL)
@@ -293,6 +306,7 @@ jobs:
           IFS=' ' read -r -a SYMBOLS_ARR <<< "$SYMBOLS"
           
           for SYMBOL in "${SYMBOLS_ARR[@]}"; do
+            # Normalize symbol for model path
             SAFE_SYMBOL="${SYMBOL//:/_}"
             
             # Try multiple naming patterns
@@ -553,11 +567,11 @@ jobs:
             
             ### 📈 Model Statistics
             ```
-            ${{ steps.model_stats.outputs.summary || '{}' }}
+            $(cat models_stats.json 2>/dev/null | jq -r '.summary // {}' || echo '{}')
             ```
             
             <details>
-            <summary>Full Statistics</summary>
+            <summary>📋 Full Statistics</summary>
             
             ```
             $(cat models_stats.json 2>/dev/null || echo '{}')
