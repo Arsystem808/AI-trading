@@ -1500,120 +1500,14 @@ except Exception:
             logger.warning("perf log AlphaPulse failed: %s", e)
         return res
 
-# -------------------- Оркестратор Octopus (FINAL PRODUCTION) --------------------
-from typing import Dict, Any, Tuple
-from collections import OrderedDict
+# -------------------- Оркестратор Octopus --------------------
+from typing import Dict, Any
 import numpy as np
 import pandas as pd
 import os
 import logging
-import threading
-import time
-
-# ============================================================================
-# ИМПОРТЫ С FALLBACK
-# ============================================================================
-
-# Polygon API
-from core.polygon_client import fetch_ohlc
 
 logger = logging.getLogger(__name__)
-
-# Калибровка confidence
-try:
-    from core.calibration import CAL_CONF
-except ImportError:
-    CAL_CONF = {
-        "Octopus": lambda x: x,
-        "Global": lambda x: x,
-        "M7": lambda x: x,
-        "W7": lambda x: x,
-        "AlphaPulse": lambda x: x,
-    }
-    logger.warning("CAL_CONF not found, using identity function")
-
-# Утилиты
-try:
-    from core.utils import log_agent_performance
-except ImportError:
-    def log_agent_performance(**kwargs):
-        pass
-    logger.warning("log_agent_performance not found, using stub")
-
-def _monotone_tp_probs(probs: Dict) -> Dict:
-    """Монотонизация вероятностей TP."""
-    try:
-        from core.utils import _monotone_tp_probs as real_fn
-        return real_fn(probs)
-    except ImportError:
-        # Простая реализация
-        tp1 = float(probs.get("tp1", 0.0))
-        tp2 = float(probs.get("tp2", 0.0))
-        tp3 = float(probs.get("tp3", 0.0))
-        
-        if tp1 < tp2:
-            tp2 = tp1
-        if tp2 < tp3:
-            tp3 = tp2
-        
-        return {"tp1": tp1, "tp2": tp2, "tp3": tp3}
-
-# ============================================================================
-# MOCK АГЕНТЫ (используются если реальные не найдены)
-# ============================================================================
-
-def _mock_agent(ticker: str, horizon: str, agent_name: str) -> Dict[str, Any]:
-    """Mock агент для демонстрации работы оркестратора."""
-    import random
-    random.seed(hash(ticker + horizon + agent_name) % 2**32)
-    
-    action = random.choice(["BUY", "SHORT", "WAIT", "WAIT"])  # WAIT чаще
-    confidence = random.uniform(0.58, 0.68)
-    price = 100.0 + random.uniform(-10, 10)
-    
-    return {
-        "last_price": price,
-        "recommendation": {
-            "action": action,
-            "confidence": confidence
-        },
-        "levels": {
-            "entry": price,
-            "sl": price * 0.95 if action == "BUY" else price * 1.05 if action == "SHORT" else 0.0,
-            "tp1": price * 1.02 if action == "BUY" else price * 0.98 if action == "SHORT" else 0.0,
-            "tp2": price * 1.04 if action == "BUY" else price * 0.96 if action == "SHORT" else 0.0,
-            "tp3": price * 1.06 if action == "BUY" else price * 0.94 if action == "SHORT" else 0.0,
-        },
-        "probs": {"tp1": 0.7, "tp2": 0.5, "tp3": 0.3},
-    }
-
-# Пытаемся импортировать реальные агенты
-try:
-    from core.strategy import (
-        analyze_asset_global,
-        analyze_asset_m7,
-        analyze_asset_w7,
-        analyze_asset_alphapulse
-    )
-    logger.info("Using real agents from core.strategy")
-except ImportError:
-    logger.warning("Real agents not found, using mock agents for demonstration")
-    
-    def analyze_asset_global(ticker: str, horizon: str) -> Dict[str, Any]:
-        return _mock_agent(ticker, horizon, "Global")
-    
-    def analyze_asset_m7(ticker: str, horizon: str) -> Dict[str, Any]:
-        return _mock_agent(ticker, horizon, "M7")
-    
-    def analyze_asset_w7(ticker: str, horizon: str) -> Dict[str, Any]:
-        return _mock_agent(ticker, horizon, "W7")
-    
-    def analyze_asset_alphapulse(ticker: str, horizon: str) -> Dict[str, Any]:
-        return _mock_agent(ticker, horizon, "AlphaPulse")
-
-# ============================================================================
-# КОНФИГУРАЦИЯ
-# ============================================================================
 
 OCTO_WEIGHTS: Dict[str, float] = {
     "Global": 0.25,
@@ -1622,174 +1516,26 @@ OCTO_WEIGHTS: Dict[str, float] = {
     "AlphaPulse": 0.25,
 }
 
+# Порог confidence, ниже которого Octopus НЕ даёт торговый сигнал (WAIT)
+# Можно переопределить через переменную окружения OCTO_CONF_THRESHOLD
 CONF_THRESHOLD: float = float(os.getenv("OCTO_CONF_THRESHOLD", "0.64"))
-CONF_FLIP_THRESHOLD: float = float(os.getenv("OCTO_CONF_FLIP_THRESHOLD", "0.66"))
-CONF_FLIP_DELTA: float = float(os.getenv("OCTO_CONF_FLIP_DELTA", "0.05"))
-FLIP_COOLDOWN_MS: int = int(os.getenv("OCTO_FLIP_COOLDOWN_MS", "900000"))
-FLIP_PRICE_MOVE_ATR: float = float(os.getenv("OCTO_FLIP_PRICE_MOVE_ATR", "1.5"))
-RANGE_DETECTION_ATR: float = float(os.getenv("OCTO_RANGE_DETECTION_ATR", "2.0"))
-MAX_STICKY_MS: int = int(os.getenv("OCTO_MAX_STICKY_MS", "7200000"))
-ATR_CACHE_TTL: int = int(os.getenv("OCTO_ATR_CACHE_TTL", "600000"))
-
-# ============================================================================
-# LRU DICTIONARY
-# ============================================================================
-
-class LRUDict(OrderedDict):
-    """Dictionary с автоматической очисткой старых элементов."""
-    def __init__(self, max_size=500):
-        super().__init__()
-        self.max_size = max_size
-    
-    def __setitem__(self, key, value):
-        if key in self:
-            self.move_to_end(key)
-        super().__setitem__(key, value)
-        if len(self) > self.max_size:
-            self.popitem(last=False)
-
-# ============================================================================
-# ГЛОБАЛЬНОЕ СОСТОЯНИЕ (thread-safe)
-# ============================================================================
-
-_STATE_LOCK = threading.RLock()
-
-_SIGNAL_STATE = LRUDict(max_size=200)
-_ATR_CACHE = LRUDict(max_size=200)
-_FLIP_ATTEMPTS = LRUDict(max_size=500)
-_FLIP_BLOCKS = LRUDict(max_size=500)
-_FLIP_SUCCESS = LRUDict(max_size=500)
-
-# ============================================================================
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-# ============================================================================
 
 def _clip01(x: float) -> float:
-    """Ограничивает значение в диапазоне [0, 1]."""
     return max(0.0, min(1.0, float(x)))
 
-
 def _act_to_num(a: str) -> int:
-    """Конвертирует действие в число."""
     return 1 if a == "BUY" else (-1 if a == "SHORT" else 0)
 
-
 def _num_to_act(x: float) -> str:
-    """Конвертирует число в действие."""
     if x > 0:
         return "BUY"
     if x < 0:
         return "SHORT"
     return "WAIT"
 
-
-def _get_range_and_atr_cached(ticker: str, last_price: float, now_ms: int) -> Tuple[bool, float]:
-    """
-    Определяет боковой рынок с кэшированием.
-    
-    Returns:
-        Tuple[is_range, atr]: True если боковик, ATR значение
-    """
-    with _STATE_LOCK:
-        cached = _ATR_CACHE.get(ticker)
-    
-    if cached and (now_ms - cached[2]) < ATR_CACHE_TTL:
-        return cached[0], cached[1]
-    
-    try:
-        bars = fetch_ohlc(ticker, timespan="day", limit=14, end_ms=now_ms)
-        
-        if len(bars) < 10:
-            with _STATE_LOCK:
-                _ATR_CACHE[ticker] = (False, 0.0, now_ms)
-            return False, 0.0
-        
-        highs = np.array([b["h"] for b in bars])
-        lows = np.array([b["l"] for b in bars])
-        closes = np.array([b["c"] for b in bars])
-        
-        tr = np.maximum(highs - lows, 
-                       np.abs(highs - np.roll(closes, 1)))
-        tr = np.maximum(tr, np.abs(lows - np.roll(closes, 1)))
-        atr = np.mean(tr[1:])
-        
-        recent_high = np.max(highs[-5:])
-        recent_low = np.min(lows[-5:])
-        range_size = recent_high - recent_low
-        
-        is_range = range_size < (RANGE_DETECTION_ATR * atr)
-        
-        with _STATE_LOCK:
-            _ATR_CACHE[ticker] = (is_range, atr, now_ms)
-        
-        return is_range, atr
-        
-    except Exception as e:
-        logger.warning("Range detection failed for %s: %s", ticker, e)
-        with _STATE_LOCK:
-            _ATR_CACHE[ticker] = (False, 0.0, now_ms)
-        return False, 0.0
-
-
-def _check_invalidation(state_key: str, current_price: float, prev_levels: Dict, 
-                        prev_action: str, current_atr: float) -> Tuple[bool, str]:
-    """
-    Проверяет инвалидацию предыдущего сигнала.
-    
-    Returns:
-        Tuple[invalidated, reason]: True если сигнал инвалидирован, причина
-    """
-    try:
-        prev_entry = prev_levels.get("entry", 0.0)
-        prev_sl = prev_levels.get("sl", 0.0)
-        
-        if prev_action == "WAIT" or prev_entry == 0.0:
-            return False, ""
-        
-        if prev_action == "BUY" and current_price <= prev_sl:
-            return True, "SL_HIT"
-        if prev_action == "SHORT" and current_price >= prev_sl:
-            return True, "SL_HIT"
-        
-        prev_tp3 = prev_levels.get("tp3", 0.0)
-        if prev_tp3 > 0:
-            if prev_action == "BUY" and current_price >= prev_tp3:
-                return True, "TP_HIT"
-            if prev_action == "SHORT" and current_price <= prev_tp3:
-                return True, "TP_HIT"
-        
-        with _STATE_LOCK:
-            prev_atr = _SIGNAL_STATE.get(state_key, {}).get("atr", 0.0)
-        
-        if prev_atr > 0 and current_atr > 0 and current_atr / prev_atr > 1.8:
-            return True, "VOLATILITY_SPIKE"
-        
-        return False, ""
-        
-    except Exception as e:
-        logger.warning("Invalidation check failed: %s", e)
-        return False, ""
-
-# ============================================================================
-# ОСНОВНАЯ ФУНКЦИЯ ОРКЕСТРАТОРА
-# ============================================================================
-
 def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
-    """
-    Оркестратор Octopus с защитой от пинг-понга.
-    
-    Args:
-        ticker: Тикер актива (например, "AAPL", "X:ETHUSD")
-        horizon: Горизонт торговли ("Краткосрочный", "Долгосрочный" и т.д.)
-    
-    Returns:
-        Dict с рекомендацией, уровнями, вероятностями и метаданными
-    """
-    now_ms = int(time.time() * 1000)
-    
     # 1) Собираем ответы агентов
     parts: Dict[str, Dict[str, Any]] = {}
-    
     for name, fn in {
         "Global":     analyze_asset_global,
         "M7":         analyze_asset_m7,
@@ -1799,7 +1545,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         try:
             parts[name] = fn(ticker, horizon)
         except Exception as e:
-            logger.warning("Agent %s failed for %s: %s", name, ticker, e)
+            logger.warning("Agent %s failed: %s", name, e)
 
     if not parts:
         return {
@@ -1815,9 +1561,6 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
             "meta": {"source": "Octopus", "votes": [], "ratio": 0.0},
         }
 
-    last_price = float(next(iter(parts.values())).get("last_price", 0.0))
-    is_range, atr = _get_range_and_atr_cached(ticker, last_price, now_ms)
-    
     # 2) Строим активные голоса BUY/SHORT с весами и conf
     active = []
     for k, r in parts.items():
@@ -1835,17 +1578,18 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     delta = abs(score_long - score_short)
     ratio = delta / max(1e-6, total_side)
 
-    # 3) Правило выбора действия
+    # 3) Правило выбора действия (как было)
     if count_long >= 3:
-        candidate_action = "BUY"
+        final_action = "BUY"
     elif count_short >= 3:
-        candidate_action = "SHORT"
+        final_action = "SHORT"
     else:
         if ratio < 0.20:
-            candidate_action = "WAIT"
+            final_action = "WAIT"
         else:
-            candidate_action = "BUY" if score_long > score_short else "SHORT"
+            final_action = "BUY" if score_long > score_short else "SHORT"
 
+    # Утилита для медианных уровней по сторонникам выбранной стороны
     def _median_levels(direction: str):
         L = [
             r.get("levels", {})
@@ -1871,15 +1615,16 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
             "tp3": med("tp3"),
         }
 
-    if candidate_action in ("BUY", "SHORT"):
-        cand = [t for t in active if t[1] == candidate_action]
+    if final_action in ("BUY", "SHORT"):
+        # 4) Уровни/пробы: медианы при слабой поляризации, иначе — от победителя
+        cand = [t for t in active if t[1] == final_action]
         win_agent = (
             max(cand, key=lambda t: t[2] * t[3])[0] if cand
             else max(active, key=lambda t: t[2] * t[3])[0]
         )
 
         if ratio < 0.25:
-            levels_out = _median_levels(candidate_action)
+            levels_out = _median_levels(final_action)
         else:
             levels_out = parts[win_agent].get("levels", {})
 
@@ -1887,10 +1632,11 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
             parts.get(win_agent, {}).get("probs", {}) or {}
         )
 
+        # 5) Итоговый confidence: взвешенно по победившей стороне + мягкий штраф конфликта
         side_items = []
         for k, r in parts.items():
             rec = r.get("recommendation", {})
-            if str(rec.get("action", "")).upper() == candidate_action:
+            if str(rec.get("action", "")).upper() == final_action:
                 w = float(OCTO_WEIGHTS.get(k, 0.20))
                 c = _clip01(rec.get("confidence", 0.5))
                 side_items.append((w, c))
@@ -1902,8 +1648,8 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         else:
             overall_conf = 0.50
 
-        score_side = score_long if candidate_action == "BUY" else score_short
-        score_opp  = score_short if candidate_action == "BUY" else score_long
+        score_side = score_long if final_action == "BUY" else score_short
+        score_opp  = score_short if final_action == "BUY" else score_long
 
         try:
             beta = float(os.getenv("OCTO_CONF_BETA", "0.35"))
@@ -1911,7 +1657,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
             beta = 0.35
 
         penalty = 1.0 - beta * (score_opp / max(1e-6, score_side))
-        penalty = max(0.70, min(1.00, penalty))
+        penalty = max(0.70, min(1.00, penalty))  # клип фактора
 
         overall_conf = float(
             CAL_CONF["Octopus"](_clip01(overall_conf * penalty))
@@ -1922,128 +1668,18 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         probs_out  = {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
         overall_conf = float(CAL_CONF["Octopus"](0.50))
 
-    # 6) ЗАЩИТА ОТ ПИНГ-ПОНГА
-    state_key = f"{ticker}_{horizon}"
-    
-    with _STATE_LOCK:
-        prev_state = _SIGNAL_STATE.get(state_key, {})
-        prev_action = prev_state.get("action", "WAIT")
-        prev_timestamp = prev_state.get("timestamp_ms", 0)
-        prev_confidence = prev_state.get("confidence", 0.50)
-        prev_levels = prev_state.get("levels", {})
-        prev_probs = prev_state.get("probs", {})
-        prev_entry_price = prev_levels.get("entry", last_price)
-    
-    final_action = candidate_action
-    final_confidence = overall_conf
-    context_notes = []
-    is_sticky = False
-    
-    invalidated, inv_reason = _check_invalidation(state_key, last_price, prev_levels, prev_action, atr)
-    if invalidated:
-        context_notes.append(f"Previous signal invalidated: {inv_reason}")
-        prev_action = "WAIT"
-    
-    time_in_signal = now_ms - prev_timestamp if prev_action != "WAIT" else 0
-    if prev_action != "WAIT" and time_in_signal > MAX_STICKY_MS:
-        context_notes.append(f"Sticky signal expired ({time_in_signal/3600000:.1f}h)")
-        prev_action = "WAIT"
-    
-    if prev_action == "WAIT":
-        if is_range and candidate_action in ("BUY", "SHORT"):
-            if overall_conf < 0.66:
-                final_action = "WAIT"
-                context_notes.append(f"Range market (range < {RANGE_DETECTION_ATR}×ATR), weak signal blocked")
-    else:
-        if candidate_action in ("BUY", "SHORT") and prev_action != candidate_action:
-            time_since_prev = now_ms - prev_timestamp
-            
-            if atr > 0:
-                price_move_atr = abs(last_price - prev_entry_price) / atr
-                effective_move_threshold = FLIP_PRICE_MOVE_ATR
-            else:
-                if prev_entry_price > 0:
-                    price_move_pct = abs(last_price - prev_entry_price) / prev_entry_price * 100
-                    price_move_atr = price_move_pct / 1.5
-                    effective_move_threshold = 2.0
-                    context_notes.append("Using % price move (ATR unavailable)")
-                else:
-                    price_move_atr = 0.0
-                    effective_move_threshold = FLIP_PRICE_MOVE_ATR
-            
-            conf_delta = overall_conf - prev_confidence
-            
-            with _STATE_LOCK:
-                _FLIP_ATTEMPTS[state_key] = _FLIP_ATTEMPTS.get(state_key, 0) + 1
-            
-            effective_flip_threshold = CONF_FLIP_THRESHOLD
-            effective_flip_delta = CONF_FLIP_DELTA
-            
-            dominant_side = "BUY" if score_long > score_short else "SHORT"
-            
-            if ratio > 0.50:
-                effective_flip_threshold = CONF_THRESHOLD
-                effective_flip_delta = 0.03
-                context_notes.append(f"Strong polarization toward {dominant_side} (ratio={ratio:.2f}), relaxed flip requirements")
-            
-            flip_allowed = True
-            flip_reasons = []
-            
-            if time_since_prev < FLIP_COOLDOWN_MS:
-                flip_allowed = False
-                flip_reasons.append(f"cooldown ({time_since_prev/60000:.1f}m < {FLIP_COOLDOWN_MS/60000:.0f}m)")
-            
-            if overall_conf < effective_flip_threshold:
-                flip_allowed = False
-                flip_reasons.append(f"conf {overall_conf:.0%} < {effective_flip_threshold:.0%}")
-            
-            if conf_delta < effective_flip_delta:
-                flip_allowed = False
-                flip_reasons.append(f"conf delta {conf_delta:+.0%} < {effective_flip_delta:.0%}")
-            
-            if price_move_atr < effective_move_threshold:
-                flip_allowed = False
-                flip_reasons.append(f"price move {price_move_atr:.2f}×ATR < {effective_move_threshold:.1f}×ATR")
-            
-            if not flip_allowed:
-                with _STATE_LOCK:
-                    _FLIP_BLOCKS[state_key] = _FLIP_BLOCKS.get(state_key, 0) + 1
-                
-                context_notes.append(f"FLIP blocked: {', '.join(flip_reasons)}")
-                
-                if overall_conf < 0.58:
-                    final_action = "WAIT"
-                    context_notes.append("Confidence too low, switching to WAIT")
-                else:
-                    final_action = prev_action
-                    final_confidence = prev_confidence
-                    levels_out = prev_levels
-                    probs_out = prev_probs
-                    is_sticky = True
-                    context_notes.append(f"Holding previous {prev_action} signal (sticky, {time_in_signal/60000:.0f}m)")
-            else:
-                with _STATE_LOCK:
-                    _FLIP_SUCCESS[state_key] = _FLIP_SUCCESS.get(state_key, 0) + 1
-                
-                context_notes.append(f"FLIP allowed: {prev_action}→{candidate_action} (all conditions met)")
-    
-    if final_action in ("BUY", "SHORT") and final_confidence < CONF_THRESHOLD and not is_sticky:
+    # 5.3 Фильтр по порогу confidence:
+    # если действие BUY/SHORT, но confidence ниже порога,
+    # то переводим сигнал в WAIT и обнуляем уровни/вероятности.
+    if final_action in ("BUY", "SHORT") and overall_conf < CONF_THRESHOLD:
         final_action = "WAIT"
         levels_out = {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
         probs_out  = {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
-        context_notes.append(f"Confidence {final_confidence:.0%} below threshold {CONF_THRESHOLD:.0%}")
-    
-    if final_action != "WAIT" and not is_sticky:
-        with _STATE_LOCK:
-            _SIGNAL_STATE[state_key] = {
-                "action": final_action,
-                "timestamp_ms": now_ms,
-                "confidence": final_confidence,
-                "levels": levels_out,
-                "probs": probs_out,
-                "entry_price": last_price,
-                "atr": atr,
-            }
+        # Можно оставить overall_conf как есть (показывая «насколько не дотянули»),
+        # либо привести к нейтральному уровню — здесь оставляем как есть.
+
+    # 6) Сбор ответа и логирование
+    last_price = float(next(iter(parts.values())).get("last_price", 0.0))
 
     votes_txt = [
         {
@@ -2053,34 +1689,20 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         }
         for k, r in parts.items()
     ]
-    
-    base_context = [
-        f"Octopus: ratio={ratio:.2f}, votes={count_long}L/{count_short}S, "
-        f"conf_thresh={CONF_THRESHOLD:.2f}"
-    ]
-    
-    if is_range:
-        base_context.append(f"Range market: ATR={atr:.2f}")
-    
-    full_context = base_context + context_notes
-    
-    with _STATE_LOCK:
-        flip_metrics = {
-            "flip_attempts": _FLIP_ATTEMPTS.get(state_key, 0),
-            "flip_blocks": _FLIP_BLOCKS.get(state_key, 0),
-            "flip_success": _FLIP_SUCCESS.get(state_key, 0),
-        }
 
     res = {
         "last_price": last_price,
         "recommendation": {
             "action": final_action,
-            "confidence": final_confidence,
+            "confidence": overall_conf,
         },
         "levels": levels_out,
         "probs": probs_out,
-        "context": full_context,
-        "note_html": f"<div>Octopus: {final_action} с {final_confidence:.0%}</div>",
+        "context": [
+            f"Octopus: ratio={ratio:.2f}, votes={count_long}L/{count_short}S, "
+            f"conf_thresh={CONF_THRESHOLD:.2f}"
+        ],
+        "note_html": f"<div>Octopus: {final_action} с {overall_conf:.0%}</div>",
         "alt": "Octopus",
         "entry_kind": "market" if final_action != "WAIT" else "wait",
         "entry_label": final_action if final_action != "WAIT" else "WAIT",
@@ -2089,10 +1711,6 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
             "votes": votes_txt,
             "ratio": float(ratio),
             "conf_threshold": float(CONF_THRESHOLD),
-            "is_range": is_range,
-            "sticky": is_sticky,
-            "sticky_duration_min": time_in_signal / 60000 if is_sticky else 0,
-            **flip_metrics,
         },
     }
 
@@ -2102,17 +1720,11 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
             ticker=ticker,
             horizon=horizon,
             action=final_action,
-            confidence=float(final_confidence),
+            confidence=float(overall_conf),
             levels=levels_out,
             probs=probs_out,
-            meta={
-                "votes": votes_txt, 
-                "ratio": float(ratio),
-                "conf_threshold": float(CONF_THRESHOLD),
-                "is_range": is_range,
-                "is_sticky": is_sticky,
-                **flip_metrics,
-            },
+            meta={"votes": votes_txt, "ratio": float(ratio),
+                  "conf_threshold": float(CONF_THRESHOLD)},
             ts=pd.Timestamp.utcnow().isoformat(),
         )
     except Exception as e:
