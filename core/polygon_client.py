@@ -2,13 +2,17 @@
 import os
 import hashlib
 import json
+import logging
 import random
 import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import pandas as pd
 import requests
+
+logger = logging.getLogger(__name__)
 
 
 class PolygonClient:
@@ -83,15 +87,36 @@ class PolygonClient:
         raise last_err or requests.HTTPError(f"Request failed after {max_retries} retries")
 
     # -------- Stocks Aggregates: дневные свечи --------
-    def daily_ohlc(self, ticker: str, days: int = 120) -> pd.DataFrame:
+    def daily_ohlc(self, ticker: str, days: int = 120, end_ms: Optional[int] = None) -> pd.DataFrame:
+        """
+        Получает дневные OHLC бары для тикера.
+        
+        Args:
+            ticker: Тикер (например, "AAPL")
+            days: Количество дней для получения
+            end_ms: Конечная временная метка в миллисекундах UTC (опционально)
+        
+        Returns:
+            DataFrame с колонками: open, high, low, close, volume, timestamp
+        """
+        # Определяем конечную дату
+        if end_ms is not None:
+            end = pd.Timestamp(end_ms, unit="ms", tz="UTC").normalize()
+        else:
+            end = pd.Timestamp.utcnow().normalize()
+        
         # Берём растянутый диапазон, чтобы компенсировать выходные/праздники
-        end = pd.Timestamp.utcnow().normalize()
         start = (end - pd.Timedelta(days=days * 2)).normalize()
+        
         url = f"{self.base_url}/v2/aggs/ticker/{ticker}/range/1/day/{start.date()}/{end.date()}"
+        
+        # Включаем end_ms в cache_key для корректного кэширования
+        cache_key = f"daily_ohlc:{ticker}:{days}:{start.date()}:{end.date()}"
+        
         js = self._get(
             url,
             params={"adjusted": "true", "sort": "asc", "limit": 50000},
-            use_cache_key=f"daily_ohlc:{ticker}:{days}:{start.date()}:{end.date()}",
+            use_cache_key=cache_key,
         )
         rows = js.get("results") or []
         df = pd.DataFrame(rows)
@@ -135,3 +160,92 @@ class PolygonClient:
             return True
         except Exception:
             return False
+
+
+# ============================================================================
+# SINGLETON INSTANCE И ФУНКЦИИ-ОБЕРТКИ ДЛЯ СОВМЕСТИМОСТИ С ОРКЕСТРАТОРОМ
+# ============================================================================
+
+@lru_cache(maxsize=1)
+def get_client() -> PolygonClient:
+    """
+    Thread-safe singleton для PolygonClient через lru_cache.
+    Автоматически создает и кэширует единственный экземпляр.
+    
+    Returns:
+        PolygonClient: Глобальный экземпляр клиента
+    """
+    logger.info("Initializing Polygon API client")
+    return PolygonClient()
+
+
+def fetch_ohlc(ticker: str, timespan: str = "day", limit: int = 120, end_ms: Optional[int] = None) -> list:
+    """
+    Функция-обертка для получения OHLC баров в формате, совместимом с оркестратором.
+    
+    Args:
+        ticker: Тикер (например, "AAPL", "BTCUSD")
+        timespan: Таймфрейм (пока поддерживается только "day")
+        limit: Количество баров для получения (1-5000)
+        end_ms: Конечная временная метка в миллисекундах UTC (опционально)
+    
+    Returns:
+        Список словарей с ключами: o, h, l, c, v, t
+        Пример: [
+            {"o": 150.0, "h": 152.0, "l": 149.0, "c": 151.0, "v": 1000000, "t": 1638316800000},
+            ...
+        ]
+    
+    Raises:
+        ValueError: Если параметры невалидны
+    """
+    # Валидация параметров
+    if not ticker or not isinstance(ticker, str):
+        raise ValueError("ticker must be a non-empty string")
+    
+    if not isinstance(limit, int) or limit < 1 or limit > 5000:
+        raise ValueError("limit must be an integer between 1 and 5000")
+    
+    if end_ms is not None:
+        if not isinstance(end_ms, (int, float)) or end_ms < 0 or end_ms > time.time() * 1000:
+            raise ValueError("end_ms must be a valid timestamp in milliseconds")
+    
+    try:
+        client = get_client()
+        
+        if timespan != "day":
+            logger.warning(f"Unsupported timespan '{timespan}' for {ticker}, falling back to 'day'")
+            timespan = "day"
+        
+        # Получаем DataFrame через метод с поддержкой end_ms
+        df = client.daily_ohlc(ticker, days=limit, end_ms=end_ms)
+        
+        if df.empty:
+            logger.info(f"No OHLC data available for {ticker} (limit={limit})")
+            return []
+        
+        # Берем последние limit баров
+        df = df.tail(limit)
+        
+        # Конвертируем в формат списка словарей (совместимый с оркестратором)
+        result = []
+        for _, row in df.iterrows():
+            result.append({
+                "o": float(row["open"]),
+                "h": float(row["high"]),
+                "l": float(row["low"]),
+                "c": float(row["close"]),
+                "v": int(row["volume"]) if pd.notna(row["volume"]) else 0,
+                "t": int(row["timestamp"].timestamp() * 1000),  # миллисекунды UTC
+            })
+        
+        logger.debug(f"Fetched {len(result)} OHLC bars for {ticker}")
+        return result
+        
+    except ValueError:
+        # Пробрасываем валидационные ошибки
+        raise
+    except Exception as e:
+        logger.error(f"Failed to fetch OHLC for {ticker}: {e}", exc_info=True)
+        return []
+turn False
