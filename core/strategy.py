@@ -1518,7 +1518,7 @@ OCTO_WEIGHTS: Dict[str, float] = {
 
 # Порог confidence, ниже которого Octopus НЕ даёт торговый сигнал (WAIT)
 # Можно переопределить через переменную окружения OCTO_CONF_THRESHOLD
-CONF_THRESHOLD: float = float(os.getenv("OCTO_CONF_THRESHOLD", "0.65"))
+CONF_THRESHOLD: float = float(os.getenv("OCTO_CONF_THRESHOLD", "0.645"))
 
 def _clip01(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
