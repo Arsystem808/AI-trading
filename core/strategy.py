@@ -398,8 +398,9 @@ _M7_LAST_HIT = {}
 
 # состояние направления по тикеру для гистерезиса/кулдауна
 _M7_DIR_STATE = {}
-_M7_DIR_MIN_HOLD_HOURS = 4.0     # минимальное время между разворотами по направлению
-_M7_DIR_MIN_DELTA_CONF = 0.08    # насколько новая уверенность должна быть выше старой, чтобы разрешить flip
+_M7_ANTIFLIP_CACHE = {}  # НОВАЯ ГЛОБАЛЬНАЯ ПЕРЕМЕННАЯ для защиты от частых разворотов
+_M7_DIR_MIN_HOLD_HOURS = 6.0     # ИЗМЕНЕНО: увеличено с 4.0 для большей стабильности
+_M7_DIR_MIN_DELTA_CONF = 0.15    # ИЗМЕНЕНО: увеличено с 0.08 для большей стабильности
 
 class _M7IdentityCalibrator:
     def __call__(self, p: float) -> float:
@@ -418,63 +419,80 @@ def _m7_cal():
 
 def _m7_direction_filter(ticker: str, raw_action: str, conf: float, ts: "pd.Timestamp"):
     """
-    Гистерезис по направлению:
-    - если новое направление совпадает со старым -> просто обновляем уверенность
-    - если пытаемся перевернуться раньше минимального времени или без достаточного прироста уверенности -> блокируем flip и отдаём WAIT
-    - если flip разрешён -> обновляем состояние
+    Улучшенный гистерезис с защитой от быстрых разворотов (антифлип).
     """
-    global _M7_DIR_STATE
+    global _M7_DIR_STATE, _M7_ANTIFLIP_CACHE
 
     if raw_action not in ("BUY", "SHORT"):
-        # для WAIT и прочего состояние не трогаем
         return raw_action, {"dir_state": "no_change"}
 
-    st = _M7_DIR_STATE.get(ticker)
-    min_hold = pd.Timedelta(hours=_M7_DIR_MIN_HOLD_HOURS)
-    min_delta = float(_M7_DIR_MIN_DELTA_CONF)
+    current_state = _M7_DIR_STATE.get(ticker)
+    antiflip_data = _M7_ANTIFLIP_CACHE.get(ticker, {'last_flip_attempt': None, 'flip_count_10min': 0})
 
-    if st is None:
+    # 1. ПРОВЕРКА АНТИФЛИПА: Блокировка, если >1 попытки разворота за 10 мин
+    if antiflip_data['last_flip_attempt']:
+        time_since_last_attempt = (ts - antiflip_data['last_flip_attempt']).total_seconds() / 60.0
+        if time_since_last_attempt < 10.0:
+            if antiflip_data['flip_count_10min'] >= 1:  # Более строгий порог
+                return "WAIT", {
+                    "dir_state": "antiflip_lock",
+                    "reason": f">=2 flip attempts in {time_since_last_attempt:.1f} min"
+                }
+        else:
+            # Окно истекло, сбрасываем счетчик
+            antiflip_data['flip_count_10min'] = 0
+
+    min_hold = pd.Timedelta(hours=_M7_DIR_MIN_HOLD_HOURS)  # Используем обновленную константу
+    min_delta = float(_M7_DIR_MIN_DELTA_CONF)              # Используем обновленную константу
+
+    if current_state is None:
         _M7_DIR_STATE[ticker] = {"action": raw_action, "ts": ts, "conf": float(conf)}
         return raw_action, {"dir_state": "init"}
 
-    prev_action = st.get("action")
-    prev_ts = st.get("ts")
-    prev_conf = float(st.get("conf", 0.0))
+    prev_action = current_state.get("action")
+    prev_ts = current_state.get("ts")
+    prev_conf = float(current_state.get("conf", 0.0))
 
-    # то же направление -> просто обновляем уверенность, но не считаем это flip
+    # То же направление -> ОБНОВЛЯЕМ ТОЛЬКО УВЕРЕННОСТЬ, ВРЕМЯ НЕ МЕНЯЕМ (ИСПРАВЛЕНИЕ БАГА)
     if raw_action == prev_action:
         if conf > prev_conf:
             _M7_DIR_STATE[ticker] = {"action": raw_action, "ts": prev_ts, "conf": float(conf)}
-        return raw_action, {"dir_state": "same", "prev_action": prev_action, "prev_ts": prev_ts}
+        return raw_action, {"dir_state": "same"}
 
-    # пытаемся flip'нуться
-    # 1) проверяем минимальное время в состоянии
-    if prev_ts is not None and ts - prev_ts < min_hold:
+    # Пытаемся развернуться - регистрируем попытку для антифлипа
+    antiflip_data['last_flip_attempt'] = ts
+    antiflip_data['flip_count_10min'] += 1
+    _M7_ANTIFLIP_CACHE[ticker] = antiflip_data
+
+    # Проверка минимального времени удержания направления
+    if prev_ts is not None and (ts - prev_ts) < min_hold:
         return "WAIT", {
             "dir_state": "blocked_time",
             "prev_action": prev_action,
-            "prev_ts": prev_ts,
-            "new_action": raw_action,
+            "hours_since_flip": (ts - prev_ts).total_seconds() / 3600
         }
 
-    # 2) проверяем, что уверенность выросла достаточно, чтобы оправдать flip
-    if conf < prev_conf + min_delta:
+    # Проверка минимального прироста уверенности для разворота
+    required_conf = prev_conf + min_delta
+    if conf < required_conf:
         return "WAIT", {
             "dir_state": "blocked_conf",
             "prev_action": prev_action,
-            "prev_ts": prev_ts,
             "prev_conf": prev_conf,
-            "new_action": raw_action,
-            "new_conf": float(conf),
+            "required_conf": required_conf,
+            "conf_delta": conf - prev_conf
         }
 
-    # flip разрешён
+    # ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ - РАЗВОРОТ РАЗРЕШЕН
     _M7_DIR_STATE[ticker] = {"action": raw_action, "ts": ts, "conf": float(conf)}
+    # Успешный разворот сбрасывает счетчик антифлипа
+    antiflip_data['flip_count_10min'] = 0
+    _M7_ANTIFLIP_CACHE[ticker] = antiflip_data
+
     return raw_action, {
         "dir_state": "flipped",
         "prev_action": prev_action,
-        "prev_ts": prev_ts,
-        "prev_conf": prev_conf,
+        "hours_since_prev": (ts - prev_ts).total_seconds() / 3600 if prev_ts else None
     }
 
 class _M7Predictor:
@@ -637,6 +655,7 @@ class M7TradingStrategy:
         - ATR-фильтра вокруг уровней
         - кулдауна по (ticker, level)
         - простого тренд-фильтра по центральному pivot
+        - НОВЫЙ: Фильтр по краткосрочному тренду через ATR для подавления шума
         """
         sigs = []
         req = ['high', 'low', 'close']
@@ -648,6 +667,17 @@ class M7TradingStrategy:
         cur_atr = float(data['atr'].iloc[-1])
         if cur_atr <= 0:
             return sigs
+
+        # === НОВЫЙ ФИЛЬТР: ОПРЕДЕЛЯЕМ СЛАБЫЙ ТРЕНД ===
+        # Считаем наклон цены за последние 5 баров относительно ATR
+        closes = data['close'].tail(5).values
+        if len(closes) >= 2:
+            price_change = (closes[-1] - closes[0]) / cur_atr
+            # Если цена движется вниз более чем на 0.5 ATR, фильтруем BUY сигналы и наоборот
+            dominant_trend = "DOWN" if price_change < -0.5 else ("UP" if price_change > 0.5 else "NONE")
+        else:
+            dominant_trend = "NONE"
+        # === КОНЕЦ ФИЛЬТРА ===
 
         key = self.identify_key_levels(data)
         if not key:
@@ -673,9 +703,13 @@ class M7TradingStrategy:
                 entry = float(val * 1.002)
                 sl = float(val * 0.98)
 
-            # тренд-фильтр по центральному pivot:
-            # - BUY только выше pivot
-            # - SELL только ниже pivot
+            # НОВЫЙ ФИЛЬТР КРАТКОСРОЧНОГО ТРЕНДА (применяется ДО старого фильтра)
+            if dominant_trend == "DOWN" and not is_res:  # Тренд вниз, подавляем BUY_LIMIT
+                continue
+            if dominant_trend == "UP" and is_res:  # Тренд вверх, подавляем SELL_LIMIT
+                continue
+
+            # старый тренд-фильтр по центральному pivot:
             if self.use_trend_filter and pivot_val is not None:
                 if typ == 'BUY_LIMIT' and price < pivot_val:
                     continue
@@ -730,6 +764,23 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
     atr14 = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
     ts_last = df.index[-1]
 
+    # === НОВАЯ ПРОВЕРКА: ФИЛЬТР ВЫСОКОЙ ВОЛАТИЛЬНОСТИ ===
+    atr_percent = (atr14 / price) * 100
+    if atr_percent > 3.5:  # Если дневной ATR > 3.5% от цены - рынок слишком волатилен
+        return {
+            "last_price": price,
+            "recommendation": {"action": "WAIT", "confidence": 0.5},
+            "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
+            "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+            "context": [f"ATR {atr_percent:.1f}% > 3.5% - высокая волатильность"],
+            "note_html": "<div>M7: ожидание (высокая волатильность)</div>",
+            "alt": "Ожидание",
+            "entry_kind": "wait",
+            "entry_label": "WAIT",
+            "meta": {"source": "M7", "grey_zone": True, "high_volatility": True}
+        }
+    # === КОНЕЦ ПРОВЕРКИ ===
+
     if use_ml:
         pred = _M7Predictor(ticker)
         if pred.load():
@@ -772,7 +823,7 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
                 best = max(signals, key=lambda x: x["confidence"])
                 side = "BUY" if best["type"].startswith("BUY") else "SHORT"
 
-            # применяем гистерезис по направлению
+            # применяем улучшенный гистерезис по направлению
             filtered_action, dir_meta = _m7_direction_filter(
                 ticker=ticker,
                 raw_action=side,
@@ -918,7 +969,7 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
         )
         act_raw = "SHORT"
 
-    # гистерезис по направлению и здесь
+    # применяем улучшенный гистерезис по направлению
     act_filtered, dir_meta = _m7_direction_filter(
         ticker=ticker,
         raw_action=act_raw,
@@ -1011,7 +1062,7 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
         "entry_label": best['type'],
         "meta": {"source": "M7", "grey_zone": bool(0.48 <= conf <= 0.58), "dir_meta": dir_meta}
     }
-
+    
 # -------------------- W7 --------------------
 def analyze_asset_w7(ticker: str, horizon: str):
     # --- infra & data ---
