@@ -1928,13 +1928,18 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         f"conf_thresh={CONF_THRESHOLD:.2f}"
     )
     
+    # ========== ИСПРАВЛЕНИЕ: Защита от деления на ноль ==========
     if final_action_filtered == "WAIT" and final_action in ("BUY", "SHORT"):
-        # Показываем распределение времени по сигналам
-        weights_str = ", ".join([
-            f"{sig}: {t/time_held*100:.0f}%" 
-            for sig, t in signal_weights.items() 
-            if sig != "WAIT"
-        ])
+        # Формируем строку с весами только если есть данные
+        if time_held > 0 and signal_weights:
+            weights_str = ", ".join([
+                f"{sig}: {t/time_held*100:.0f}%" 
+                for sig, t in signal_weights.items() 
+                if sig != "WAIT"
+            ])
+        else:
+            weights_str = "insufficient data"
+        
         context_msg += (
             f" | Raw signal: {final_action}, waiting confirmation "
             f"(period: {time_held:.0f}s/{SIGNAL_CONFIRMATION_MINUTES*60}s, "
