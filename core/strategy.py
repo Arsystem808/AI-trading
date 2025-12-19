@@ -1500,20 +1500,14 @@ except Exception:
             logger.warning("perf log AlphaPulse failed: %s", e)
         return res
 
-# -------------------- Оркестратор Octopus (With Global Debounce) --------------------
+# -------------------- Оркестратор Octopus --------------------
 from typing import Dict, Any
 import numpy as np
 import pandas as pd
 import os
-import json
 import logging
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
-
-# --- Настройки Debounce (защита от мерцания) ---
-OCTO_STATE_FILE = "octopus_state.json"
-OCTO_DEBOUNCE_MINUTES = 5.0  # Ждать 5 минут перед сменой сигнала
 
 OCTO_WEIGHTS: Dict[str, float] = {
     "Global": 0.25,
@@ -1522,149 +1516,22 @@ OCTO_WEIGHTS: Dict[str, float] = {
     "AlphaPulse": 0.25,
 }
 
-# Порог confidence
+# Порог confidence, ниже которого Octopus НЕ даёт торговый сигнал (WAIT)
+# Можно переопределить через переменную окружения OCTO_CONF_THRESHOLD
 CONF_THRESHOLD: float = float(os.getenv("OCTO_CONF_THRESHOLD", "0.645"))
 
 def _clip01(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
 
-def _monotone_tp_probs(probs: Dict[str, float]) -> Dict[str, float]:
-    # Упрощенная заглушка, если ее нет в контексте (обычно она импортируется)
-    try:
-        from core.strategy import _monotone_tp_probs as original
-        return original(probs)
-    except ImportError:
-        return probs
+def _act_to_num(a: str) -> int:
+    return 1 if a == "BUY" else (-1 if a == "SHORT" else 0)
 
-# --- Менеджер состояния для Debounce ---
-class OctopusStateManager:
-    @staticmethod
-    def load_state():
-        if not os.path.exists(OCTO_STATE_FILE):
-            return {}
-        try:
-            with open(OCTO_STATE_FILE, "r") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-
-    @staticmethod
-    def save_state(state):
-        try:
-            with open(OCTO_STATE_FILE, "w") as f:
-                json.dump(state, f, indent=2)
-        except Exception:
-            pass
-
-def _apply_global_debounce(ticker: str, raw_action: str, raw_res: Dict) -> Dict:
-    """
-    Применяет 5-минутный фильтр задержки к итоговому сигналу.
-    Если сигнал изменился, он 'замораживается' на 5 минут.
-    Если вернется обратно — смены не произойдет.
-    """
-    state_db = OctopusStateManager.load_state()
-    st = state_db.get(ticker)
-    now_utc = pd.Timestamp.utcnow()
-
-    # Если записи нет — инициализация
-    if st is None:
-        new_state = {
-            "action": raw_action,        # Официальный статус
-            "pending_action": None,      # Ожидающий
-            "pending_since": None,
-            "last_update": now_utc.isoformat()
-        }
-        state_db[ticker] = new_state
-        OctopusStateManager.save_state(state_db)
-        return raw_res
-
-    curr_action = st.get("action")
-    pending_action = st.get("pending_action")
-    pending_since = st.get("pending_since")
-    
-    if pending_since:
-        pending_since = pd.Timestamp(pending_since)
-
-    # 1. Если новый сигнал совпадает с текущим ОФИЦИАЛЬНЫМ
-    if raw_action == curr_action:
-        # Если был запущен таймер смены — это была "ложная тревога", сбрасываем
-        if pending_action is not None:
-            st["pending_action"] = None
-            st["pending_since"] = None
-            st["last_update"] = now_utc.isoformat()
-            state_db[ticker] = st
-            OctopusStateManager.save_state(state_db)
-        
-        # Возвращаем свежий результат как есть (обновляем цены, уровни, но action тот же)
-        return raw_res
-
-    # 2. Сигнал отличается (Попытка смены)
-    
-    # А. Таймер уже тикает в ЭТУ ЖЕ сторону?
-    if pending_action == raw_action:
-        time_passed = (now_utc - pending_since).total_seconds() / 60.0
-        
-        if time_passed >= OCTO_DEBOUNCE_MINUTES:
-            # Таймер истек! Подтверждаем смену.
-            st["action"] = raw_action
-            st["pending_action"] = None
-            st["pending_since"] = None
-            st["last_update"] = now_utc.isoformat()
-            state_db[ticker] = st
-            OctopusStateManager.save_state(state_db)
-            
-            # Добавляем инфо о подтверждении в контекст
-            raw_res["context"].append(f"Debounce: Confirmed change to {raw_action}")
-            return raw_res
-        else:
-            # Таймер еще тикает. 
-            # ВАЖНО: Мы должны вернуть СТАРЫЙ статус (curr_action), 
-            # но с актуальной ценой (last_price) из raw_res.
-            
-            # Клонируем raw_res, но подменяем рекомендацию
-            fake_res = raw_res.copy()
-            fake_res["recommendation"] = raw_res["recommendation"].copy()
-            
-            # Подменяем Action на старый
-            fake_res["recommendation"]["action"] = curr_action
-            # Confidence можно либо оставить новым (показывая неуверенность), 
-            # либо тоже вернуть старый. Лучше оставить новый, но Action старый.
-            
-            # Обнуляем уровни, если статус WAIT (чтобы не смущать старыми уровнями)
-            if curr_action == "WAIT":
-                fake_res["levels"] = {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0}
-            
-            wait_time = round(OCTO_DEBOUNCE_MINUTES - time_passed, 1)
-            fake_res["context"].append(f"Debounce: Holding {curr_action}. Pending {raw_action} ({wait_time}m left)")
-            fake_res["entry_label"] = curr_action # Для UI
-            
-            # Если мы притворяемся, что WAIT — entry_kind тоже wait
-            if curr_action == "WAIT":
-                fake_res["entry_kind"] = "wait"
-
-            return fake_res
-
-    # Б. Это новая попытка смены
-    else:
-        # Запускаем таймер
-        st["pending_action"] = raw_action
-        st["pending_since"] = now_utc.isoformat()
-        state_db[ticker] = st
-        OctopusStateManager.save_state(state_db)
-        
-        # Возвращаем СТАРЫЙ статус
-        fake_res = raw_res.copy()
-        fake_res["recommendation"] = raw_res["recommendation"].copy()
-        fake_res["recommendation"]["action"] = curr_action
-        
-        if curr_action == "WAIT":
-            fake_res["levels"] = {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0}
-            fake_res["entry_kind"] = "wait"
-            
-        fake_res["context"].append(f"Debounce: Change detected ({raw_action}). Timer started.")
-        fake_res["entry_label"] = curr_action
-        
-        return fake_res
+def _num_to_act(x: float) -> str:
+    if x > 0:
+        return "BUY"
+    if x < 0:
+        return "SHORT"
+    return "WAIT"
 
 def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     # 1) Собираем ответы агентов
@@ -1711,18 +1578,18 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     delta = abs(score_long - score_short)
     ratio = delta / max(1e-6, total_side)
 
-    # 3) Правило выбора действия (Raw Action)
+    # 3) Правило выбора действия (как было)
     if count_long >= 3:
-        raw_action = "BUY"
+        final_action = "BUY"
     elif count_short >= 3:
-        raw_action = "SHORT"
+        final_action = "SHORT"
     else:
         if ratio < 0.20:
-            raw_action = "WAIT"
+            final_action = "WAIT"
         else:
-            raw_action = "BUY" if score_long > score_short else "SHORT"
+            final_action = "BUY" if score_long > score_short else "SHORT"
 
-    # Утилита для медианных уровней
+    # Утилита для медианных уровней по сторонникам выбранной стороны
     def _median_levels(direction: str):
         L = [
             r.get("levels", {})
@@ -1748,16 +1615,16 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
             "tp3": med("tp3"),
         }
 
-    if raw_action in ("BUY", "SHORT"):
-        # 4) Уровни/пробы
-        cand = [t for t in active if t[1] == raw_action]
+    if final_action in ("BUY", "SHORT"):
+        # 4) Уровни/пробы: медианы при слабой поляризации, иначе — от победителя
+        cand = [t for t in active if t[1] == final_action]
         win_agent = (
             max(cand, key=lambda t: t[2] * t[3])[0] if cand
             else max(active, key=lambda t: t[2] * t[3])[0]
         )
 
         if ratio < 0.25:
-            levels_out = _median_levels(raw_action)
+            levels_out = _median_levels(final_action)
         else:
             levels_out = parts[win_agent].get("levels", {})
 
@@ -1765,11 +1632,11 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
             parts.get(win_agent, {}).get("probs", {}) or {}
         )
 
-        # 5) Confidence Calculation
+        # 5) Итоговый confidence: взвешенно по победившей стороне + мягкий штраф конфликта
         side_items = []
         for k, r in parts.items():
             rec = r.get("recommendation", {})
-            if str(rec.get("action", "")).upper() == raw_action:
+            if str(rec.get("action", "")).upper() == final_action:
                 w = float(OCTO_WEIGHTS.get(k, 0.20))
                 c = _clip01(rec.get("confidence", 0.5))
                 side_items.append((w, c))
@@ -1781,8 +1648,8 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         else:
             overall_conf = 0.50
 
-        score_side = score_long if raw_action == "BUY" else score_short
-        score_opp  = score_short if raw_action == "BUY" else score_long
+        score_side = score_long if final_action == "BUY" else score_short
+        score_opp  = score_short if final_action == "BUY" else score_long
 
         try:
             beta = float(os.getenv("OCTO_CONF_BETA", "0.35"))
@@ -1790,7 +1657,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
             beta = 0.35
 
         penalty = 1.0 - beta * (score_opp / max(1e-6, score_side))
-        penalty = max(0.70, min(1.00, penalty))
+        penalty = max(0.70, min(1.00, penalty))  # клип фактора
 
         overall_conf = float(
             CAL_CONF["Octopus"](_clip01(overall_conf * penalty))
@@ -1801,13 +1668,17 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         probs_out  = {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
         overall_conf = float(CAL_CONF["Octopus"](0.50))
 
-    # 5.3 Фильтр по порогу confidence (ДО Debounce)
-    if raw_action in ("BUY", "SHORT") and overall_conf < CONF_THRESHOLD:
-        raw_action = "WAIT"
+    # 5.3 Фильтр по порогу confidence:
+    # если действие BUY/SHORT, но confidence ниже порога,
+    # то переводим сигнал в WAIT и обнуляем уровни/вероятности.
+    if final_action in ("BUY", "SHORT") and overall_conf < CONF_THRESHOLD:
+        final_action = "WAIT"
         levels_out = {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
         probs_out  = {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
+        # Можно оставить overall_conf как есть (показывая «насколько не дотянули»),
+        # либо привести к нейтральному уровню — здесь оставляем как есть.
 
-    # 6) Формируем "Сырой" Результат (Raw Result)
+    # 6) Сбор ответа и логирование
     last_price = float(next(iter(parts.values())).get("last_price", 0.0))
 
     votes_txt = [
@@ -1819,22 +1690,22 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         for k, r in parts.items()
     ]
 
-    raw_res = {
+    res = {
         "last_price": last_price,
         "recommendation": {
-            "action": raw_action,
+            "action": final_action,
             "confidence": overall_conf,
         },
         "levels": levels_out,
         "probs": probs_out,
         "context": [
-            f"Octopus: ratio={ratio:.2f}, votes={count_long}L/{count_short}S",
+            f"Octopus: ratio={ratio:.2f}, votes={count_long}L/{count_short}S, "
             f"conf_thresh={CONF_THRESHOLD:.2f}"
         ],
-        "note_html": f"<div>Octopus: {raw_action} с {overall_conf:.0%}</div>",
+        "note_html": f"<div>Octopus: {final_action} с {overall_conf:.0%}</div>",
         "alt": "Octopus",
-        "entry_kind": "market" if raw_action != "WAIT" else "wait",
-        "entry_label": raw_action if raw_action != "WAIT" else "WAIT",
+        "entry_kind": "market" if final_action != "WAIT" else "wait",
+        "entry_label": final_action if final_action != "WAIT" else "WAIT",
         "meta": {
             "source": "Octopus",
             "votes": votes_txt,
@@ -1843,28 +1714,23 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         },
     }
 
-    # 7) Применяем Глобальный Debounce (5 минут ожидания при смене)
-    final_res = _apply_global_debounce(ticker, raw_action, raw_res)
-    
-    # 8) Логирование (Логируем ФИНАЛЬНЫЙ результат, который видит пользователь)
-    final_act = final_res["recommendation"]["action"]
-    
     try:
         log_agent_performance(
             agent="Octopus",
             ticker=ticker,
             horizon=horizon,
-            action=final_act,
+            action=final_action,
             confidence=float(overall_conf),
-            levels=levels_out if final_act != "WAIT" else {},
+            levels=levels_out,
             probs=probs_out,
-            meta={"votes": votes_txt, "ratio": float(ratio), "debounce": True},
+            meta={"votes": votes_txt, "ratio": float(ratio),
+                  "conf_threshold": float(CONF_THRESHOLD)},
             ts=pd.Timestamp.utcnow().isoformat(),
         )
     except Exception as e:
         logger.warning("perf log Octopus failed: %s", e)
 
-    return final_res
+    return res
 
 # -------------------- Strategy Router --------------------
 STRATEGY_REGISTRY: Dict[str, Callable[[str, str], Dict[str, Any]]] = {
