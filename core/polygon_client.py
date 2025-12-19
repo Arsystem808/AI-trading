@@ -15,7 +15,7 @@ class PolygonClient:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        cache_ttl_sec: int = 300,
+        cache_ttl_sec: int = 30,
         base_url: str = "https://api.polygon.io",
         session: Optional[requests.Session] = None,
     ):
