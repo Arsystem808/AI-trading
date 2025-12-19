@@ -1520,7 +1520,7 @@ OCTO_WEIGHTS: Dict[str, float] = {
 }
 
 # Порог confidence, ниже которого Octopus НЕ даёт торговый сигнал (WAIT)
-CONF_THRESHOLD: float = float(os.getenv("OCTO_CONF_THRESHOLD", "0.645"))
+CONF_THRESHOLD: float = float(os.getenv("OCTO_CONF_THRESHOLD", "0.61"))
 
 # Период подтверждения сигнала (в минутах)
 SIGNAL_CONFIRMATION_MINUTES: int = int(os.getenv("OCTO_SIGNAL_CONFIRMATION_MIN", "2"))
