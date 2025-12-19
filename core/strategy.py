@@ -387,7 +387,6 @@ def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный
     }
 
 # -------------------- M7 (rules + optional ML overlay) --------------------
-# -------------------- M7 (Market Execution Only) --------------------
 try:
     from core.model_loader import load_model_for
 except Exception:
@@ -399,12 +398,12 @@ _M7_LAST_HIT = {}
 
 # Память для глобального кулдауна тикера (ticker) -> timestamp реального времени (UTC)
 _M7_TICKER_LAST_NOTIFIED = {}
-_M7_TICKER_COOLDOWN_MINUTES = 60.0
+_M7_TICKER_COOLDOWN_MINUTES = 30.0  # Пауза между сигналами по одному тикеру (минут)
 
 # Состояние направления по тикеру для гистерезиса
 _M7_DIR_STATE = {}
-_M7_DIR_MIN_HOLD_HOURS = 4.0
-_M7_DIR_MIN_DELTA_CONF = 0.08
+_M7_DIR_MIN_HOLD_HOURS = 4.0     # Минимальное время между разворотами
+_M7_DIR_MIN_DELTA_CONF = 0.08    # Необходимый прирост уверенности для разворота
 
 class _M7IdentityCalibrator:
     def __call__(self, p: float) -> float:
@@ -423,7 +422,8 @@ def _m7_cal():
 
 def _m7_direction_filter(ticker: str, raw_action: str, conf: float, ts: "pd.Timestamp"):
     """
-    Гистерезис по направлению: блокирует частые перевороты.
+    Гистерезис по направлению: блокирует частые перевороты (flip),
+    если прошло мало времени или уверенность выросла незначительно.
     """
     global _M7_DIR_STATE
 
@@ -447,6 +447,7 @@ def _m7_direction_filter(ticker: str, raw_action: str, conf: float, ts: "pd.Time
             _M7_DIR_STATE[ticker] = {"action": raw_action, "ts": prev_ts, "conf": float(conf)}
         return raw_action, {"dir_state": "same", "prev_action": prev_action, "prev_ts": prev_ts}
 
+    # Попытка разворота
     if prev_ts is not None and ts - prev_ts < min_hold:
         return "WAIT", {
             "dir_state": "blocked_time",
@@ -487,7 +488,7 @@ class _M7Predictor:
             return False
         self.model = md["model"]
         try:
-            import joblib
+            import joblib  # noqa: F401
             meta = md.get("metadata", {}) or {}
             sp = meta.get("scaler_artifact")
             if sp:
@@ -516,7 +517,7 @@ class _M7Predictor:
     def _predict_proba_safe(self, X: np.ndarray, df_last_row: Optional[pd.DataFrame] = None) -> Optional[np.ndarray]:
         try:
             return self.model.predict_proba(X)
-        except Exception:
+        except Exception as e1:
             if df_last_row is not None:
                 try:
                     return self.model.predict_proba(df_last_row)
@@ -598,7 +599,7 @@ class M7TradingStrategy:
             fib[f'fib_{int(level * 1000)}'] = h - level * diff
         return fib
 
-    def identify_key_levels(self,  pd.DataFrame):
+    def identify_key_levels(self, data: pd.DataFrame):
         grouped = data.resample('D') if self.pivot_period == 'D' else data.resample('W')
         key = {}
         for _, g in grouped:
@@ -610,10 +611,10 @@ class M7TradingStrategy:
                 key.update(self.calculate_fib_levels(h, l))
         return key
 
-    def generate_signals(self,  pd.DataFrame, ticker: Optional[str] = None):
+    def generate_signals(self, data: pd.DataFrame, ticker: Optional[str] = None):
         """
-        Генерирует ТОЛЬКО рыночные (Market) сигналы, если цена в зоне уровня.
-        Отложенные ордера (LIMIT) полностью убраны.
+        Генерирует сигналы.
+        ВАЖНО: Только проверяет кулдауны уровней, но НЕ обновляет их (это делается при отправке).
         """
         sigs = []
         req = ['high', 'low', 'close']
@@ -636,28 +637,26 @@ class M7TradingStrategy:
 
         for name, val in key.items():
             dist = abs(price - val) / max(1e-9, cur_atr)
-            # Если цена дальше чем 1 ATR от уровня - игнорируем
             if dist >= self.atr_multiplier:
                 continue
 
             is_res = val > price
-            # --- MARKET EXECUTION LOGIC ---
             if is_res:
-                typ = 'SHORT'  # Было SELL_LIMIT
-                entry = price  # Входим по текущей
-                sl = float(val * 1.02) # SL за уровнем сопротивления
+                typ = 'SELL_LIMIT'
+                entry = float(val * 0.998)
+                sl = float(val * 1.02)
             else:
-                typ = 'BUY'    # Было BUY_LIMIT
-                entry = price  # Входим по текущей
-                sl = float(val * 0.98) # SL за уровнем поддержки
+                typ = 'BUY_LIMIT'
+                entry = float(val * 1.002)
+                sl = float(val * 0.98)
 
             if self.use_trend_filter and pivot_val is not None:
-                if typ == 'BUY' and price < pivot_val:
+                if typ == 'BUY_LIMIT' and price < pivot_val:
                     continue
-                if typ == 'SHORT' and price > pivot_val:
+                if typ == 'SELL_LIMIT' and price > pivot_val:
                     continue
 
-            # Только чтение кулдауна
+            # Только чтение кулдауна уровня
             if ticker is not None:
                 lvl_key = (ticker, name)
                 last_ts = _M7_LAST_HIT.get(lvl_key)
@@ -665,12 +664,8 @@ class M7TradingStrategy:
                     continue
 
             risk = abs(entry - sl)
-            # TP считаем от цены входа (Market), а не от уровня
             tp = entry + (2.0 * risk if not is_res else -2.0 * risk)
-            
-            # Уверенность тем выше, чем ближе мы к уровню сейчас
             conf = 1.0 - (dist / self.atr_multiplier)
-            
             sigs.append({
                 'type': typ,
                 'price': round(entry, 4),
@@ -740,7 +735,6 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
             strategy = M7TradingStrategy()
             signals = strategy.generate_signals(df, ticker=ticker)
 
-            # 1. Если ML молчит или вообще нет сигналов от стратегии -> WAIT
             if ml_action == "WAIT" or not signals:
                 return {
                     "last_price": price,
@@ -760,37 +754,21 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
                     }
                 }
 
-            # 2. Определяем желаемое направление
             side = ml_action if ml_action in ("BUY", "SHORT") else None
-            
-            best = None
             if side:
-                # ВАЖНО: ищем не BUY_LIMIT, а BUY (так как мы поменяли типы в generate_signals)
                 filt = [
                     s for s in signals
-                    if (side == "BUY" and s["type"] == "BUY")
-                    or (side == "SHORT" and s["type"] == "SHORT")
+                    if (side == "BUY" and s["type"].startswith("BUY"))
+                    or (side == "SHORT" and s["type"].startswith("SELL"))
                 ]
-                if filt:
-                    best = max(filt, key=lambda x: x["confidence"])
-                else:
-                    return {
-                        "last_price": price,
-                        "recommendation": {"action": "WAIT", "confidence": ml_conf},
-                        "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
-                        "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
-                        "context": [f"ML хочет {side}, но уровней нет"],
-                        "note_html": f"<div>M7 ML: конфликт {side} vs Levels</div>",
-                        "alt": "ML Conflict",
-                        "entry_kind": "wait",
-                        "entry_label": "WAIT",
-                        "meta": {"source": "M7", "ml_used": True, "conflict": True}
-                    }
+                best = (
+                    max(filt, key=lambda x: x["confidence"])
+                    if filt else max(signals, key=lambda x: x["confidence"])
+                )
             else:
                 best = max(signals, key=lambda x: x["confidence"])
-                side = "BUY" if best["type"] == "BUY" else "SHORT"
+                side = "BUY" if best["type"].startswith("BUY") else "SHORT"
 
-            # 3. Гистерезис
             filtered_action, dir_meta = _m7_direction_filter(
                 ticker=ticker,
                 raw_action=side,
@@ -821,7 +799,6 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
             entry = float(best['price'])
             sl = float(best['stop_loss'])
             risk = abs(entry - sl)
-            
             if filtered_action == "BUY":
                 tp1, tp2, tp3 = (entry + 1.5 * risk, entry + 2.5 * risk, entry + 4.0 * risk)
             else:
@@ -840,11 +817,11 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
                 "recommendation": {"action": filtered_action, "confidence": ml_conf},
                 "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
                 "probs": probs,
-                "context": [f"ML {filtered_action} (Market) у {best['level']}"],
+                "context": [f"ML {filtered_action} + уровни M7: {best['level']}"],
                 "note_html": f"<div>M7 ML: {filtered_action} у {best['level_value']}</div>",
                 "alt": "ML‑enhanced M7",
-                "entry_kind": "market",
-                "entry_label": filtered_action,
+                "entry_kind": "limit",
+                "entry_label": best["type"],
                 "meta": {
                     "source": "M7",
                     "ml_used": True,
@@ -852,9 +829,10 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
                     "dir_meta": dir_meta
                 }
             }
+            # Успешный выход -> обновляем таймеры
             return _success_result(result, best.get("level"))
 
-    # Без ML
+    # Вариант без ML
     strategy = M7TradingStrategy()
     signals = strategy.generate_signals(df, ticker=ticker)
     if not signals:
@@ -895,7 +873,7 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
     conf = float(max(0.52, min(0.82, conf_base * (1.0 - penalty))))
     conf = float(_m7_cal()["M7"](conf))
 
-    if best['type'] == 'BUY':
+    if best['type'].startswith('BUY'):
         tp1, tp2, tp3 = (entry + 1.5 * risk, entry + 2.5 * risk, entry + 4.0 * risk)
         act_raw = "BUY"
     else:
@@ -964,13 +942,14 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
         "recommendation": {"action": act, "confidence": float(conf)},
         "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
         "probs": probs,
-        "context": [f"Market Сигнал от уровня {best['level']}"],
-        "note_html": f"<div>M7: {act} (Market) у {best['level_value']}</div>",
+        "context": [f"Сигнал от уровня {best['level']}"],
+        "note_html": f"<div>M7: {best['type']} на уровне {best['level_value']}</div>",
         "alt": "Торговля по M7",
-        "entry_kind": "market",
-        "entry_label": act,
+        "entry_kind": "limit",
+        "entry_label": best['type'],
         "meta": {"source": "M7", "grey_zone": bool(0.48 <= conf <= 0.58), "dir_meta": dir_meta}
     }
+    # Успешный выход -> обновляем таймеры
     return _success_result(result, best.get("level"))
 
 # -------------------- W7 --------------------
