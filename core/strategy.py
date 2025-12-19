@@ -1523,7 +1523,7 @@ OCTO_WEIGHTS: Dict[str, float] = {
 CONF_THRESHOLD: float = float(os.getenv("OCTO_CONF_THRESHOLD", "0.60"))
 
 # Период подтверждения сигнала (в минутах)
-SIGNAL_CONFIRMATION_MINUTES: int = int(os.getenv("OCTO_SIGNAL_CONFIRMATION_MIN", "5"))
+SIGNAL_CONFIRMATION_MINUTES: int = int(os.getenv("OCTO_SIGNAL_CONFIRMATION_MIN", "2"))
 
 # Минимальный процент времени для подтверждения сигнала (80% = 0.80)
 SIGNAL_DOMINANCE_THRESHOLD: float = float(os.getenv("OCTO_SIGNAL_DOMINANCE", "0.80"))
