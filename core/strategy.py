@@ -1522,73 +1522,37 @@ OCTO_WEIGHTS: Dict[str, float] = {
 # Порог confidence, ниже которого Octopus НЕ даёт торговый сигнал (WAIT)
 CONF_THRESHOLD: float = float(os.getenv("OCTO_CONF_THRESHOLD", "0.60"))
 
-# Период подтверждения сигнала (в минутах)
-SIGNAL_CONFIRMATION_MINUTES: int = int(os.getenv("OCTO_SIGNAL_CONFIRMATION_MIN", "2"))
+# Период подтверждения сигнала (в минутах) — СЕЙЧАС 0 ДЛЯ ТЕСТА
+SIGNAL_CONFIRMATION_MINUTES: int = int(os.getenv("OCTO_SIGNAL_CONFIRMATION_MIN", "0"))
 
-# Минимальный процент времени для подтверждения сигнала (80% = 0.80)
-SIGNAL_DOMINANCE_THRESHOLD: float = float(os.getenv("OCTO_SIGNAL_DOMINANCE", "0.80"))
+# Минимальный процент времени для подтверждения сигнала
+SIGNAL_DOMINANCE_THRESHOLD: float = float(os.getenv("OCTO_SIGNAL_DOMINANCE", "0.60"))
 
 
 # ==================== Потокобезопасное хранилище фильтров ====================
 class ThreadSafeFilterCache:
-    """
-    LRU-кэш фильтров с потокобезопасностью.
-    Автоматически удаляет старые неиспользуемые фильтры.
-    """
     def __init__(self, maxsize: int = 100):
         self._cache: OrderedDict[str, 'SignalPersistenceFilter'] = OrderedDict()
         self._lock = threading.Lock()
         self._maxsize = maxsize
         
     def get(self, key: str) -> 'SignalPersistenceFilter':
-        """Получить или создать фильтр (LRU eviction)"""
         with self._lock:
             if key not in self._cache:
                 self._cache[key] = SignalPersistenceFilter(
                     confirmation_period_minutes=SIGNAL_CONFIRMATION_MINUTES,
                     dominance_threshold=SIGNAL_DOMINANCE_THRESHOLD
                 )
-                # Удаляем самый старый элемент, если превышен лимит
                 if len(self._cache) > self._maxsize:
-                    evicted = self._cache.popitem(last=False)
-                    logger.debug(f"Filter cache evicted: {evicted[0]}")
+                    self._cache.popitem(last=False)
             else:
-                # Перемещаем в конец (LRU)
                 self._cache.move_to_end(key)
-            
             return self._cache[key]
-    
-    def clear(self):
-        """Очистить весь кэш (для тестирования)"""
-        with self._lock:
-            self._cache.clear()
-    
-    def get_stats(self) -> Dict[str, Any]:
-        """Статистика по кэшу (для мониторинга)"""
-        with self._lock:
-            return {
-                "size": len(self._cache),
-                "maxsize": self._maxsize,
-                "keys": list(self._cache.keys())
-            }
 
 
-# ==================== Фильтр с weighted time подходом ====================
+# ==================== Фильтр с weighted time ====================
 class SignalPersistenceFilter:
-    """
-    Фильтр для подтверждения торговых сигналов по времени.
-    
-    Использует weighted time approach: подсчитывает процент времени,
-    который каждый сигнал занимал в последние N минут.
-    Сигнал подтверждается, если он доминировал >= 80% времени.
-    
-    Преимущества перед простым таймером:
-    - Устойчив к краткосрочным флуктуациям
-    - Учитывает общий тренд сигналов
-    - Более гибкий при частых переключениях
-    """
-    
-    def __init__(self, confirmation_period_minutes: int = 1, 
+    def __init__(self, confirmation_period_minutes: int = 0, 
                  dominance_threshold: float = 0.60):
         self.confirmation_period = timedelta(minutes=confirmation_period_minutes)
         self.dominance_threshold = dominance_threshold
@@ -1598,67 +1562,37 @@ class SignalPersistenceFilter:
     
     def process_signal(self, new_signal: str, current_levels: Dict[str, float],
                       current_probs: Dict[str, float], current_conf: float) -> Dict[str, Any]:
-        """
-        Обрабатывает новый сигнал с weighted time подтверждением.
-        
-        Returns:
-            Dict с ключами:
-            - 'action': str - финальное действие (WAIT если не подтверждено)
-            - 'levels': dict
-            - 'probs': dict
-            - 'confidence': float
-            - 'time_held': float - общее время наблюдения в секундах
-            - 'signal_weights': dict - распределение времени по сигналам
-        """
         with self._lock:
             current_time = datetime.now(timezone.utc)
-            
-            # Добавляем текущий сигнал в историю
             self.signal_history.append((current_time, new_signal))
             
-            # Удаляем записи старше confirmation_period
             cutoff_time = current_time - self.confirmation_period
             self.signal_history = [
                 (t, s) for t, s in self.signal_history 
                 if t >= cutoff_time
             ]
             
-            # Подсчитываем weighted time для каждого сигнала
             signal_weights, total_time = self._calculate_signal_weights(current_time)
-            
-            # Если данных недостаточно, возвращаем WAIT
+
+            # ВАЖНО: при окне 0 секунд это условие сразу НЕ срабатывает
             if total_time < self.confirmation_period.total_seconds():
-                logger.debug(
-                    f"Not enough time: {total_time:.0f}s / {self.confirmation_period.total_seconds():.0f}s"
-                )
                 return self._create_wait_response(signal_weights, total_time)
             
-            # Ищем доминирующий сигнал (исключая WAIT)
             dominant_signal = None
             max_percentage = 0.0
-            
             for signal, time_spent in signal_weights.items():
                 if signal == "WAIT":
                     continue
-                
                 percentage = time_spent / max(total_time, 1.0)
-                
                 if percentage > max_percentage:
                     max_percentage = percentage
                     dominant_signal = signal
             
-            # Проверяем, достигнут ли порог доминирования
             if (dominant_signal and 
                 max_percentage >= self.dominance_threshold and
                 dominant_signal != self.last_published_signal):
                 
-                logger.info(
-                    f"Signal {dominant_signal} confirmed: {max_percentage:.1%} "
-                    f"of last {total_time:.0f}s (threshold: {self.dominance_threshold:.0%})"
-                )
-                
                 self.last_published_signal = dominant_signal
-                
                 return {
                     'action': dominant_signal,
                     'levels': current_levels,
@@ -1669,51 +1603,30 @@ class SignalPersistenceFilter:
                     'dominant_percentage': max_percentage,
                 }
             
-            # Сигнал не подтверждён
-            logger.debug(
-                f"Signal waiting confirmation. Dominant: {dominant_signal} "
-                f"({max_percentage:.1%}), threshold: {self.dominance_threshold:.0%}"
-            )
-            
             return self._create_wait_response(signal_weights, total_time)
     
     def _calculate_signal_weights(self, current_time: datetime) -> Tuple[Dict[str, float], float]:
-        """
-        Подсчитывает, сколько времени каждый сигнал занимал в истории.
-        
-        Returns:
-            (signal_times, total_time) где signal_times = {signal: seconds}
-        """
-        cutoff_time = current_time - self.confirmation_period
-        valid_history = [
-            (t, s) for t, s in self.signal_history 
-            if t >= cutoff_time
-        ]
-        
-        if len(valid_history) < 1:
+        if not self.signal_history:
             return {}, 0.0
         
-        signal_times = {}
+        signal_times: Dict[str, float] = {}
+        history = list(self.signal_history)
         
-        # Считаем время между последовательными сигналами
-        for i in range(len(valid_history) - 1):
-            t1, s1 = valid_history[i]
-            t2, _ = valid_history[i + 1]
+        for i in range(len(history) - 1):
+            t1, s1 = history[i]
+            t2, _ = history[i + 1]
             duration = (t2 - t1).total_seconds()
             signal_times[s1] = signal_times.get(s1, 0.0) + duration
         
-        # Добавляем время последнего сигнала до текущего момента
-        last_time, last_signal = valid_history[-1]
+        last_time, last_signal = history[-1]
         duration = (current_time - last_time).total_seconds()
         signal_times[last_signal] = signal_times.get(last_signal, 0.0) + duration
         
         total_time = sum(signal_times.values())
-        
         return signal_times, total_time
     
     def _create_wait_response(self, signal_weights: Dict[str, float], 
                              total_time: float) -> Dict[str, Any]:
-        """Создаёт ответ WAIT с метаданными"""
         return {
             'action': 'WAIT',
             'levels': {'entry': 0.0, 'sl': 0.0, 'tp1': 0.0, 'tp2': 0.0, 'tp3': 0.0},
@@ -1725,25 +1638,20 @@ class SignalPersistenceFilter:
         }
 
 
-# ==================== Streamlit Session State Integration ====================
+# ==================== Streamlit Session State ====================
 try:
     import streamlit as st
     _USE_STREAMLIT = True
 except ImportError:
     _USE_STREAMLIT = False
-    logger.warning("Streamlit not available, using global cache (state will not persist)")
 
 
 def _get_filter_cache() -> ThreadSafeFilterCache:
-    """Получить кэш фильтров (из session_state если Streamlit, иначе глобальный)"""
     if _USE_STREAMLIT:
-        # Используем Streamlit session_state для сохранения между reruns
         if "signal_filter_cache" not in st.session_state:
             st.session_state.signal_filter_cache = ThreadSafeFilterCache(maxsize=100)
-            logger.info("Initialized new filter cache in session_state")
         return st.session_state.signal_filter_cache
     else:
-        # Fallback для non-Streamlit окружения (тесты, CLI)
         global _GLOBAL_FILTER_CACHE
         if "_GLOBAL_FILTER_CACHE" not in globals():
             _GLOBAL_FILTER_CACHE = ThreadSafeFilterCache(maxsize=100)
@@ -1751,7 +1659,6 @@ def _get_filter_cache() -> ThreadSafeFilterCache:
 
 
 def _get_signal_filter(ticker: str, horizon: str) -> SignalPersistenceFilter:
-    """Получить фильтр для конкретной пары ticker+horizon"""
     cache = _get_filter_cache()
     key = f"{ticker}:{horizon}"
     return cache.get(key)
@@ -1774,27 +1681,11 @@ def _num_to_act(x: float) -> str:
     return "WAIT"
 
 
-# ==================== Основная функция оркестратора ====================
+# ==================== Основная функция ====================
 def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
-    """
-    Оркестратор Octopus с временной фильтрацией сигналов.
-    
-    Логика:
-    1. Собирает ответы от всех агентов (Global, M7, W7, AlphaPulse)
-    2. Применяет взвешенное голосование для выбора действия
-    3. Фильтрует сигнал через SignalPersistenceFilter (weighted time)
-    4. Возвращает подтверждённый сигнал или WAIT
-    """
-    
-    # ========== ДИАГНОСТИКА: Проверка состояния фильтра ==========
     signal_filter = _get_signal_filter(ticker, horizon)
-    logger.info(
-        f"[Octopus] Start analysis: ticker={ticker}, horizon={horizon}, "
-        f"history_size={len(signal_filter.signal_history)}, "
-        f"last_published={signal_filter.last_published_signal}"
-    )
     
-    # 1) Собираем ответы агентов
+    # 1) агенты
     parts: Dict[str, Dict[str, Any]] = {}
     for name, fn in {
         "Global":     analyze_asset_global,
@@ -1821,7 +1712,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
             "meta": {"source": "Octopus", "votes": [], "ratio": 0.0},
         }
 
-    # 2) Строим активные голоса BUY/SHORT с весами и conf
+    # 2) активные голоса
     active = []
     for k, r in parts.items():
         a = str(r.get("recommendation", {}).get("action", "WAIT")).upper()
@@ -1838,7 +1729,6 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     delta = abs(score_long - score_short)
     ratio = delta / max(1e-6, total_side)
 
-    # 3) Правило выбора действия
     if count_long >= 3:
         final_action = "BUY"
     elif count_short >= 3:
@@ -1849,7 +1739,6 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         else:
             final_action = "BUY" if score_long > score_short else "SHORT"
 
-    # Утилита для медианных уровней
     def _median_levels(direction: str):
         L = [
             r.get("levels", {})
@@ -1876,7 +1765,6 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         }
 
     if final_action in ("BUY", "SHORT"):
-        # 4) Уровни/пробы
         cand = [t for t in active if t[1] == final_action]
         win_agent = (
             max(cand, key=lambda t: t[2] * t[3])[0] if cand
@@ -1892,7 +1780,6 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
             parts.get(win_agent, {}).get("probs", {}) or {}
         )
 
-        # 5) Итоговый confidence
         side_items = []
         for k, r in parts.items():
             rec = r.get("recommendation", {})
@@ -1910,35 +1797,24 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
 
         score_side = score_long if final_action == "BUY" else score_short
         score_opp  = score_short if final_action == "BUY" else score_long
-
-        try:
-            beta = float(os.getenv("OCTO_CONF_BETA", "0.35"))
-        except Exception:
-            beta = 0.35
-
+        beta = float(os.getenv("OCTO_CONF_BETA", "0.35"))
         penalty = 1.0 - beta * (score_opp / max(1e-6, score_side))
         penalty = max(0.70, min(1.00, penalty))
 
         overall_conf = float(
             CAL_CONF["Octopus"](_clip01(overall_conf * penalty))
         )
-
     else:
         levels_out = {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
         probs_out  = {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
         overall_conf = float(CAL_CONF["Octopus"](0.50))
 
-    # 5.3) Фильтр по порогу confidence
     if final_action in ("BUY", "SHORT") and overall_conf < CONF_THRESHOLD:
-        logger.info(
-            f"[Octopus] Signal {final_action} filtered by confidence: "
-            f"{overall_conf:.1%} < {CONF_THRESHOLD:.1%}"
-        )
         final_action = "WAIT"
         levels_out = {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
         probs_out  = {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
 
-    # ========== ВРЕМЕННАЯ ФИЛЬТРАЦИЯ СИГНАЛА (WEIGHTED TIME) ==========
+    # временной фильтр (у нас окно 0 минут → подтверждает сразу)
     filter_result = signal_filter.process_signal(
         new_signal=final_action,
         current_levels=levels_out,
@@ -1946,7 +1822,6 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         current_conf=overall_conf
     )
     
-    # Применяем результат фильтрации
     final_action_filtered = filter_result['action']
     levels_filtered = filter_result['levels']
     probs_filtered = filter_result['probs']
@@ -1955,14 +1830,6 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     signal_weights = filter_result.get('signal_weights', {})
     dominant_percentage = filter_result.get('dominant_percentage', 0.0)
     
-    # ========== ДИАГНОСТИКА: Результат фильтрации ==========
-    logger.info(
-        f"[Octopus] Filter result: raw={final_action}, filtered={final_action_filtered}, "
-        f"time_held={time_held:.0f}s, dominant={dominant_percentage:.1%}, "
-        f"weights={signal_weights}"
-    )
-    
-    # 6) Сбор ответа и логирование
     last_price = float(next(iter(parts.values())).get("last_price", 0.0))
 
     votes_txt = [
@@ -1974,34 +1841,11 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         for k, r in parts.items()
     ]
 
-    # Информация о фильтрации в контексте
     context_msg = (
         f"Octopus: ratio={ratio:.2f}, votes={count_long}L/{count_short}S, "
         f"conf_thresh={CONF_THRESHOLD:.2f}"
     )
     
-    # Защита от деления на ноль в форматировании
-    if final_action_filtered == "WAIT" and final_action in ("BUY", "SHORT"):
-        if time_held > 0 and signal_weights:
-            weights_str = ", ".join([
-                f"{sig}: {t/time_held*100:.0f}%" 
-                for sig, t in signal_weights.items() 
-                if sig != "WAIT"
-            ])
-        else:
-            weights_str = "insufficient data"
-        
-        context_msg += (
-            f" | Raw signal: {final_action}, waiting confirmation "
-            f"(period: {time_held:.0f}s/{SIGNAL_CONFIRMATION_MINUTES*60}s, "
-            f"weights: {weights_str}, threshold: {SIGNAL_DOMINANCE_THRESHOLD:.0%})"
-        )
-    elif final_action_filtered != "WAIT":
-        context_msg += (
-            f" | Confirmed {final_action_filtered} "
-            f"(dominance: {dominant_percentage:.0%})"
-        )
-
     res = {
         "last_price": last_price,
         "recommendation": {
@@ -2029,28 +1873,6 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
             "dominant_percentage": float(dominant_percentage),
         },
     }
-
-    try:
-        log_agent_performance(
-            agent="Octopus",
-            ticker=ticker,
-            horizon=horizon,
-            action=final_action_filtered,
-            confidence=float(conf_filtered),
-            levels=levels_filtered,
-            probs=probs_filtered,
-            meta={
-                "votes": votes_txt,
-                "ratio": float(ratio),
-                "raw_signal": final_action,
-                "time_held_seconds": time_held,
-                "signal_weights": {k: float(v) for k, v in signal_weights.items()},
-                "dominant_percentage": float(dominant_percentage),
-            },
-            ts=pd.Timestamp.utcnow().isoformat(),
-        )
-    except Exception as e:
-        logger.warning("perf log Octopus failed: %s", e)
 
     return res
 
