@@ -1588,8 +1588,8 @@ class SignalPersistenceFilter:
     - Более гибкий при частых переключениях
     """
     
-    def __init__(self, confirmation_period_minutes: int = 5, 
-                 dominance_threshold: float = 0.80):
+    def __init__(self, confirmation_period_minutes: int = 1, 
+                 dominance_threshold: float = 0.60):
         self.confirmation_period = timedelta(minutes=confirmation_period_minutes)
         self.dominance_threshold = dominance_threshold
         self.signal_history: list[Tuple[datetime, str]] = []
