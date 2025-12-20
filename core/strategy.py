@@ -1551,19 +1551,15 @@ except Exception:
             logger.warning("perf log AlphaPulse failed: %s", e)
         return res
 
-# -------------------- Оркестратор Octopus (Final: Quorum + Time Filter) --------------------
-from typing import Dict, Any, Tuple
+# -------------------- Оркестратор Octopus --------------------
+from typing import Dict, Any
 import numpy as np
 import pandas as pd
 import os
 import logging
-import threading
-from datetime import datetime, timezone, timedelta
-from collections import OrderedDict
 
 logger = logging.getLogger(__name__)
 
-# Веса агентов
 OCTO_WEIGHTS: Dict[str, float] = {
     "Global": 0.25,
     "M7": 0.20,
@@ -1571,155 +1567,30 @@ OCTO_WEIGHTS: Dict[str, float] = {
     "AlphaPulse": 0.25,
 }
 
-# --- Настройки ---
-# Порог уверенности для публикации сигнала
+# Порог confidence, ниже которого Octopus НЕ даёт торговый сигнал (WAIT)
+# Можно переопределить через переменную окружения OCTO_CONF_THRESHOLD
 CONF_THRESHOLD: float = float(os.getenv("OCTO_CONF_THRESHOLD", "0.645"))
 
-# Минимальное кол-во активных агентов (BUY/SHORT) для принятия решения.
-# Защищает от ситуаций, когда 1 агент кричит SHORT, а 3 молчат (WAIT).
-MIN_ACTIVE_VOTES: int = int(os.getenv("OCTO_MIN_ACTIVE", "2"))
+def _clip01(x: float) -> float:
+    return max(0.0, min(1.0, float(x)))
 
-# Период подтверждения сигнала (в минутах). 0 = мгновенно.
-SIGNAL_CONFIRMATION_MINUTES: int = int(os.getenv("OCTO_SIGNAL_CONFIRMATION_MIN", "0"))
+def _act_to_num(a: str) -> int:
+    return 1 if a == "BUY" else (-1 if a == "SHORT" else 0)
 
-# Порог доминирования сигнала во времени (0.80 = 80% времени)
-SIGNAL_DOMINANCE_THRESHOLD: float = float(os.getenv("OCTO_SIGNAL_DOMINANCE", "0.80"))
+def _num_to_act(x: float) -> str:
+    if x > 0:
+        return "BUY"
+    if x < 0:
+        return "SHORT"
+    return "WAIT"
 
-
-# ==================== Классы Фильтрации (Thread-Safe) ====================
-class ThreadSafeFilterCache:
-    """LRU-кэш для хранения состояния фильтров между вызовами."""
-    def __init__(self, maxsize: int = 100):
-        self._cache: OrderedDict[str, 'SignalPersistenceFilter'] = OrderedDict()
-        self._lock = threading.Lock()
-        self._maxsize = maxsize
-        
-    def get(self, key: str) -> 'SignalPersistenceFilter':
-        with self._lock:
-            if key not in self._cache:
-                self._cache[key] = SignalPersistenceFilter(
-                    confirmation_period_minutes=SIGNAL_CONFIRMATION_MINUTES,
-                    dominance_threshold=SIGNAL_DOMINANCE_THRESHOLD
-                )
-                if len(self._cache) > self._maxsize:
-                    self._cache.popitem(last=False)
-            else:
-                self._cache.move_to_end(key)
-            return self._cache[key]
-
-class SignalPersistenceFilter:
-    """Фильтр, требующий удержания сигнала в течение времени."""
-    def __init__(self, confirmation_period_minutes: int, dominance_threshold: float):
-        self.confirmation_period = timedelta(minutes=confirmation_period_minutes)
-        self.dominance_threshold = dominance_threshold
-        self.signal_history: list[Tuple[datetime, str]] = []
-        self.last_published_signal: str = None
-        self._lock = threading.Lock()
-    
-    def process_signal(self, new_signal: str, current_levels: Dict, current_probs: Dict, current_conf: float) -> Dict:
-        with self._lock:
-            current_time = datetime.now(timezone.utc)
-            self.signal_history.append((current_time, new_signal))
-            
-            # Очистка старой истории
-            cutoff_time = current_time - self.confirmation_period
-            self.signal_history = [(t, s) for t, s in self.signal_history if t >= cutoff_time]
-            
-            signal_weights, total_time = self._calculate_signal_weights(current_time)
-            
-            # Если времени прошло меньше, чем окно подтверждения -> WAIT (кроме случая 0 минут)
-            if self.confirmation_period.total_seconds() > 0 and total_time < self.confirmation_period.total_seconds():
-                 return self._create_wait(signal_weights, total_time)
-
-            # Поиск доминирующего сигнала
-            dominant, max_pct = self._find_dominant(signal_weights, total_time)
-            
-            # Логика подтверждения
-            if (dominant and max_pct >= self.dominance_threshold and 
-                dominant != self.last_published_signal):
-                self.last_published_signal = dominant
-                return {
-                    'action': dominant, 'levels': current_levels, 'probs': current_probs,
-                    'confidence': current_conf, 'time_held': total_time,
-                    'signal_weights': signal_weights, 'dominant_percentage': max_pct
-                }
-            
-            # Если сигнал тот же, что и был опубликован -> обновляем данные
-            if dominant and dominant == self.last_published_signal:
-                 return {
-                    'action': dominant, 'levels': current_levels, 'probs': current_probs,
-                    'confidence': current_conf, 'time_held': total_time,
-                    'signal_weights': signal_weights, 'dominant_percentage': max_pct
-                }
-
-            return self._create_wait(signal_weights, total_time)
-
-    def _calculate_signal_weights(self, current_time):
-        if not self.signal_history: return {}, 0.0
-        signal_times = {}
-        history = self.signal_history
-        for i in range(len(history) - 1):
-            t1, s1 = history[i]
-            t2, _ = history[i+1]
-            dur = (t2 - t1).total_seconds()
-            signal_times[s1] = signal_times.get(s1, 0.0) + dur
-        last_time, last_signal = history[-1]
-        dur = (current_time - last_time).total_seconds()
-        signal_times[last_signal] = signal_times.get(last_signal, 0.0) + dur
-        return signal_times, sum(signal_times.values())
-
-    def _find_dominant(self, weights, total):
-        dom, max_pct = None, 0.0
-        for s, w in weights.items():
-            if s == "WAIT": continue
-            pct = w / max(total, 1.0)
-            if pct > max_pct:
-                max_pct = pct
-                dom = s
-        return dom, max_pct
-
-    def _create_wait(self, weights, total):
-        return {
-            'action': 'WAIT', 'levels': {'entry':0,'sl':0,'tp1':0,'tp2':0,'tp3':0}, 
-            'probs': {'tp1':0,'tp2':0,'tp3':0}, 'confidence': 0.5, 
-            'time_held': total, 'signal_weights': weights, 'dominant_percentage': 0.0
-        }
-
-# ==================== Интеграция со Streamlit ====================
-try:
-    import streamlit as st
-    _USE_STREAMLIT = True
-except ImportError:
-    _USE_STREAMLIT = False
-
-def _get_filter_cache():
-    if _USE_STREAMLIT:
-        if "signal_filter_cache" not in st.session_state:
-            st.session_state.signal_filter_cache = ThreadSafeFilterCache(maxsize=100)
-        return st.session_state.signal_filter_cache
-    else:
-        global _GLOBAL_FILTER_CACHE
-        if "_GLOBAL_FILTER_CACHE" not in globals():
-            _GLOBAL_FILTER_CACHE = ThreadSafeFilterCache(maxsize=100)
-        return _GLOBAL_FILTER_CACHE
-
-def _get_signal_filter(ticker, horizon):
-    return _get_filter_cache().get(f"{ticker}:{horizon}")
-
-# ==================== Утилиты ====================
-def _clip01(x: float) -> float: return max(0.0, min(1.0, float(x)))
-
-# ==================== MAIN LOGIC ====================
 def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
-    # 1. Получаем фильтр (состояние)
-    signal_filter = _get_signal_filter(ticker, horizon)
-    
-    # 2. Опрос агентов
-    parts = {}
+    # 1) Собираем ответы агентов
+    parts: Dict[str, Dict[str, Any]] = {}
     for name, fn in {
-        "Global": analyze_asset_global,
-        "M7": analyze_asset_m7,
-        "W7": analyze_asset_w7,
+        "Global":     analyze_asset_global,
+        "M7":         analyze_asset_m7,
+        "W7":         analyze_asset_w7,
         "AlphaPulse": analyze_asset_alphapulse,
     }.items():
         try:
@@ -1729,45 +1600,37 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
 
     if not parts:
         return {
-            "last_price": 0.0, "recommendation": {"action": "WAIT", "confidence": 0.5},
-            "levels": {}, "probs": {}, "context": ["No agents responded"], 
-            "note_html": "WAIT", "meta": {"source": "Octopus"}
+            "last_price": 0.0,
+            "recommendation": {"action": "WAIT", "confidence": 0.50},
+            "levels": {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+            "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+            "context": ["Octopus: no agents responded"],
+            "note_html": "<div>Octopus: WAIT</div>",
+            "alt": "WAIT",
+            "entry_kind": "wait",
+            "entry_label": "WAIT",
+            "meta": {"source": "Octopus", "votes": [], "ratio": 0.0},
         }
 
-    # 3. Подсчет голосов
-    count_long = 0
-    count_short = 0
-    score_long = 0.0
-    score_short = 0.0
-    active_votes_list = []
-
+    # 2) Строим активные голоса BUY/SHORT с весами и conf
+    active = []
     for k, r in parts.items():
         a = str(r.get("recommendation", {}).get("action", "WAIT")).upper()
         c = float(r.get("recommendation", {}).get("confidence", 0.5))
         w = float(OCTO_WEIGHTS.get(k, 0.20))
-        
-        active_votes_list.append({"agent": k, "action": a, "confidence": c})
+        if a in ("BUY", "SHORT"):
+            active.append((k, a, _clip01(c), w))
 
-        if a == "BUY":
-            count_long += 1
-            score_long += w * c
-        elif a == "SHORT":
-            count_short += 1
-            score_short += w * c
-
-    total_active_votes = count_long + count_short
-    total_score = score_long + score_short
+    count_long  = sum(1 for (_, a, _, _) in active if a == "BUY")
+    count_short = sum(1 for (_, a, _, _) in active if a == "SHORT")
+    score_long  = sum(w * c for (_, a, c, w) in active if a == "BUY")
+    score_short = sum(w * c for (_, a, c, w) in active if a == "SHORT")
+    total_side  = score_long + score_short
     delta = abs(score_long - score_short)
-    ratio = delta / max(1e-6, total_score) # Ratio считается от активных весов
+    ratio = delta / max(1e-6, total_side)
 
-    # 4. Логика выбора (с КВОРУМОМ)
-    final_action = "WAIT"
-
-    if total_active_votes < MIN_ACTIVE_VOTES:
-        # ЗАЩИТА ОТ ОДИНОЧЕК: Если активных голосов мало -> WAIT
-        final_action = "WAIT"
-        logger.info(f"Octopus: Quorum failed ({total_active_votes} < {MIN_ACTIVE_VOTES})")
-    elif count_long >= 3:
+    # 3) Правило выбора действия (как было)
+    if count_long >= 3:
         final_action = "BUY"
     elif count_short >= 3:
         final_action = "SHORT"
@@ -1777,88 +1640,148 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         else:
             final_action = "BUY" if score_long > score_short else "SHORT"
 
-    # 5. Уровни и Confidence
-    levels_out = {"entry":0.0,"sl":0.0,"tp1":0.0,"tp2":0.0,"tp3":0.0}
-    probs_out = {"tp1":0.0,"tp2":0.0,"tp3":0.0}
-    overall_conf = 0.5
-
-    if final_action != "WAIT":
-        # Уровни от лучшего агента победившей стороны
-        cand = [
-            (parts[k], OCTO_WEIGHTS.get(k,0.2)*parts[k].get("recommendation",{}).get("confidence",0))
-            for k, r in parts.items() 
-            if str(r.get("recommendation",{}).get("action","")).upper() == final_action
+    # Утилита для медианных уровней по сторонникам выбранной стороны
+    def _median_levels(direction: str):
+        L = [
+            r.get("levels", {})
+            for r in parts.values()
+            if str(r.get("recommendation", {}).get("action", "")).upper() == direction
         ]
-        if cand:
-            best_res = max(cand, key=lambda x: x[1])[0]
-            levels_out = best_res.get("levels", {})
-            probs_out = _monotone_tp_probs(best_res.get("probs", {}) or {})
+        if not L:
+            return {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
+        med = lambda k: float(
+            np.median(
+                [
+                    x.get(k, 0.0)
+                    for x in L
+                    if isinstance(x.get(k, None), (int, float))
+                ]
+            )
+        )
+        return {
+            "entry": med("entry"),
+            "sl": med("sl"),
+            "tp1": med("tp1"),
+            "tp2": med("tp2"),
+            "tp3": med("tp3"),
+        }
 
-        # Расчет Confidence
-        side_sum = sum(
-            float(OCTO_WEIGHTS.get(k,0.2)) * _clip01(r.get("recommendation",{}).get("confidence",0.5))
-            for k, r in parts.items() if str(r.get("recommendation",{}).get("action","")).upper() == final_action
+    if final_action in ("BUY", "SHORT"):
+        # 4) Уровни/пробы: медианы при слабой поляризации, иначе — от победителя
+        cand = [t for t in active if t[1] == final_action]
+        win_agent = (
+            max(cand, key=lambda t: t[2] * t[3])[0] if cand
+            else max(active, key=lambda t: t[2] * t[3])[0]
         )
-        total_weight_active = sum(
-            float(OCTO_WEIGHTS.get(k,0.2)) 
-            for k, r in parts.items() if str(r.get("recommendation",{}).get("action","")).upper() == final_action
+
+        if ratio < 0.25:
+            levels_out = _median_levels(final_action)
+        else:
+            levels_out = parts[win_agent].get("levels", {})
+
+        probs_out = _monotone_tp_probs(
+            parts.get(win_agent, {}).get("probs", {}) or {}
         )
-        
-        # Базовая уверенность = взвешенная сумма / сумму весов активных
-        raw_conf = side_sum / max(1e-6, total_weight_active) if total_weight_active > 0 else 0.5
-        
-        # Штраф за оппозицию
-        opp_score = (score_short if final_action == "BUY" else score_long)
-        side_score = (score_long if final_action == "BUY" else score_short)
-        
+
+        # 5) Итоговый confidence: взвешенно по победившей стороне + мягкий штраф конфликта
+        side_items = []
+        for k, r in parts.items():
+            rec = r.get("recommendation", {})
+            if str(rec.get("action", "")).upper() == final_action:
+                w = float(OCTO_WEIGHTS.get(k, 0.20))
+                c = _clip01(rec.get("confidence", 0.5))
+                side_items.append((w, c))
+
+        if side_items:
+            overall_conf = sum(w * c for w, c in side_items) / max(
+                1e-6, sum(w for w, _ in side_items)
+            )
+        else:
+            overall_conf = 0.50
+
+        score_side = score_long if final_action == "BUY" else score_short
+        score_opp  = score_short if final_action == "BUY" else score_long
+
         try:
             beta = float(os.getenv("OCTO_CONF_BETA", "0.35"))
-        except: beta = 0.35
-            
-        penalty = 1.0 - beta * (opp_score / max(1e-6, side_score))
-        penalty = max(0.70, min(1.00, penalty))
-        
-        # Калибровка
-        overall_conf = float(CAL_CONF["Octopus"](_clip01(raw_conf * penalty)))
+        except Exception:
+            beta = 0.35
 
-    # 6. Фильтр по порогу Confidence
-    if final_action != "WAIT" and overall_conf < CONF_THRESHOLD:
+        penalty = 1.0 - beta * (score_opp / max(1e-6, score_side))
+        penalty = max(0.70, min(1.00, penalty))  # клип фактора
+
+        overall_conf = float(
+            CAL_CONF["Octopus"](_clip01(overall_conf * penalty))
+        )
+
+    else:
+        levels_out = {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
+        probs_out  = {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
+        overall_conf = float(CAL_CONF["Octopus"](0.50))
+
+    # 5.3 Фильтр по порогу confidence:
+    # если действие BUY/SHORT, но confidence ниже порога,
+    # то переводим сигнал в WAIT и обнуляем уровни/вероятности.
+    if final_action in ("BUY", "SHORT") and overall_conf < CONF_THRESHOLD:
         final_action = "WAIT"
-        levels_out = {"entry":0.0,"sl":0.0,"tp1":0.0,"tp2":0.0,"tp3":0.0}
-        probs_out = {"tp1":0.0,"tp2":0.0,"tp3":0.0}
+        levels_out = {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
+        probs_out  = {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0}
+        # Можно оставить overall_conf как есть (показывая «насколько не дотянули»),
+        # либо привести к нейтральному уровню — здесь оставляем как есть.
 
-    # 7. Временная фильтрация (SignalPersistenceFilter)
-    filter_res = signal_filter.process_signal(final_action, levels_out, probs_out, overall_conf)
-
-    # 8. Финальная сборка ответа
-    act = filter_res['action']
+    # 6) Сбор ответа и логирование
     last_price = float(next(iter(parts.values())).get("last_price", 0.0))
-    
-    ctx_msg = (f"Octopus: {act} (raw={final_action}), votes={count_long}L/{count_short}S, "
-               f"active={total_active_votes}, ratio={ratio:.2f}")
 
-    if act == "WAIT" and final_action != "WAIT":
-         ctx_msg += f" | Waiting confirmation ({filter_res['time_held']:.0f}s)"
+    votes_txt = [
+        {
+            "agent": k,
+            "action": str(r.get("recommendation", {}).get("action", "")),
+            "confidence": float(r.get("recommendation", {}).get("confidence", 0.0)),
+        }
+        for k, r in parts.items()
+    ]
 
-    return {
+    res = {
         "last_price": last_price,
-        "recommendation": {"action": act, "confidence": filter_res['confidence']},
-        "levels": filter_res['levels'],
-        "probs": filter_res['probs'],
-        "context": [ctx_msg],
-        "note_html": f"<div>Octopus: {act} с {filter_res['confidence']:.0%}</div>",
+        "recommendation": {
+            "action": final_action,
+            "confidence": overall_conf,
+        },
+        "levels": levels_out,
+        "probs": probs_out,
+        "context": [
+            f"Octopus: ratio={ratio:.2f}, votes={count_long}L/{count_short}S, "
+            f"conf_thresh={CONF_THRESHOLD:.2f}"
+        ],
+        "note_html": f"<div>Octopus: {final_action} с {overall_conf:.0%}</div>",
         "alt": "Octopus",
-        "entry_kind": "market" if act != "WAIT" else "wait",
-        "entry_label": act if act != "WAIT" else "WAIT",
+        "entry_kind": "market" if final_action != "WAIT" else "wait",
+        "entry_label": final_action if final_action != "WAIT" else "WAIT",
         "meta": {
             "source": "Octopus",
-            "votes": active_votes_list,
-            "raw_signal": final_action,
-            "filtered_signal": act,
-            "time_held": filter_res['time_held'],
-            "quorum_passed": total_active_votes >= MIN_ACTIVE_VOTES
-        }
+            "votes": votes_txt,
+            "ratio": float(ratio),
+            "conf_threshold": float(CONF_THRESHOLD),
+        },
     }
+
+    try:
+        log_agent_performance(
+            agent="Octopus",
+            ticker=ticker,
+            horizon=horizon,
+            action=final_action,
+            confidence=float(overall_conf),
+            levels=levels_out,
+            probs=probs_out,
+            meta={"votes": votes_txt, "ratio": float(ratio),
+                  "conf_threshold": float(CONF_THRESHOLD)},
+            ts=pd.Timestamp.utcnow().isoformat(),
+        )
+    except Exception as e:
+        logger.warning("perf log Octopus failed: %s", e)
+
+    return res
 
 # -------------------- Strategy Router --------------------
 STRATEGY_REGISTRY: Dict[str, Callable[[str, str], Dict[str, Any]]] = {
