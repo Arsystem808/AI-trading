@@ -1517,11 +1517,11 @@ OCTO_WEIGHTS: Dict[str, float] = {
 }
 
 # Порог confidence, ниже которого Octopus НЕ даёт торговый сигнал (WAIT)
-CONF_THRESHOLD: float = float(os.getenv("OCTO_CONF_THRESHOLD", "0.60"))
+CONF_THRESHOLD: float = float(os.getenv("OCTO_CONF_THRESHOLD", "0.64"))
 
 # Минимум голосов в ОДНУ сторону (BUY или SHORT)
 # По умолчанию 3 (как вы попросили). Можно переопределить через env OCTO_MIN_SIDE_VOTES.
-MIN_SIDE_VOTES: int = int(os.getenv("OCTO_MIN_SIDE_VOTES", "2"))
+MIN_SIDE_VOTES: int = int(os.getenv("OCTO_MIN_SIDE_VOTES", "3"))
 
 def _clip01(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
