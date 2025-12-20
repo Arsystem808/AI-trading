@@ -1520,9 +1520,9 @@ OCTO_WEIGHTS: Dict[str, float] = {
 # Можно переопределить через переменную окружения OCTO_CONF_THRESHOLD
 CONF_THRESHOLD: float = float(os.getenv("OCTO_CONF_THRESHOLD", "0.64"))
 
-# NEW: минимум голосов в ОДНУ сторону (BUY или SHORT)
-# Strict quorum direction: направление фиксируется стороной с кворумом.
+# Минимум голосов в ОДНУ сторону (BUY или SHORT)
 # Можно переопределить через env OCTO_MIN_SIDE_VOTES
+# По умолчанию: 3 (как вы попросили)
 MIN_SIDE_VOTES: int = int(os.getenv("OCTO_MIN_SIDE_VOTES", "3"))
 
 def _clip01(x: float) -> float:
@@ -1578,10 +1578,8 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
     cnt_buy = sum(1 for (_, a, _, _) in active if a == "BUY")
     cnt_short = sum(1 for (_, a, _, _) in active if a == "SHORT")
 
-    # NEW: strict quorum direction
-    # Требование: минимум 2 голоса в одну сторону.
-    # Направление фиксируется стороной, которая набрала кворум и имеет больше голосов.
-    # Если кворум не набран или ничья — WAIT.
+    # 3) Strict quorum direction: нужно минимум MIN_SIDE_VOTES в одну сторону
+    # Если кворума нет или ничья — WAIT
     if (cnt_buy < MIN_SIDE_VOTES and cnt_short < MIN_SIDE_VOTES) or (cnt_buy == cnt_short):
         final_action = "WAIT"
     elif cnt_buy >= MIN_SIDE_VOTES and cnt_buy > cnt_short:
@@ -1623,17 +1621,15 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         }
 
     if final_action in ("BUY", "SHORT"):
-        # 4) Уровни/пробы: медианы при слабой поляризации, иначе — от победителя
+        # 4) Победителя оставляем только для probs (как было), но уровни ВСЕГДА медианой
         cand = [t for t in active if t[1] == final_action]
         win_agent = (
             max(cand, key=lambda t: t[2] * t[3])[0] if cand
-            else max(active, key=lambda t: t[2] * t[3])[0]
+            else (max(active, key=lambda t: t[2] * t[3])[0] if active else None)
         )
 
-        if ratio < 0.25:
-            levels_out = _median_levels(final_action)
-        else:
-            levels_out = parts[win_agent].get("levels", {})
+        # NEW: уровни всегда по медиане сторонников финальной стороны
+        levels_out = _median_levels(final_action)
 
         probs_out = _monotone_tp_probs(parts.get(win_agent, {}).get("probs", {}) or {})
 
