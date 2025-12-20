@@ -1572,7 +1572,7 @@ OCTO_WEIGHTS: Dict[str, float] = {
 CONF_THRESHOLD: float = float(os.getenv("OCTO_CONF_THRESHOLD", "0.645"))
 
 # NEW: минимум голосов в ОДНУ сторону (BUY или SHORT)
-# Если нет кворума, Octopus всегда возвращает WAIT.
+# Strict quorum direction: направление фиксируется стороной с кворумом.
 # Можно переопределить через env OCTO_MIN_SIDE_VOTES
 MIN_SIDE_VOTES: int = int(os.getenv("OCTO_MIN_SIDE_VOTES", "2"))
 
@@ -1626,79 +1626,28 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         if a in ("BUY", "SHORT"):
             active.append((k, a, _clip01(c), w))
 
-    # NEW: кворум — минимум 2 голоса В ОДНУ сторону
     cnt_buy = sum(1 for (_, a, _, _) in active if a == "BUY")
     cnt_short = sum(1 for (_, a, _, _) in active if a == "SHORT")
 
-    if max(cnt_buy, cnt_short) < MIN_SIDE_VOTES:
-        last_price = float(next(iter(parts.values())).get("last_price", 0.0))
-        votes_txt = [
-            {
-                "agent": k,
-                "action": str(r.get("recommendation", {}).get("action", "")),
-                "confidence": float(r.get("recommendation", {}).get("confidence", 0.0)),
-            }
-            for k, r in parts.items()
-        ]
+    # NEW: strict quorum direction
+    # Требование: минимум 2 голоса в одну сторону.
+    # Направление фиксируется стороной, которая набрала кворум и имеет больше голосов.
+    # Если кворум не набран или ничья — WAIT.
+    if (cnt_buy < MIN_SIDE_VOTES and cnt_short < MIN_SIDE_VOTES) or (cnt_buy == cnt_short):
+        final_action = "WAIT"
+    elif cnt_buy >= MIN_SIDE_VOTES and cnt_buy > cnt_short:
+        final_action = "BUY"
+    elif cnt_short >= MIN_SIDE_VOTES and cnt_short > cnt_buy:
+        final_action = "SHORT"
+    else:
+        final_action = "WAIT"
 
-        res_wait = {
-            "last_price": last_price,
-            "recommendation": {"action": "WAIT", "confidence": float(CAL_CONF["Octopus"](0.50))},
-            "levels": {"entry": 0.0, "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
-            "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
-            "context": [f"Octopus: min_side_votes={MIN_SIDE_VOTES} not met (BUY={cnt_buy}, SHORT={cnt_short})"],
-            "note_html": f"<div>Octopus: WAIT (need {MIN_SIDE_VOTES} votes same side)</div>",
-            "alt": "Octopus",
-            "entry_kind": "wait",
-            "entry_label": "WAIT",
-            "meta": {
-                "source": "Octopus",
-                "votes": votes_txt,
-                "ratio": 0.0,
-                "conf_threshold": float(CONF_THRESHOLD),
-                "min_side_votes": int(MIN_SIDE_VOTES),
-                "buy_votes": int(cnt_buy),
-                "short_votes": int(cnt_short),
-            },
-        }
-
-        # Логируем и такой WAIT (чтобы было видно причину в перф-логах)
-        try:
-            log_agent_performance(
-                agent="Octopus",
-                ticker=ticker,
-                horizon=horizon,
-                action="WAIT",
-                confidence=float(res_wait["recommendation"]["confidence"]),
-                levels=res_wait["levels"],
-                probs=res_wait["probs"],
-                meta=res_wait["meta"],
-                ts=pd.Timestamp.utcnow().isoformat(),
-            )
-        except Exception as e:
-            logger.warning("perf log Octopus (quorum WAIT) failed: %s", e)
-
-        return res_wait
-
-    count_long  = cnt_buy
-    count_short = cnt_short
-
+    # Для контекста/дебага считаем ratio (на активных голосах)
     score_long  = sum(w * c for (_, a, c, w) in active if a == "BUY")
     score_short = sum(w * c for (_, a, c, w) in active if a == "SHORT")
     total_side  = score_long + score_short
     delta = abs(score_long - score_short)
     ratio = delta / max(1e-6, total_side)
-
-    # 3) Правило выбора действия (как было)
-    if count_long >= 3:
-        final_action = "BUY"
-    elif count_short >= 3:
-        final_action = "SHORT"
-    else:
-        if ratio < 0.20:
-            final_action = "WAIT"
-        else:
-            final_action = "BUY" if score_long > score_short else "SHORT"
 
     # Утилита для медианных уровней по сторонникам выбранной стороны
     def _median_levels(direction: str):
@@ -1795,7 +1744,7 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
         "levels": levels_out,
         "probs": probs_out,
         "context": [
-            f"Octopus: ratio={ratio:.2f}, votes={count_long}L/{count_short}S, conf_thresh={CONF_THRESHOLD:.2f}, min_side_votes={MIN_SIDE_VOTES}"
+            f"Octopus: ratio={ratio:.2f}, votes={cnt_buy}L/{cnt_short}S, conf_thresh={CONF_THRESHOLD:.2f}, min_side_votes={MIN_SIDE_VOTES}"
         ],
         "note_html": f"<div>Octopus: {final_action} с {overall_conf:.0%}</div>",
         "alt": "Octopus",
@@ -1807,8 +1756,8 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
             "ratio": float(ratio),
             "conf_threshold": float(CONF_THRESHOLD),
             "min_side_votes": int(MIN_SIDE_VOTES),
-            "buy_votes": int(count_long),
-            "short_votes": int(count_short),
+            "buy_votes": int(cnt_buy),
+            "short_votes": int(cnt_short),
         },
     }
 
@@ -1826,8 +1775,8 @@ def analyze_asset_octopus(ticker: str, horizon: str) -> Dict[str, Any]:
                 "ratio": float(ratio),
                 "conf_threshold": float(CONF_THRESHOLD),
                 "min_side_votes": int(MIN_SIDE_VOTES),
-                "buy_votes": int(count_long),
-                "short_votes": int(count_short),
+                "buy_votes": int(cnt_buy),
+                "short_votes": int(cnt_short),
             },
             ts=pd.Timestamp.utcnow().isoformat(),
         )
