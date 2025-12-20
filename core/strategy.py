@@ -766,7 +766,7 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
 
     # === НОВАЯ ПРОВЕРКА: ФИЛЬТР ВЫСОКОЙ ВОЛАТИЛЬНОСТИ ===
     atr_percent = (atr14 / price) * 100
-    if atr_percent > 5.0:  # Если дневной ATR > 3.5% от цены - рынок слишком волатилен
+    if atr_percent > 6.0:  # Если дневной ATR > 3.5% от цены - рынок слишком волатилен
         return {
             "last_price": price,
             "recommendation": {"action": "WAIT", "confidence": 0.5},
