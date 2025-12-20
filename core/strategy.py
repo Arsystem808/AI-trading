@@ -1562,9 +1562,9 @@ logger = logging.getLogger(__name__)
 
 OCTO_WEIGHTS: Dict[str, float] = {
     "Global": 0.25,
-    "M7": 0.20,
-    "W7": 0.30,
-    "AlphaPulse": 0.25,
+    "M7": 0.00,
+    "W7": 0.40,
+    "AlphaPulse": 0.35,
 }
 
 # Порог confidence, ниже которого Octopus НЕ даёт торговый сигнал (WAIT)
