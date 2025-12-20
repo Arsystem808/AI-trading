@@ -387,21 +387,120 @@ def analyze_asset_global(ticker: str, horizon: str = "Краткосрочный
     }
 
 # -------------------- M7 (rules + optional ML overlay) --------------------
+from __future__ import annotations
+
+import math
+from pathlib import Path
+from typing import Optional, Tuple, Dict, Any
+
+import numpy as np
+import pandas as pd
+
 try:
     from core.model_loader import load_model_for
 except Exception:
     def load_model_for(*args, **kwargs):
         return None
 
-# простая память по последним срабатываниям уровней: (ticker, level) -> timestamp
-_M7_LAST_HIT = {}
+# ======== STATE (process-local) ========
+# (ticker, level) -> timestamp
+_M7_LAST_HIT: Dict[Tuple[str, str], pd.Timestamp] = {}
 
-# состояние направления по тикеру для гистерезиса/кулдауна
-_M7_DIR_STATE = {}
-_M7_ANTIFLIP_CACHE = {}  # НОВАЯ ГЛОБАЛЬНАЯ ПЕРЕМЕННАЯ для защиты от частых разворотов
-_M7_DIR_MIN_HOLD_HOURS = 6.0     # ИЗМЕНЕНО: увеличено с 4.0 для большей стабильности
-_M7_DIR_MIN_DELTA_CONF = 0.15    # ИЗМЕНЕНО: увеличено с 0.08 для большей стабильности
+# ticker -> {"action": str, "ts": pd.Timestamp, "conf": float}
+_M7_DIR_STATE: Dict[str, Dict[str, Any]] = {}
 
+# ticker -> {"last_flip_attempt": pd.Timestamp|None, "flip_count_window": int}
+_M7_ANTIFLIP_CACHE: Dict[str, Dict[str, Any]] = {}
+
+# ticker -> cached final result (sticky)
+_M7_STICKY_CACHE: Dict[str, Dict[str, Any]] = {}
+
+# ticker -> {"ts_fetch": pd.Timestamp, "df": pd.DataFrame}
+_M7_OHLC_CACHE: Dict[str, Dict[str, Any]] = {}
+
+# ======== DEFAULTS ========
+_M7_DIR_MIN_HOLD_HOURS = 6.0
+_M7_DIR_MIN_DELTA_CONF = 0.12
+
+# ======== PROFILES (BTC/ETH) ========
+_M7_ASSET_PROFILES: Dict[str, Dict[str, Any]] = {
+    "X:BTCUSD": {
+        "cooldown_minutes": 90,
+        "atr_percent_floor": 6.0,
+        "atr_percent_max_static": 8.0,
+        "atr_percent_quantile": 0.90,
+        "atr_percent_lookback_days": 60,
+
+        "dir_min_hold_hours": 6.0,
+        "dir_min_delta_conf": 0.12,
+
+        "antiflip_window_min": 10.0,
+        "antiflip_max_attempts": 1,  # 1 attempt ok, 2nd in window => lock
+
+        # sticky/debounce
+        "sticky_enabled": True,
+        "sticky_max_age_minutes": 45,         # держим сигнал 45 мин (если не выбит SL/TP1)
+        "sticky_min_refresh_seconds": 300,    # не пересчитываем чаще 1 раза в 5 мин
+        "sticky_invalidate_on_new_bar": False,
+        "sticky_invalidate_on_sl": True,
+        "sticky_invalidate_on_tp1": True,
+
+        # data cache
+        "ohlc_cache_ttl_seconds": 120,
+    },
+    "X:ETHUSD": {
+        "cooldown_minutes": 75,
+        "atr_percent_floor": 6.5,
+        "atr_percent_max_static": 9.0,
+        "atr_percent_quantile": 0.90,
+        "atr_percent_lookback_days": 60,
+
+        "dir_min_hold_hours": 6.0,
+        "dir_min_delta_conf": 0.10,
+
+        "antiflip_window_min": 10.0,
+        "antiflip_max_attempts": 1,
+
+        "sticky_enabled": True,
+        "sticky_max_age_minutes": 40,
+        "sticky_min_refresh_seconds": 300,
+        "sticky_invalidate_on_new_bar": False,
+        "sticky_invalidate_on_sl": True,
+        "sticky_invalidate_on_tp1": True,
+
+        "ohlc_cache_ttl_seconds": 120,
+    },
+}
+
+def _utcnow() -> pd.Timestamp:
+    return pd.Timestamp.now(tz="UTC")
+
+def _m7_profile(ticker: str) -> Dict[str, Any]:
+    return _M7_ASSET_PROFILES.get(ticker, {
+        "cooldown_minutes": 60,
+        "atr_percent_floor": 6.0,
+        "atr_percent_max_static": 8.0,
+        "atr_percent_quantile": 0.90,
+        "atr_percent_lookback_days": 60,
+
+        "dir_min_hold_hours": _M7_DIR_MIN_HOLD_HOURS,
+        "dir_min_delta_conf": _M7_DIR_MIN_DELTA_CONF,
+
+        "antiflip_window_min": 10.0,
+        "antiflip_max_attempts": 1,
+
+        "sticky_enabled": True,
+        "sticky_max_age_minutes": 30,
+        "sticky_min_refresh_seconds": 300,
+        "sticky_invalidate_on_new_bar": False,
+        "sticky_invalidate_on_sl": True,
+        "sticky_invalidate_on_tp1": True,
+
+        "ohlc_cache_ttl_seconds": 120,
+    })
+
+
+# ======== CALIBRATOR ========
 class _M7IdentityCalibrator:
     def __call__(self, p: float) -> float:
         return float(max(0.0, min(1.0, p)))
@@ -417,33 +516,143 @@ def _m7_cal():
             _M7_CAL = {"M7": _M7IdentityCalibrator()}
     return _M7_CAL
 
+
+# ======== STICKY / DEBOUNCE ========
+def _m7_price_hits_levels(action: str, price: float, levels: Dict[str, float]) -> Dict[str, bool]:
+    sl = float(levels.get("sl", 0.0) or 0.0)
+    tp1 = float(levels.get("tp1", 0.0) or 0.0)
+    if action == "BUY":
+        return {"sl_hit": (sl > 0 and price <= sl), "tp1_hit": (tp1 > 0 and price >= tp1)}
+    if action == "SHORT":
+        return {"sl_hit": (sl > 0 and price >= sl), "tp1_hit": (tp1 > 0 and price <= tp1)}
+    return {"sl_hit": False, "tp1_hit": False}
+
+def _m7_sticky_get_if_valid(ticker: str, ts_last: pd.Timestamp, price: float) -> Optional[Dict[str, Any]]:
+    prof = _m7_profile(ticker)
+    if not prof.get("sticky_enabled", True):
+        return None
+
+    cached = _M7_STICKY_CACHE.get(ticker)
+    if not cached:
+        return None
+
+    now = _utcnow()
+
+    # анти-спам по времени пересчета
+    last_refresh_ts = cached.get("last_refresh_ts")
+    if isinstance(last_refresh_ts, pd.Timestamp):
+        if (now - last_refresh_ts).total_seconds() < float(prof.get("sticky_min_refresh_seconds", 300)):
+            out = dict(cached)
+            out["last_price"] = float(price)
+            meta = dict(out.get("meta") or {})
+            meta["sticky"] = True
+            meta["sticky_reason"] = "min_refresh_window"
+            out["meta"] = meta
+            ctx = list(out.get("context") or [])
+            out["context"] = [f"STICKY: reused (min_refresh)"] + ctx[:4]
+            return out
+
+    # TTL сигнала
+    created_ts = cached.get("created_ts")
+    if isinstance(created_ts, pd.Timestamp):
+        age_min = (now - created_ts).total_seconds() / 60.0
+        if age_min > float(prof.get("sticky_max_age_minutes", 30)):
+            return None
+
+    # при желании: инвалидация по новому бару
+    if bool(prof.get("sticky_invalidate_on_new_bar", False)):
+        if cached.get("bar_ts") != ts_last:
+            return None
+
+    # SL/TP1 инвалидация (имеет смысл если price “живой”; при daily close это ограниченно)
+    action = str((cached.get("recommendation") or {}).get("action", "WAIT"))
+    levels = cached.get("levels") or {}
+    hits = _m7_price_hits_levels(action, float(price), levels)
+
+    if bool(prof.get("sticky_invalidate_on_sl", True)) and hits["sl_hit"]:
+        return None
+    if bool(prof.get("sticky_invalidate_on_tp1", True)) and hits["tp1_hit"]:
+        return None
+
+    out = dict(cached)
+    out["last_price"] = float(price)
+    meta = dict(out.get("meta") or {})
+    meta["sticky"] = True
+    meta["sticky_bar_ts"] = str(ts_last)
+    out["meta"] = meta
+    ctx = list(out.get("context") or [])
+    out["context"] = [f"STICKY: reused"] + ctx[:4]
+    return out
+
+def _m7_sticky_put(ticker: str, ts_last: pd.Timestamp, result: Dict[str, Any]) -> None:
+    now = _utcnow()
+    r = dict(result)
+    r["created_ts"] = r.get("created_ts") or now
+    r["last_refresh_ts"] = now
+    r["bar_ts"] = ts_last
+    _M7_STICKY_CACHE[ticker] = r
+
+
+# ======== OHLC CACHE (Polygon throttling) ========
+def _m7_get_ohlc_cached(ticker: str, days: int, ttl_seconds: int) -> Optional[pd.DataFrame]:
+    now = _utcnow()
+    cached = _M7_OHLC_CACHE.get(ticker)
+    if cached:
+        ts_fetch = cached.get("ts_fetch")
+        df_cached = cached.get("df")
+        if isinstance(ts_fetch, pd.Timestamp) and df_cached is not None:
+            if (now - ts_fetch).total_seconds() < float(ttl_seconds):
+                return df_cached
+
+    cli = PolygonClient()
+    df = cli.daily_ohlc(ticker, days=days)
+    if df is None or df.empty:
+        return None
+
+    # нормализация один раз (и это и кэшируем)
+    df = df.sort_values("timestamp").copy()
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    df = df.set_index("timestamp")
+
+    _M7_OHLC_CACHE[ticker] = {"ts_fetch": now, "df": df}
+    return df
+
+
+# ======== DIRECTION FILTER (hysteresis + antiflip) ========
 def _m7_direction_filter(ticker: str, raw_action: str, conf: float, ts: "pd.Timestamp"):
     """
-    Улучшенный гистерезис с защитой от быстрых разворотов (антифлип).
+    conf — side-confidence: чем больше, тем сильнее сигнал (и для BUY, и для SHORT).
     """
     global _M7_DIR_STATE, _M7_ANTIFLIP_CACHE
 
     if raw_action not in ("BUY", "SHORT"):
         return raw_action, {"dir_state": "no_change"}
 
-    current_state = _M7_DIR_STATE.get(ticker)
-    antiflip_data = _M7_ANTIFLIP_CACHE.get(ticker, {'last_flip_attempt': None, 'flip_count_10min': 0})
+    prof = _m7_profile(ticker)
+    antiflip_window_min = float(prof.get("antiflip_window_min", 10.0))
+    antiflip_max_attempts = int(prof.get("antiflip_max_attempts", 1))
+    min_hold = pd.Timedelta(hours=float(prof.get("dir_min_hold_hours", _M7_DIR_MIN_HOLD_HOURS)))
+    min_delta = float(prof.get("dir_min_delta_conf", _M7_DIR_MIN_DELTA_CONF))
 
-    # 1. ПРОВЕРКА АНТИФЛИПА: Блокировка, если >1 попытки разворота за 10 мин
-    if antiflip_data['last_flip_attempt']:
-        time_since_last_attempt = (ts - antiflip_data['last_flip_attempt']).total_seconds() / 60.0
-        if time_since_last_attempt < 10.0:
-            if antiflip_data['flip_count_10min'] >= 1:  # Более строгий порог
+    current_state = _M7_DIR_STATE.get(ticker)
+    antiflip_data = _M7_ANTIFLIP_CACHE.get(
+        ticker,
+        {"last_flip_attempt": None, "flip_count_window": 0}
+    )
+
+    # антифлип
+    if antiflip_data.get("last_flip_attempt") is not None:
+        time_since_last_attempt = (ts - antiflip_data["last_flip_attempt"]).total_seconds() / 60.0
+        if time_since_last_attempt < antiflip_window_min:
+            if int(antiflip_data.get("flip_count_window", 0)) > antiflip_max_attempts:
                 return "WAIT", {
                     "dir_state": "antiflip_lock",
-                    "reason": f">=2 flip attempts in {time_since_last_attempt:.1f} min"
+                    "reason": f"flip attempts>{antiflip_max_attempts} in {time_since_last_attempt:.1f} min"
                 }
         else:
-            # Окно истекло, сбрасываем счетчик
-            antiflip_data['flip_count_10min'] = 0
-
-    min_hold = pd.Timedelta(hours=_M7_DIR_MIN_HOLD_HOURS)  # Используем обновленную константу
-    min_delta = float(_M7_DIR_MIN_DELTA_CONF)              # Используем обновленную константу
+            antiflip_data["flip_count_window"] = 0
+            antiflip_data["last_flip_attempt"] = None
+            _M7_ANTIFLIP_CACHE[ticker] = antiflip_data
 
     if current_state is None:
         _M7_DIR_STATE[ticker] = {"action": raw_action, "ts": ts, "conf": float(conf)}
@@ -453,26 +662,23 @@ def _m7_direction_filter(ticker: str, raw_action: str, conf: float, ts: "pd.Time
     prev_ts = current_state.get("ts")
     prev_conf = float(current_state.get("conf", 0.0))
 
-    # То же направление -> ОБНОВЛЯЕМ ТОЛЬКО УВЕРЕННОСТЬ, ВРЕМЯ НЕ МЕНЯЕМ (ИСПРАВЛЕНИЕ БАГА)
     if raw_action == prev_action:
         if conf > prev_conf:
             _M7_DIR_STATE[ticker] = {"action": raw_action, "ts": prev_ts, "conf": float(conf)}
         return raw_action, {"dir_state": "same"}
 
-    # Пытаемся развернуться - регистрируем попытку для антифлипа
-    antiflip_data['last_flip_attempt'] = ts
-    antiflip_data['flip_count_10min'] += 1
+    # попытка разворота
+    antiflip_data["last_flip_attempt"] = ts
+    antiflip_data["flip_count_window"] = int(antiflip_data.get("flip_count_window", 0)) + 1
     _M7_ANTIFLIP_CACHE[ticker] = antiflip_data
 
-    # Проверка минимального времени удержания направления
     if prev_ts is not None and (ts - prev_ts) < min_hold:
         return "WAIT", {
             "dir_state": "blocked_time",
             "prev_action": prev_action,
-            "hours_since_flip": (ts - prev_ts).total_seconds() / 3600
+            "hours_since_flip": (ts - prev_ts).total_seconds() / 3600.0
         }
 
-    # Проверка минимального прироста уверенности для разворота
     required_conf = prev_conf + min_delta
     if conf < required_conf:
         return "WAIT", {
@@ -483,18 +689,19 @@ def _m7_direction_filter(ticker: str, raw_action: str, conf: float, ts: "pd.Time
             "conf_delta": conf - prev_conf
         }
 
-    # ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ - РАЗВОРОТ РАЗРЕШЕН
     _M7_DIR_STATE[ticker] = {"action": raw_action, "ts": ts, "conf": float(conf)}
-    # Успешный разворот сбрасывает счетчик антифлипа
-    antiflip_data['flip_count_10min'] = 0
+    antiflip_data["flip_count_window"] = 0
+    antiflip_data["last_flip_attempt"] = None
     _M7_ANTIFLIP_CACHE[ticker] = antiflip_data
 
     return raw_action, {
         "dir_state": "flipped",
         "prev_action": prev_action,
-        "hours_since_prev": (ts - prev_ts).total_seconds() / 3600 if prev_ts else None
+        "hours_since_prev": (ts - prev_ts).total_seconds() / 3600.0 if prev_ts else None
     }
 
+
+# ======== ML PREDICTOR ========
 class _M7Predictor:
     def __init__(self, ticker: str, agent="arxora_m7pro"):
         self.ticker = ticker
@@ -508,7 +715,7 @@ class _M7Predictor:
             logger.warning("M7 ML: model not found for %s (%s)", self.ticker, self.agent)
             return False
         self.model = md["model"]
-        # опциональный внешний скейлер
+
         try:
             import joblib  # noqa: F401
             meta = md.get("metadata", {}) or {}
@@ -526,19 +733,18 @@ class _M7Predictor:
 
     @staticmethod
     def _features(df: pd.DataFrame, price: float, atr: float) -> np.ndarray:
-        r = float(df['close'].pct_change().iloc[-1])
-        vol = float(df['close'].pct_change().rolling(20).std().iloc[-1] or 0.02)
+        r = float(df["close"].pct_change().iloc[-1])
+        vol = float(df["close"].pct_change().rolling(20).std().iloc[-1] or 0.02)
         pos = 0.5
         if len(df) >= 20:
-            hi = float(df['high'].rolling(20).max().iloc[-1])
-            lo = float(df['low'].rolling(20).min().iloc[-1])
+            hi = float(df["high"].rolling(20).max().iloc[-1])
+            lo = float(df["low"].rolling(20).min().iloc[-1])
             pos = (price - lo) / max(1e-9, hi - lo)
         x = np.array([[r, vol, pos, atr / max(1e-9, price)]], dtype=float)
         return np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
 
     def _predict_proba_safe(self, X: np.ndarray,
                             df_last_row: Optional[pd.DataFrame] = None) -> Optional[np.ndarray]:
-        # Сначала пробуем на одном признаковом векторе, затем fallback на df.tail(1)
         try:
             return self.model.predict_proba(X)
         except Exception as e1:
@@ -546,15 +752,28 @@ class _M7Predictor:
                 try:
                     return self.model.predict_proba(df_last_row)
                 except Exception as e2:
-                    logger.warning(
-                        "M7 ML: predict_proba failed on X(%s) and df_last_row(%s)",
-                        e1, e2
-                    )
+                    logger.warning("M7 ML: predict_proba failed on X(%s) and df_last_row(%s)", e1, e2)
                     return None
             logger.warning("M7 ML: predict_proba failed on X(%s)", e1)
             return None
 
-    def predict(self, df: pd.DataFrame, price: float, atr: float) -> Tuple[str, float]:
+    @staticmethod
+    def _find_long_index(model) -> Optional[int]:
+        if not hasattr(model, "classes_"):
+            return None
+        classes = list(model.classes_)
+        for long_label in (1, "LONG", "BUY", True):
+            if long_label in classes:
+                return classes.index(long_label)
+        if 0 in classes and 1 in classes:
+            return classes.index(1)
+        return None
+
+    def predict(self, df: pd.DataFrame, price: float, atr: float) -> Tuple[str, float, Dict[str, Any]]:
+        """
+        Returns: (action, conf_side, meta)
+        conf_side: BUY => p_long, SHORT => 1 - p_long
+        """
         try:
             X = self._features(df, price, atr)
             if self.scaler is not None:
@@ -562,48 +781,68 @@ class _M7Predictor:
                     X = self.scaler.transform(X)
                 except Exception as e:
                     logger.warning("M7 ML: scaler.transform failed: %s", e)
+
             df1 = df.tail(1).copy()
             proba = None
             if hasattr(self.model, "predict_proba"):
                 proba = self._predict_proba_safe(X, df_last_row=df1)
+
             if proba is None and hasattr(self.model, "predict"):
                 y = float(self.model.predict(X)[0])
                 proba = np.array([[1.0 - y, y]], dtype=float)
+
             if proba is None:
-                return ("WAIT", 0.5)
+                return ("WAIT", 0.5, {"p_long": 0.5, "mode": "no_proba"})
 
-            # бинарный случай -> класс 1 трактуем как LONG
+            cal = _m7_cal()["M7"]
+
             if proba.shape[1] == 2:
-                p_long = float(proba[0, 1])
-                cal = _m7_cal()["M7"]
-                p_long_cal = float(cal(p_long))
-                # явные пороги
-                if p_long_cal >= 0.55:
-                    return ("BUY", p_long_cal)
-                elif p_long_cal <= 0.45:
-                    return ("SHORT", p_long_cal)
-                else:
-                    return ("WAIT", p_long_cal)
+                i_long = self._find_long_index(self.model)
+                if i_long is None:
+                    i_long = 1  # fallback
 
-            # многокласс
+                p_long = float(proba[0, i_long])
+                p_long_cal = float(cal(p_long))
+
+                if p_long_cal >= 0.55:
+                    return ("BUY", p_long_cal, {"p_long": p_long_cal, "mode": "binary"})
+                elif p_long_cal <= 0.45:
+                    conf_short = float(max(0.0, min(1.0, 1.0 - p_long_cal)))
+                    return ("SHORT", conf_short, {"p_long": p_long_cal, "mode": "binary"})
+                else:
+                    return ("WAIT", 0.5, {"p_long": p_long_cal, "mode": "binary"})
+
+            # multiclass (best-effort)
+            if hasattr(self.model, "classes_"):
+                cls = list(self.model.classes_)
+                idx = int(np.argmax(proba[0]))
+                raw = str(cls[idx])
+                conf = float(cal(float(proba[0, idx])))
+                act = "BUY" if raw in ("BUY", "LONG", "1", "True", "true", "long") else (
+                    "SHORT" if raw in ("SHORT", "SELL", "-1", "short", "bear") else "WAIT"
+                )
+                return (act, conf, {"mode": "multiclass", "raw_class": raw})
+
             acts = ["BUY", "SHORT", "WAIT"]
             idx = int(np.argmax(proba[0]))
-            conf = float(proba[0, idx])
-            cal = _m7_cal()["M7"]
-            return (acts[idx], float(cal(conf)))
+            conf = float(cal(float(proba[0, idx])))
+            return (acts[idx], conf, {"mode": "multiclass_fallback"})
+
         except Exception as e:
             logger.warning("M7 ML: predict failed: %s", e)
-            return ("WAIT", 0.5)
+            return ("WAIT", 0.5, {"p_long": 0.5, "mode": "error"})
 
+
+# ======== RULE STRATEGY ========
 class M7TradingStrategy:
     def __init__(
         self,
         atr_period: int = 14,
-        atr_multiplier: float = 1.0,      # было 1.5, сузили зону вокруг уровня
-        pivot_period: str = 'D',
+        atr_multiplier: float = 1.0,
+        pivot_period: str = "D",
         fib_levels=None,
-        cooldown_minutes: int = 60,      # кулдаун по уровню для одного тикера
-        use_trend_filter: bool = True    # включаем/выключаем фильтр по тренду
+        cooldown_minutes: int = 60,
+        use_trend_filter: bool = True
     ):
         self.atr_period = atr_period
         self.atr_multiplier = atr_multiplier
@@ -620,131 +859,116 @@ class M7TradingStrategy:
         s1 = (2 * pivot) - h
         s2 = pivot - (h - l)
         s3 = l - 2 * (h - pivot)
-        return {
-            'pivot': pivot,
-            'r1': r1,
-            'r2': r2,
-            'r3': r3,
-            's1': s1,
-            's2': s2,
-            's3': s3
-        }
+        return {"pivot": pivot, "r1": r1, "r2": r2, "r3": r3, "s1": s1, "s2": s2, "s3": s3}
 
     def calculate_fib_levels(self, h, l):
         diff = h - l
         fib = {}
         for level in self.fib_levels:
-            fib[f'fib_{int(level * 1000)}'] = h - level * diff
+            fib[f"fib_{int(level * 1000)}"] = h - level * diff
         return fib
 
     def identify_key_levels(self, data: pd.DataFrame):
-        grouped = data.resample('D') if self.pivot_period == 'D' else data.resample('W')
+        grouped = data.resample("D") if self.pivot_period == "D" else data.resample("W")
         key = {}
         for _, g in grouped:
             if len(g) > 0:
-                h = g['high'].max()
-                l = g['low'].min()
-                c = g['close'].iloc[-1]
+                h = g["high"].max()
+                l = g["low"].min()
+                c = g["close"].iloc[-1]
                 key.update(self.calculate_pivot_points(h, l, c))
                 key.update(self.calculate_fib_levels(h, l))
         return key
 
     def generate_signals(self, data: pd.DataFrame, ticker: Optional[str] = None):
-        """
-        Генерирует сигналы с учётом:
-        - ATR-фильтра вокруг уровней
-        - кулдауна по (ticker, level)
-        - простого тренд-фильтра по центральному pivot
-        - НОВЫЙ: Фильтр по краткосрочному тренду через ATR для подавления шума
-        """
         sigs = []
-        req = ['high', 'low', 'close']
+        req = ["high", "low", "close"]
         if not all(c in data.columns for c in req):
             return sigs
 
         data = data.copy()
-        data['atr'] = _atr_like(data, self.atr_period)
-        cur_atr = float(data['atr'].iloc[-1])
+        data["atr"] = _atr_like(data, self.atr_period)
+        cur_atr = float(data["atr"].iloc[-1])
         if cur_atr <= 0:
             return sigs
 
-        # === НОВЫЙ ФИЛЬТР: ОПРЕДЕЛЯЕМ СЛАБЫЙ ТРЕНД ===
-        # Считаем наклон цены за последние 5 баров относительно ATR
-        closes = data['close'].tail(5).values
+        closes = data["close"].tail(5).values
         if len(closes) >= 2:
             price_change = (closes[-1] - closes[0]) / cur_atr
-            # Если цена движется вниз более чем на 0.5 ATR, фильтруем BUY сигналы и наоборот
             dominant_trend = "DOWN" if price_change < -0.5 else ("UP" if price_change > 0.5 else "NONE")
         else:
             dominant_trend = "NONE"
-        # === КОНЕЦ ФИЛЬТРА ===
 
         key = self.identify_key_levels(data)
         if not key:
             return sigs
 
-        price = float(data['close'].iloc[-1])
+        price = float(data["close"].iloc[-1])
         ts = data.index[-1]
-        pivot_val = key.get('pivot', None)
+        pivot_val = key.get("pivot", None)
 
         for name, val in key.items():
             dist = abs(price - val) / max(1e-9, cur_atr)
             if dist >= self.atr_multiplier:
-                # слишком далеко от уровня в терминах ATR — пропускаем
                 continue
 
             is_res = val > price
             if is_res:
-                typ = 'SELL_LIMIT'
+                typ = "SELL_LIMIT"
                 entry = float(val * 0.998)
                 sl = float(val * 1.02)
             else:
-                typ = 'BUY_LIMIT'
+                typ = "BUY_LIMIT"
                 entry = float(val * 1.002)
                 sl = float(val * 0.98)
 
-            # НОВЫЙ ФИЛЬТР КРАТКОСРОЧНОГО ТРЕНДА (применяется ДО старого фильтра)
-            if dominant_trend == "DOWN" and not is_res:  # Тренд вниз, подавляем BUY_LIMIT
+            if dominant_trend == "DOWN" and not is_res:
                 continue
-            if dominant_trend == "UP" and is_res:  # Тренд вверх, подавляем SELL_LIMIT
+            if dominant_trend == "UP" and is_res:
                 continue
 
-            # старый тренд-фильтр по центральному pivot:
             if self.use_trend_filter and pivot_val is not None:
-                if typ == 'BUY_LIMIT' and price < pivot_val:
+                if typ == "BUY_LIMIT" and price < pivot_val:
                     continue
-                if typ == 'SELL_LIMIT' and price > pivot_val:
+                if typ == "SELL_LIMIT" and price > pivot_val:
                     continue
 
-            # кулдаун по уровню для конкретного тикера
             if ticker is not None:
                 lvl_key = (ticker, name)
                 last_ts = _M7_LAST_HIT.get(lvl_key)
                 if last_ts is not None and ts - last_ts < self.cooldown:
-                    # по этому уровню уже недавно был сигнал
                     continue
                 _M7_LAST_HIT[lvl_key] = ts
 
             risk = abs(entry - sl)
             tp = entry + (2.0 * risk if not is_res else -2.0 * risk)
             conf = 1.0 - (dist / self.atr_multiplier)
+
             sigs.append({
-                'type': typ,
-                'price': round(entry, 4),
-                'stop_loss': round(sl, 4),
-                'take_profit': round(tp, 4),
-                'confidence': round(conf, 2),
-                'level': name,
-                'level_value': round(val, 4),
-                'timestamp': ts
+                "type": typ,
+                "price": round(entry, 4),
+                "stop_loss": round(sl, 4),
+                "take_profit": round(tp, 4),
+                "confidence": round(conf, 2),
+                "level": name,
+                "level_value": round(float(val), 4),
+                "timestamp": ts,
             })
         return sigs
 
+
+# ======== MAIN ENTRY ========
 def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False):
-    cli = PolygonClient()
-    df = cli.daily_ohlc(ticker, days=120)
+    prof = _m7_profile(ticker)
+
+    # 1) OHLC cache (network throttling)
+    df = _m7_get_ohlc_cached(
+        ticker=ticker,
+        days=120,
+        ttl_seconds=int(prof.get("ohlc_cache_ttl_seconds", 120))
+    )
     if df is None or df.empty:
-        return {
+        res = {
             "last_price": 0.0,
             "recommendation": {"action": "WAIT", "confidence": 0.5},
             "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
@@ -756,160 +980,141 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
             "entry_label": "WAIT",
             "meta": {"source": "M7", "grey_zone": True}
         }
+        _m7_sticky_put(ticker=ticker, ts_last=_utcnow(), result=res)
+        return res
 
-    df = df.sort_values("timestamp")
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-    df = df.set_index("timestamp")
-    price = float(df['close'].iloc[-1])
-    atr14 = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
+    price = float(df["close"].iloc[-1])
     ts_last = df.index[-1]
+    atr14 = float(_atr_like(df, n=14).iloc[-1]) or 1e-9
 
-    # === НОВАЯ ПРОВЕРКА: ФИЛЬТР ВЫСОКОЙ ВОЛАТИЛЬНОСТИ ===
-    atr_percent = (atr14 / price) * 100
-    if atr_percent > 4.0:  # Если дневной ATR > 3.5% от цены - рынок слишком волатилен
-        return {
+    # 2) Sticky reuse (before heavy work)
+    cached = _m7_sticky_get_if_valid(ticker=ticker, ts_last=ts_last, price=price)
+    if cached is not None:
+        return cached
+
+    # 3) Volatility filter (BTC/ETH friendly, dynamic + cap)
+    atr_percent = (atr14 / max(1e-9, price)) * 100.0
+    lookback = int(prof.get("atr_percent_lookback_days", 60))
+    q = float(prof.get("atr_percent_quantile", 0.90))
+    floor_v = float(prof.get("atr_percent_floor", 6.0))
+    static_max = float(prof.get("atr_percent_max_static", 8.0))
+
+    atr_series = (_atr_like(df, n=14) / df["close"]).tail(max(20, lookback)) * 100.0
+    dyn_thr = float(np.nanquantile(atr_series.values, q)) if len(atr_series.dropna()) >= 20 else static_max
+    atr_percent_max = max(floor_v, min(static_max, dyn_thr))
+
+    if atr_percent > atr_percent_max:
+        res = {
             "last_price": price,
             "recommendation": {"action": "WAIT", "confidence": 0.5},
             "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
             "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
-            "context": [f"ATR {atr_percent:.1f}% > 3.5% - высокая волатильность"],
+            "context": [f"ATR% {atr_percent:.1f} > {atr_percent_max:.1f} (vol filter)"],
             "note_html": "<div>M7: ожидание (высокая волатильность)</div>",
             "alt": "Ожидание",
             "entry_kind": "wait",
             "entry_label": "WAIT",
             "meta": {"source": "M7", "grey_zone": True, "high_volatility": True}
         }
-    # === КОНЕЦ ПРОВЕРКИ ===
+        _m7_sticky_put(ticker=ticker, ts_last=ts_last, result=res)
+        return res
 
+    # 4) ML overlay
     if use_ml:
         pred = _M7Predictor(ticker)
         if pred.load():
-            ml_action, ml_conf = pred.predict(df, price, atr14)
-            strategy = M7TradingStrategy()
+            ml_action, ml_conf_side, ml_meta = pred.predict(df, price, atr14)
+
+            strategy = M7TradingStrategy(cooldown_minutes=int(prof.get("cooldown_minutes", 60)))
             signals = strategy.generate_signals(df, ticker=ticker)
 
-            # если ML говорит WAIT или нет уровней — просто WAIT
             if ml_action == "WAIT" or not signals:
-                return {
+                res = {
                     "last_price": price,
-                    "recommendation": {"action": "WAIT", "confidence": ml_conf},
+                    "recommendation": {"action": "WAIT", "confidence": float(ml_conf_side)},
                     "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
                     "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
-                    "context": [f"ML: нет сильного сигнала ({ml_conf:.2f})"],
+                    "context": [f"ML: нет сильного сигнала ({ml_conf_side:.2f})"],
                     "note_html": "<div>M7 ML: ожидание</div>",
                     "alt": "ML wait",
                     "entry_kind": "wait",
                     "entry_label": "WAIT",
-                    "meta": {
-                        "source": "M7",
-                        "ml_used": True,
-                        "ml_action": ml_action,
-                        "ml_conf_raw": ml_conf
-                    }
+                    "meta": {"source": "M7", "ml_used": True, "ml_action": ml_action, "ml_conf_side": float(ml_conf_side), "ml_meta": ml_meta}
                 }
+                _m7_sticky_put(ticker=ticker, ts_last=ts_last, result=res)
+                return res
 
             side = ml_action if ml_action in ("BUY", "SHORT") else None
             if side:
-                filt = [
-                    s for s in signals
-                    if (side == "BUY" and s["type"].startswith("BUY"))
-                    or (side == "SHORT" and s["type"].startswith("SELL"))
-                ]
-                best = (
-                    max(filt, key=lambda x: x["confidence"])
-                    if filt else max(signals, key=lambda x: x["confidence"])
-                )
+                filt = [s for s in signals if (side == "BUY" and s["type"].startswith("BUY")) or (side == "SHORT" and s["type"].startswith("SELL"))]
+                best = max(filt, key=lambda x: x["confidence"]) if filt else max(signals, key=lambda x: x["confidence"])
             else:
                 best = max(signals, key=lambda x: x["confidence"])
                 side = "BUY" if best["type"].startswith("BUY") else "SHORT"
 
-            # применяем улучшенный гистерезис по направлению
             filtered_action, dir_meta = _m7_direction_filter(
                 ticker=ticker,
                 raw_action=side,
-                conf=ml_conf,
+                conf=float(ml_conf_side),
                 ts=ts_last,
             )
 
-            # если flip заблокирован -> отдаём WAIT без новых уровней
             if filtered_action == "WAIT":
-                return {
+                res = {
                     "last_price": price,
-                    "recommendation": {"action": "WAIT", "confidence": ml_conf},
+                    "recommendation": {"action": "WAIT", "confidence": float(ml_conf_side)},
                     "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
                     "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
-                    "context": [
-                        f"M7 ML: разворот заблокирован по гистерезису ({dir_meta.get('dir_state')})"
-                    ],
+                    "context": [f"M7 ML: разворот заблокирован ({dir_meta.get('dir_state')})"],
                     "note_html": "<div>M7 ML: гистерезис, без нового входа</div>",
                     "alt": "ML wait hysteresis",
                     "entry_kind": "wait",
                     "entry_label": "WAIT",
-                    "meta": {
-                        "source": "M7",
-                        "ml_used": True,
-                        "ml_action": side,
-                        "ml_conf_raw": ml_conf,
-                        "dir_meta": dir_meta,
-                        "grey_zone": True
-                    }
+                    "meta": {"source": "M7", "ml_used": True, "ml_action": side, "ml_conf_side": float(ml_conf_side), "dir_meta": dir_meta, "grey_zone": True, "ml_meta": ml_meta}
                 }
+                _m7_sticky_put(ticker=ticker, ts_last=ts_last, result=res)
+                return res
 
-            # flip разрешён — строим уровни
-            entry = float(best['price'])
-            sl = float(best['stop_loss'])
+            entry = float(best["price"])
+            sl = float(best["stop_loss"])
             risk = abs(entry - sl)
+
             if filtered_action == "BUY":
-                tp1, tp2, tp3 = (
-                    entry + 1.5 * risk,
-                    entry + 2.5 * risk,
-                    entry + 4.0 * risk
-                )
+                tp1, tp2, tp3 = (entry + 1.5 * risk, entry + 2.5 * risk, entry + 4.0 * risk)
             else:
-                tp1, tp2, tp3 = (
-                    entry - 1.5 * risk,
-                    entry - 2.5 * risk,
-                    entry - 4.0 * risk
-                )
-            u1, u2, u3 = (
-                abs(tp1 - entry) / atr14,
-                abs(tp2 - entry) / atr14,
-                abs(tp3 - entry) / atr14
-            )
+                tp1, tp2, tp3 = (entry - 1.5 * risk, entry - 2.5 * risk, entry - 4.0 * risk)
+
+            u1, u2, u3 = (abs(tp1 - entry) / atr14, abs(tp2 - entry) / atr14, abs(tp3 - entry) / atr14)
+
             k = 0.18
-            b1, b2, b3 = ml_conf, max(0.50, ml_conf - 0.08), max(0.45, ml_conf - 0.16)
+            b1 = float(ml_conf_side)
+            b2 = max(0.50, b1 - 0.08)
+            b3 = max(0.45, b1 - 0.16)
+
             p1 = _clip01(b1 * math.exp(-k * (u1 - 1.0)))
             p2 = _clip01(b2 * math.exp(-k * (u2 - 1.5)))
             p3 = _clip01(b3 * math.exp(-k * (u3 - 2.2)))
             probs = _monotone_tp_probs({"tp1": p1, "tp2": p2, "tp3": p3})
-            return {
+
+            res = {
                 "last_price": price,
-                "recommendation": {"action": filtered_action, "confidence": ml_conf},
-                "levels": {
-                    "entry": entry,
-                    "sl": sl,
-                    "tp1": tp1,
-                    "tp2": tp2,
-                    "tp3": tp3
-                },
+                "recommendation": {"action": filtered_action, "confidence": float(ml_conf_side)},
+                "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
                 "probs": probs,
                 "context": [f"ML {filtered_action} + уровни M7: {best['level']}"],
                 "note_html": f"<div>M7 ML: {filtered_action} у {best['level_value']}</div>",
                 "alt": "ML‑enhanced M7",
                 "entry_kind": "limit",
                 "entry_label": best["type"],
-                "meta": {
-                    "source": "M7",
-                    "ml_used": True,
-                    "ml_action": side,
-                    "ml_conf_raw": ml_conf,
-                    "dir_meta": dir_meta
-                }
+                "meta": {"source": "M7", "ml_used": True, "ml_action": side, "ml_conf_side": float(ml_conf_side), "dir_meta": dir_meta, "ml_meta": ml_meta}
             }
+            _m7_sticky_put(ticker=ticker, ts_last=ts_last, result=res)
+            return res
 
-    # вариант без ML
-    strategy = M7TradingStrategy()
+    # 5) rules only
+    strategy = M7TradingStrategy(cooldown_minutes=int(prof.get("cooldown_minutes", 60)))
     signals = strategy.generate_signals(df, ticker=ticker)
+
     if not signals:
         res = {
             "last_price": price,
@@ -933,18 +1138,20 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
                 levels=res["levels"],
                 probs=res["probs"],
                 meta={"probs_debug": {"u": [], "p": []}},
-                ts=pd.Timestamp.utcnow().isoformat()
+                ts=_utcnow().isoformat()
             )
         except Exception:
             pass
+        _m7_sticky_put(ticker=ticker, ts_last=ts_last, result=res)
         return res
 
-    best = max(signals, key=lambda x: x['confidence'])
-    raw_conf = float(_clip01(best['confidence']))
-    entry = float(best['price'])
-    sl = float(best['stop_loss'])
+    best = max(signals, key=lambda x: x["confidence"])
+    raw_conf = float(_clip01(best["confidence"]))
+    entry = float(best["price"])
+    sl = float(best["stop_loss"])
     risk = abs(entry - sl)
-    vol = float(df['close'].pct_change().std() * np.sqrt(252))
+
+    vol = float(df["close"].pct_change().std() * np.sqrt(252))
     conf_base = 0.50 + 0.34 * math.tanh((raw_conf - 0.65) / 0.20)
     penalty = (
         (0.05 if vol > 0.35 else 0.0)
@@ -954,22 +1161,13 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
     conf = float(max(0.52, min(0.82, conf_base * (1.0 - penalty))))
     conf = float(_m7_cal()["M7"](conf))
 
-    if best['type'].startswith('BUY'):
-        tp1, tp2, tp3 = (
-            entry + 1.5 * risk,
-            entry + 2.5 * risk,
-            entry + 4.0 * risk
-        )
+    if best["type"].startswith("BUY"):
+        tp1, tp2, tp3 = (entry + 1.5 * risk, entry + 2.5 * risk, entry + 4.0 * risk)
         act_raw = "BUY"
     else:
-        tp1, tp2, tp3 = (
-            entry - 1.5 * risk,
-            entry - 2.5 * risk,
-            entry - 4.0 * risk
-        )
+        tp1, tp2, tp3 = (entry - 1.5 * risk, entry - 2.5 * risk, entry - 4.0 * risk)
         act_raw = "SHORT"
 
-    # применяем улучшенный гистерезис по направлению
     act_filtered, dir_meta = _m7_direction_filter(
         ticker=ticker,
         raw_action=act_raw,
@@ -983,9 +1181,7 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
             "recommendation": {"action": "WAIT", "confidence": conf},
             "levels": {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "tp3": 0},
             "probs": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
-            "context": [
-                f"M7: разворот заблокирован по гистерезису ({dir_meta.get('dir_state')})"
-            ],
+            "context": [f"M7: разворот заблокирован ({dir_meta.get('dir_state')})"],
             "note_html": "<div>M7: гистерезис, без нового входа</div>",
             "alt": "Торговля по M7 (гистерезис)",
             "entry_kind": "wait",
@@ -1002,18 +1198,16 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
                 levels=res["levels"],
                 probs=res["probs"],
                 meta={"probs_debug": {"u": [], "p": []}, "dir_meta": dir_meta},
-                ts=pd.Timestamp.utcnow().isoformat()
+                ts=_utcnow().isoformat()
             )
         except Exception:
             pass
+        _m7_sticky_put(ticker=ticker, ts_last=ts_last, result=res)
         return res
 
     act = act_filtered
-    u1, u2, u3 = (
-        abs(tp1 - entry) / atr14,
-        abs(tp2 - entry) / atr14,
-        abs(tp3 - entry) / atr14
-    )
+
+    u1, u2, u3 = (abs(tp1 - entry) / atr14, abs(tp2 - entry) / atr14, abs(tp3 - entry) / atr14)
     k = 0.18
     b1, b2, b3 = conf, max(0.50, conf - 0.08), max(0.45, conf - 0.16)
     p1 = _clip01(b1 * math.exp(-k * (u1 - 1.0)))
@@ -1029,28 +1223,18 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
             action=act,
             confidence=float(conf),
             levels={"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
-            probs={
-                "tp1": float(probs["tp1"]),
-                "tp2": float(probs["tp2"]),
-                "tp3": float(probs["tp3"])
-            },
+            probs={"tp1": float(probs["tp1"]), "tp2": float(probs["tp2"]), "tp3": float(probs["tp3"])},
             meta={
-                "probs_debug": {
-                    "u": [float(u1), float(u2), float(u3)],
-                    "p": [
-                        float(probs["tp1"]),
-                        float(probs["tp2"]),
-                        float(probs["tp3"])
-                    ]
-                },
+                "probs_debug": {"u": [float(u1), float(u2), float(u3)],
+                                "p": [float(probs["tp1"]), float(probs["tp2"]), float(probs["tp3"])]},
                 "dir_meta": dir_meta,
             },
-            ts=pd.Timestamp.utcnow().isoformat()
+            ts=_utcnow().isoformat()
         )
     except Exception:
         pass
 
-    return {
+    res = {
         "last_price": price,
         "recommendation": {"action": act, "confidence": float(conf)},
         "levels": {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3},
@@ -1059,9 +1243,11 @@ def analyze_asset_m7(ticker, horizon="Краткосрочный", use_ml=False)
         "note_html": f"<div>M7: {best['type']} на уровне {best['level_value']}</div>",
         "alt": "Торговля по M7",
         "entry_kind": "limit",
-        "entry_label": best['type'],
+        "entry_label": best["type"],
         "meta": {"source": "M7", "grey_zone": bool(0.48 <= conf <= 0.58), "dir_meta": dir_meta}
     }
+    _m7_sticky_put(ticker=ticker, ts_last=ts_last, result=res)
+    return res
 
 # -------------------- W7 --------------------
 def analyze_asset_w7(ticker: str, horizon: str):
