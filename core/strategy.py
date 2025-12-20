@@ -1562,14 +1562,14 @@ logger = logging.getLogger(__name__)
 
 OCTO_WEIGHTS: Dict[str, float] = {
     "Global": 0.25,
-    "M7": 0.00,
-    "W7": 0.40,
-    "AlphaPulse": 0.35,
+    "M7": 0.20,
+    "W7": 0.30,
+    "AlphaPulse": 0.25,
 }
 
 # Порог confidence, ниже которого Octopus НЕ даёт торговый сигнал (WAIT)
 # Можно переопределить через переменную окружения OCTO_CONF_THRESHOLD
-CONF_THRESHOLD: float = float(os.getenv("OCTO_CONF_THRESHOLD", "0.645"))
+CONF_THRESHOLD: float = float(os.getenv("OCTO_CONF_THRESHOLD", "0.64"))
 
 # NEW: минимум голосов в ОДНУ сторону (BUY или SHORT)
 # Strict quorum direction: направление фиксируется стороной с кворумом.
