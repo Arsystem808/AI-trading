@@ -42,7 +42,7 @@ def render_arxora_header():
       /* Центр и ширина основного блока (layout='centered' + явное ограничение) */
       section.main { background:transparent !important; }
       section.main > div.block-container {
-        max-width: 980px;
+        max-width: 1200px;
         margin: 0 auto;
         padding-left: 16px; padding-right: 16px;
         box-sizing: border-box;
