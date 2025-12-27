@@ -1,0 +1,8 @@
+{
+  "model_artifact": "models/arxora_m7pro_QQQ.joblib",
+  "agent": "arxora_m7pro",
+  "ticker": "QQQ",
+  "version": "1.0",
+  "migrated_at": "2025-12-27T06:31:47.067516",
+  "migrated_by": "scripts/migrate_models.py"
+}
