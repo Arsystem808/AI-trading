@@ -1,0 +1,17 @@
+{
+  "feature_cols": [
+    "ret_1d",
+    "ret_5d",
+    "ret_10d",
+    "vol_5d",
+    "vol_10d",
+    "ma_ratio",
+    "rsi_14"
+  ],
+  "dates": {
+    "start": "2024-01-18",
+    "end": "2025-12-23"
+  },
+  "model_artifact": "models/arxora_m7pro_QQQ.joblib",
+  "source": "polygon"
+}
